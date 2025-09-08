@@ -329,6 +329,7 @@ dependencies = [
 name = "dgfbaker-bindings"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "libc",
 ]
 
