@@ -1,0 +1,3 @@
+/home/karsten/code/GameEngine/build/CMakeFiles/DGFBaker.dir
+/home/karsten/code/GameEngine/build/CMakeFiles/edit_cache.dir
+/home/karsten/code/GameEngine/build/CMakeFiles/rebuild_cache.dir

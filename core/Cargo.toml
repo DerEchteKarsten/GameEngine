@@ -2,5 +2,26 @@
 name = "core"
 version = "0.1.0"
 edition = "2024"
+build="build.rs"
 
 [dependencies]
+glam = "0.30.5"
+bevy_a11y = "0.16.0"
+bevy_app = "0.16.0"
+bevy_asset = { version = "0.16.1", features = ["asset_processor", "file_watcher", "multi_threaded"] }
+bevy_ecs = {version = "0.16.0", features = ["trace", "multi_threaded"]}
+bevy_input = "0.16.0"
+bevy_log = "0.16.0"
+bevy_reflect = "0.16.0"
+bevy_time = "0.16.0"
+bevy_window = "0.16.0"
+bevy_winit = "0.16.0"
+rg = { version = "0.1.0", path = "../rg" }
+lava = { version = "0.1.0", path = "../lava" }
+dgfsdk-rs = { version = "0.1.0", path = "../dgfsdk-rs" }
+ash = "0.38.0"
+bincode = "2.0.1"
+log = "0.4.28"
+gpu-allocator = "0.27.0"
+anyhow = "1.0.99"
+gltf = "1.4.1"

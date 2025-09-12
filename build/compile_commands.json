@@ -1,0 +1,56 @@
+[
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/ClusterBuilder.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/ClusterBuilder.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/ClusterBuilder.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/ClusterBuilder.cpp.o"
+},
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/Quantization.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/Quantization.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/Quantization.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/Quantization.cpp.o"
+},
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/HPG24BlockPacker.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/HPG24BlockPacker.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/HPG24BlockPacker.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/HPG24BlockPacker.cpp.o"
+},
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/DebugOutput.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/DebugOutput.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/DebugOutput.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/DebugOutput.cpp.o"
+},
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/StripGeneration.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/StripGeneration.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/StripGeneration.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/StripGeneration.cpp.o"
+},
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/DGFBaker.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/DGFBaker.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/DGFBaker.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/DGFBaker.cpp.o"
+},
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/SAHBlockPacker.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/SAHBlockPacker.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/source/SAHBlockPacker.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-cpp/DGFBaker/source/SAHBlockPacker.cpp.o"
+},
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-cpp/DGFLib/DGF.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib/DGF.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib/DGF.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-cpp/DGFLib/DGF.cpp.o"
+},
+{
+  "directory": "/home/karsten/code/GameEngine/build",
+  "command": "/usr/bin/g++ -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFLib -I/home/karsten/code/GameEngine/dgfsdk-rs/DGF-cpp/DGFBaker/include -g -std=gnu++20 -fPIC -o CMakeFiles/DGFBaker.dir/DGF-shim/dgfbaker_shim.cpp.o -c /home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim/dgfbaker_shim.cpp",
+  "file": "/home/karsten/code/GameEngine/dgfsdk-rs/DGF-shim/dgfbaker_shim.cpp",
+  "output": "CMakeFiles/DGFBaker.dir/DGF-shim/dgfbaker_shim.cpp.o"
+}
+]

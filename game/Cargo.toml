@@ -4,3 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+core = { version = "0.1.0", path = "../core" }
+glam = "0.30.5"
+bevy_a11y = "0.16.0"
+bevy_app = "0.16.0"
+bevy_asset = { version = "0.16.1", features = ["asset_processor", "file_watcher", "multi_threaded"] }
+bevy_ecs = {version = "0.16.0", features = ["trace", "multi_threaded"]}
+bevy_input = "0.16.0"
+bevy_log = "0.16.0"
+bevy_reflect = "0.16.0"
+bevy_time = "0.16.0"
+bevy_window = "0.16.0"
+bevy_winit = "0.16.0"
