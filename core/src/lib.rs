@@ -111,7 +111,7 @@ fn commands(
             .read(IMPORTED, world.instance_buffer)
             .read(IMPORTED, world.draw_tasks)
             .depth_attachment(IMPORTED, depth)
-            .color_attachment(IMPORTED, swapchain, Some([0.1, 0.15, 0.3, 1.0]))
+            .color_attachment(IMPORTED, swapchain, Some([0.1, f32::sin(Ctx::current_frame() as f32 / 100.0), 0.3, 1.0]))
             .render_area(WorkSize2D::FullScreen)
             .backface_culling(false)
             .draw(DispatchSize::VertexCountInstanceCount(

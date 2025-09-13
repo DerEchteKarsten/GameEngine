@@ -472,7 +472,7 @@ impl RenderGraph {
                 })
                 .unwrap();
             bindless
-                .bind(Ctx::physical_device().supported_features.raytracing, &cmd)
+                .bind(Ctx::features().raytracing, &cmd)
                 .unwrap();
             let descriptor_offsets = self.write_bindings().unwrap();
             let execution_order = if self.nodes.len() > 2 {

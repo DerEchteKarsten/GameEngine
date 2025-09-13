@@ -224,7 +224,7 @@ pub struct WorldResources {
 }
 
 pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
-    let mut acceleration_structure_scratch_memory = if Ctx::physical_device().supported_features.raytracing {  
+    let mut acceleration_structure_scratch_memory = if Ctx::features().raytracing {  
         Some(DynamicBuffer::new(
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                 | vk::BufferUsageFlags::STORAGE_BUFFER,
@@ -237,7 +237,7 @@ pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
         None
     };
 
-    let acceleration_structure_memory = if Ctx::physical_device().supported_features.raytracing {  
+    let acceleration_structure_memory = if Ctx::features().raytracing {  
         Some(
 
             DynamicBuffer::new(
@@ -253,7 +253,7 @@ pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
         None
     };
 
-    let tlas = if Ctx::physical_device().supported_features.raytracing { Some(Ctx::queue()
+    let tlas = if Ctx::features().raytracing { Some(Ctx::queue()
         .execute_command_wait(|cmd| {
             AccelerationStructure::new(
                     vk::AccelerationStructureTypeKHR::TOP_LEVEL,
