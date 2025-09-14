@@ -175,26 +175,6 @@ where
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
-pub enum ImageSize {
-    FullScreen,
-    FractionalFullScreen(u32, u32),
-    XY(u32, u32),
-}
-
-impl ImageSize {
-    pub fn size(self) -> UVec2 {
-        match self {
-            Self::FullScreen => UVec2::new(Ctx::window_width().unwrap(), Ctx::window_height().unwrap()),
-            Self::FractionalFullScreen(dx, dy) => UVec2::new(
-                (Ctx::window_width().unwrap()).div_ceil(dx),
-                (Ctx::window_height().unwrap()).div_ceil(dy),
-            ),
-            Self::XY(x, y) => UVec2::new(x, y),
-        }
-    }
-}
-
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum DispatchSize {
     #[default]

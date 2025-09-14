@@ -1668,6 +1668,7 @@ dependencies = [
  "ash",
  "ash-window",
  "derivative",
+ "glam 0.30.5",
  "gpu-allocator",
  "log",
  "presser",
@@ -2502,6 +2503,7 @@ dependencies = [
  "glam 0.30.5",
  "gpu-allocator",
  "lava",
+ "log",
 ]
 
 [[package]]

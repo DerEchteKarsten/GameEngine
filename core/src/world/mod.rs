@@ -35,7 +35,7 @@ use crate::{
 const INSTANCE_BUFFER_CAPACITY: u64 = 1048576; //TODO
 const VERTEX_BUFFER_CAPACITY: u64 = 1048576; //TODO
 const ACCELERATION_STRUCTURE_SCRATCH_MEMORY: u64 = 1048576; //TODO
-const STAGING_BUFFER_SIZE: u64 = 1048576; //TODO
+pub const STAGING_BUFFER_SIZE: u64 = 1048576; //TODO
 const MESHLET_BUFFER_CAPACITY: u64 = 1048576;
 const INDEX_BUFFER_CAPACITY: u64 = 1048576;
 const INSTANCE_INDEX_BUFFER_CAPACITY: u64 = 1048576;
@@ -197,7 +197,7 @@ pub fn load_assets(
 }
 
 #[derive(Resource)]
-pub struct StagingBuffer(Buffer);
+pub struct StagingBuffer(pub Buffer);
 
 #[derive(Resource)]
 pub struct RenderWorld {

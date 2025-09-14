@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use ash::vk::{self, Format};
 use lava::bindless::{BindlessDescriptorHeap, DescriptorHandle};
+use lava::vkobjects::image::ImageSize;
 use lava::vkobjects::{buffer::Buffer, image::Image, image::ImageHandle};
-use super::build::ImageSize;
 
 pub type ResourceHandle = usize;
 
@@ -36,7 +36,7 @@ pub(super) enum ResourceDescriptionType {
     },
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct Resource {
     pub event: Event,
     pub descriptor: DescriptorHandle,
@@ -118,7 +118,7 @@ impl Importable for ImageHandle {
             descriptor,
             ResourceType::Image(Image {
                 allocation: None,
-                extent: self.extent,
+                size: self.size,
                 format: self.format,
                 image: self.image,
                 usage: self.usage,

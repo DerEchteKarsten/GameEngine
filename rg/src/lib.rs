@@ -1,14 +1,10 @@
 #![feature(let_chains)]
 use std::{
-    collections::{HashMap, HashSet},
-    ffi::c_void,
-    sync::Arc,
-    time::Instant,
+    arch::x86_64, collections::{HashMap, HashSet}, ffi::c_void, sync::Arc, time::Instant
 };
 
 use anyhow::Result;
 use ash::vk::{self, Format, ImageUsageFlags};
-use build::ImageSize;
 use derivative::Derivative;
 use enum_dispatch::enum_dispatch;
 use glam::{UVec2, Vec3};
@@ -19,7 +15,7 @@ pub mod build;
 pub mod executions;
 pub mod resources;
 use executions::*;
-use lava::{bindless::{BindlessDescriptorHeap, DescriptorHandle}, state::{Ctx, Functions}, vkobjects::{buffer::Buffer, image::ImageHandle, image::Image}, FRAMES_IN_FLIGHT};
+use lava::{bindless::{BindlessDescriptorHeap, DescriptorHandle}, state::{Ctx, Functions}, vkobjects::{buffer::Buffer, image::{Image, ImageHandle, ImageSize}}, FRAMES_IN_FLIGHT};
 use resources::*;
 
 pub const IMPORTED: NodeHandle = !0;
@@ -269,6 +265,7 @@ pub struct RenderGraph {
     pub resources: Vec<Resource>,
     pub resource_cache: Vec<ResourceDescription>,
 
+    destroy_next_frame: Vec<(Image, u64)>,
     constants_buffer: Buffer,
     constants_buffer_binding: DescriptorHandle,
     descriptor_buffer: Buffer, //TODO
@@ -344,6 +341,7 @@ impl RenderGraph {
             resources,
             constants_buffer,
             descriptor_buffer,
+            destroy_next_frame: Vec::new(),
         }
     }
 
@@ -417,8 +415,7 @@ impl RenderGraph {
                 usage,
                 format,
             } => {
-                let size = size.size();
-                let image = Image::new_2d(*usage, MemoryLocation::GpuOnly, *format, size.x, size.y)
+                let image = Image::new_2d(*usage, MemoryLocation::GpuOnly, *format, *size)
                     .unwrap();
                 Functions::set_debug_name(desc.name, image.image);
                 image.resource()
@@ -444,16 +441,51 @@ impl RenderGraph {
     pub fn draw_frame(&mut self, mut record: impl FnMut(&mut RenderGraph, usize)) {
         self.nodes.clear();
         self.constants_offset = 0;
-
         
         Ctx::next_frame(&mut |cmd, swapchain_image_index| {
+            self.destroy_next_frame = self.destroy_next_frame.iter_mut().filter_map(|e| {
+                if Ctx::current_frame() > e.1   {
+                    Some(e.clone())
+                } else {
+                    e.0.destroy();
+                    None
+                }
+            }).collect::<Vec<_>>();
+            
             record(self, swapchain_image_index);
             
+            
             let bindless = BindlessDescriptorHeap::get();
+            if Ctx::swapchain().unwrap().resized {
+                for (i, res) in self.swapchain_images.iter().enumerate() {
+                    if let ResourceType::Image(image) = &mut self.resources[*res].ty {
+                        *image = Ctx::swapchain().unwrap().images[i].clone();
+                        self.resources[*res].event.layout = vk::ImageLayout::UNDEFINED;
+                    }
+                }
+            }
             for i in 0..self.resources.len() {
-                if let ResourceType::Uninitilized(index) = self.resources[i].ty {
-                    let desc = self.resource_cache[index].clone();
-                    self.resources[i] = self.resource(&desc);
+                if self.swapchain_images.contains(&i) {
+                    continue;
+                }
+                match &mut self.resources[i].ty {
+                    ResourceType::Uninitilized(index) => {
+                        let desc = self.resource_cache[*index].clone();
+                        self.resources[i] = self.resource(&desc);
+                    },
+                    ResourceType::Image(image) => {
+                        if let ImageSize::FractionalFullScreen(x, y) = image.size && Ctx::swapchain().unwrap().resized {
+                            self.destroy_next_frame.push((image.clone(), Ctx::current_frame()+ FRAMES_IN_FLIGHT as u64));
+                            *image = Image::new_2d(image.usage, MemoryLocation::GpuOnly, image.format, image.size).unwrap();
+                            self.resources[i].event.layout = vk::ImageLayout::UNDEFINED;
+
+                        }else if let ImageSize::FullScreen = image.size && Ctx::swapchain().unwrap().resized {
+                            self.destroy_next_frame.push((image.clone(), Ctx::current_frame()+ FRAMES_IN_FLIGHT as u64));
+                            *image = Image::new_2d(image.usage, MemoryLocation::GpuOnly, image.format, image.size).unwrap();
+                            self.resources[i].event.layout = vk::ImageLayout::UNDEFINED;
+                        }
+                    }
+                    _ => {}
                 }
             }
             self.resources.iter_mut().for_each(|resource| {

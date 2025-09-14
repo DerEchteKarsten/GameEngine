@@ -24,18 +24,16 @@ pub struct Camera {
     pub position: Vec3,
     pub direction: Vec3,
     pub fov: f32,
-    pub aspect_ratio: f32,
     pub z_near: f32,
     pub z_far: f32,
 }
 
 impl Camera {
-    pub fn new(position: Vec3, fov: f32, aspect_ratio: f32, z_near: f32, z_far: f32) -> Self {
+    pub fn new(position: Vec3, fov: f32, z_near: f32, z_far: f32) -> Self {
         Self {
             position,
             direction: Vec3::default(),
             fov,
-            aspect_ratio,
             z_near,
             z_far,
         }
@@ -46,7 +44,7 @@ impl Camera {
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov, self.aspect_ratio, self.z_far, self.z_near)
+        Mat4::perspective_rh(self.fov, Ctx::window_width().unwrap() as f32 / Ctx::window_height().unwrap() as f32, self.z_far, self.z_near)
     }
 }
 

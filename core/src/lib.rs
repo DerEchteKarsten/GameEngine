@@ -2,21 +2,22 @@
 
 use std::ops::Deref;
 
-use ash::vk::Format;
+use ash::vk::{self, BufferUsageFlags, Format};
 use bevy_a11y::AccessibilityPlugin;
 use bevy_app::{App, PostUpdate, PreStartup, Startup, TaskPoolPlugin, Update};
 use bevy_asset::AssetPlugin;
-use bevy_ecs::{resource::Resource, system::{Query, Res, ResMut}, world::World};
+use bevy_ecs::{resource::Resource, system::{Commands, Query, Res, ResMut}, world::World};
 use bevy_input::InputPlugin;
 use bevy_log::LogPlugin;
 use bevy_time::TimePlugin;
 use bevy_window::{ExitCondition, Window, WindowPlugin, WindowResolution};
 use bevy_winit::{WinitPlugin, WinitWindows};
 use glam::{Vec2, Vec3};
-use lava::state::Ctx;
-use rg::{build::{DispatchSize, ImageSize}, executions::{RasterPass, WorkSize2D}, RenderGraph, IMPORTED};
+use gpu_allocator::MemoryLocation;
+use lava::{bindless::BindlessDescriptorHeap, state::Ctx, vkobjects::{buffer::Buffer, image::ImageSize}};
+use rg::{build::DispatchSize, executions::{ComputePass, RasterPass, WorkSize2D}, resources::ResourceHandle, RenderGraph, IMPORTED};
 
-use crate::{assets::MeshAssets, components::camera::{Camera, CameraPlugin}, world::{add_instance, init_world, load_assets, transform_child_changed, transform_parent_changed, RenderWorld, WorldResources}};
+use crate::{assets::MeshAssets, components::camera::{Camera, CameraPlugin}, world::{add_instance, init_world, load_assets, transform_child_changed, transform_parent_changed, RenderWorld, StagingBuffer, WorldResources, STAGING_BUFFER_SIZE}};
 
 pub mod world;
 pub mod assets;
@@ -61,10 +62,75 @@ struct GConst {
     pub pad: u32,
 }
 
+#[derive(Resource)]
+struct VoxelWorld {
+    buffer: Buffer,
+    data: [u64; 8],
+    handle: ResourceHandle,
+}
+
+fn init_voxel_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
+    let mut data = [0u64; 8];
+
+    for x in 0..8 {
+        for y in 0..8 {
+            for z in 0..8 {
+                if x == 0 || x == 7 || y == 0 || y == 7 || z == 0 || z == 7 {
+                    data[z] |= 1 << (y * 8 + x);
+                }
+            }
+        }
+    }
+
+    let voxel_world = VoxelWorld {
+        buffer: Buffer::new_aligned(
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+            64,
+            Some(64)
+        )
+        .unwrap(),
+        data,
+        handle: 0,
+    };
+    
+    let staging_buffer =
+        Buffer::new(
+            BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::CpuToGpu,
+            STAGING_BUFFER_SIZE,
+        )
+        .unwrap();
+
+    staging_buffer.copy_data_to_buffer(&voxel_world.data).unwrap();
+
+    Ctx::queue()
+        .execute_command_wait(|cmd_buf| {
+            let copy_region = vk::BufferCopy::default().size(64);
+            unsafe {
+                Ctx::device().cmd_copy_buffer(
+                    *cmd_buf,
+                    staging_buffer.buffer,
+                    voxel_world.buffer.buffer,
+                    &[copy_region],
+                );
+            }
+        })
+        .unwrap();
+
+
+    let handle = BindlessDescriptorHeap::get().allocate_buffer_handle(&voxel_world.buffer);
+
+    let handle = rg.0.import(handle);
+    cmd.insert_resource(VoxelWorld { handle, ..voxel_world });
+    cmd.insert_resource(StagingBuffer(staging_buffer));
+}
+
 fn commands(
     mut rg: ResMut<Rg>,
-    world: Res<WorldResources>,
-    render_world: Res<RenderWorld>,
+    // world: Res<WorldResources>,
+    // render_world: Res<RenderWorld>,
+    world: Res<VoxelWorld>,
     mut gconst: ResMut<GConst>,
     query: Query<&Camera>,
 ) {
@@ -82,7 +148,7 @@ fn commands(
     gconst.near = camera.z_near;
     gconst.fov = camera.fov;
     
-    let depth = rg.0.image(ImageSize::FullScreen, Format::D32_SFLOAT, "depth");
+    // let depth = rg.0.image(ImageSize::FullScreen, Format::D32_SFLOAT, "depth");
     // let color = rg.0.image(ImageSize::FullScreen, Format::R32G32B32A32_SFLOAT, "color");
     
     rg.0.draw_frame(|rg, swapchain_image_index| {
@@ -102,34 +168,43 @@ fn commands(
         //     .draw(DispatchSize::X(
         //         (render_world.num_instance_indices as u32).div_ceil(64),
         //     ));
-        let test2 = RasterPass::new(rg, "test2")
-            .fragment("frag", "test")
-            .vertex("vert", "test")
-            .constants(gconst.as_ref())
-            .read(IMPORTED, world.dgf_buffer)
-            .read(IMPORTED, world.material_buffer)
-            .read(IMPORTED, world.instance_buffer)
-            .read(IMPORTED, world.draw_tasks)
-            .depth_attachment(IMPORTED, depth)
-            .color_attachment(IMPORTED, swapchain, Some([0.1, f32::sin(Ctx::current_frame() as f32 / 100.0), 0.3, 1.0]))
-            .render_area(WorkSize2D::FullScreen)
-            .backface_culling(false)
-            .draw(DispatchSize::VertexCountInstanceCount(
-                3, 1,
-            ));
+        // let test2 = RasterPass::new(rg, "test2")
+        //     .fragment("frag", "test")
+        //     .vertex("vert", "test")
+        //     .constants(gconst.as_ref())
+        //     .read(IMPORTED, world.dgf_buffer)
+        //     .read(IMPORTED, world.material_buffer)
+        //     .read(IMPORTED, world.instance_buffer)
+        //     .read(IMPORTED, world.draw_tasks)
+        //     .depth_attachment(IMPORTED, depth)
+        //     .color_attachment(IMPORTED, swapchain, Some([0.1, f32::sin(Ctx::current_frame() as f32 / 100.0), 0.3, 1.0]))
+        //     .render_area(WorkSize2D::FullScreen)
+        //     .backface_culling(false)
+        //     .draw(DispatchSize::VertexCountInstanceCount(
+        //         3, 1,
+        //     ));
         // ComputePass::new(&mut rg, "test")
         //     .shader("bindless_test")
         //     .read(test2, depth)
         //     .read(test2, color)
         //     .write(IMPORTED, swapchain)
         //     .dispatch(DispatchSize::FullScreen);
+
+
+        ComputePass::new(rg, "VoxelRaytrace")
+            .shader("voxel_raycast")
+            .read(IMPORTED, world.handle)
+            .write(IMPORTED, swapchain)
+            .constants(gconst.as_ref())
+            .dispatch(DispatchSize::FullScreen);
+
     });
 
 }
 
 pub fn CorePlugin(app: &mut App) {
     app.add_systems(PreStartup, init)
-        .add_systems(Startup, init_world)
+        .add_systems(Startup, init_voxel_world)
         .add_plugins((
             LogPlugin {
                 filter: "".to_owned(),
@@ -158,14 +233,14 @@ pub fn CorePlugin(app: &mut App) {
             TaskPoolPlugin::default(),
             MeshAssets,
         ))
-        .add_systems(
-            Update,
-            (
-                load_assets,
-                add_instance,
-                transform_child_changed,
-                transform_parent_changed,
-            ),
-        )
+        // .add_systems(
+        //     Update,
+        //     (
+        //         load_assets,
+        //         add_instance,
+        //         transform_child_changed,
+        //         transform_parent_changed,
+        //     ),
+        // )
         .add_systems(PostUpdate, commands);
 }

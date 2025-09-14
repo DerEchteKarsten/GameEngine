@@ -13,8 +13,7 @@ Fragment frag(uint id : SV_PrimitiveID, uint meshletid, float3 color)
 {
     // var rng = RandomSamplerState(uint2(124531, 13564345), meshletid);
     Fragment out;
-    printf("test");
-
+    
     out.color = float4(1.0, 0.0, 0.0, 1.0);//rng.uniform_float(), rng.uniform_float(), rng.uniform_float(), 1.0);// * float4(color, 1.0); 
     return out;
 }
