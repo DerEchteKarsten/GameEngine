@@ -20,16 +20,20 @@ use bevy_log::info_span;
 use glam::{Mat4, Quat, Vec3, Vec4};
 #[cfg(not(feature = "no_raytracing"))]
 use gpu_allocator::MemoryLocation;
-#[cfg(not(feature = "no_raytracing"))]
-use lava::{bindless::BindlessDescriptorHeap, state::Ctx, vkobjects::acceleration_structure::AccelerationStructure};
 use lava::vkobjects::buffer::{Buffer, DynamicBuffer};
 #[cfg(not(feature = "no_raytracing"))]
-use rg::resources::ResourceHandle;
+use lava::{
+    bindless::BindlessDescriptorHeap, state::Ctx,
+    vkobjects::acceleration_structure::AccelerationStructure,
+};
 use rg::RenderGraph;
+#[cfg(not(feature = "no_raytracing"))]
+use rg::resources::ResourceHandle;
 
 use crate::{
+    Rg,
     assets::{Material, Mesh},
-    components::transform::Transform, Rg,
+    components::transform::Transform,
 };
 
 const INSTANCE_BUFFER_CAPACITY: u64 = 1048576; //TODO
@@ -107,7 +111,8 @@ pub fn transform_child_changed(
 
         staging_buffer
             .0
-            .copy_data_to_buffer(&[parent_transform.as_matrix() * transform.as_matrix()]).unwrap();
+            .copy_data_to_buffer(&[parent_transform.as_matrix() * transform.as_matrix()])
+            .unwrap();
         world.instances.copy_from(
             &staging_buffer.0,
             (*instance_offset * size_of::<DrawTask>()) as u64,
@@ -224,22 +229,8 @@ pub struct WorldResources {
 }
 
 pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
-    let mut acceleration_structure_scratch_memory = if Ctx::features().raytracing {  
-        Some(DynamicBuffer::new(
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                | vk::BufferUsageFlags::STORAGE_BUFFER,
-            MemoryLocation::GpuOnly,
-            ACCELERATION_STRUCTURE_SCRATCH_MEMORY,
-            None,
-        )
-        .unwrap())
-    } else {
-        None
-    };
-
-    let acceleration_structure_memory = if Ctx::features().raytracing {  
+    let mut acceleration_structure_scratch_memory = if Ctx::features().raytracing {
         Some(
-
             DynamicBuffer::new(
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                     | vk::BufferUsageFlags::STORAGE_BUFFER,
@@ -247,27 +238,48 @@ pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
                 ACCELERATION_STRUCTURE_SCRATCH_MEMORY,
                 None,
             )
-            .unwrap()
+            .unwrap(),
         )
     } else {
         None
     };
 
-    let tlas = if Ctx::features().raytracing { Some(Ctx::queue()
-        .execute_command_wait(|cmd| {
-            AccelerationStructure::new(
-                    vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-                    &[],
-                    &[],
-                    &[],
-                    acceleration_structure_memory.as_ref().unwrap(),
-                    0,
-                    acceleration_structure_scratch_memory.as_mut().unwrap(),
-                    &cmd,
-                )
-                .unwrap()
-        })
-        .unwrap()) } else { None };
+    let acceleration_structure_memory = if Ctx::features().raytracing {
+        Some(
+            DynamicBuffer::new(
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                    | vk::BufferUsageFlags::STORAGE_BUFFER,
+                MemoryLocation::GpuOnly,
+                ACCELERATION_STRUCTURE_SCRATCH_MEMORY,
+                None,
+            )
+            .unwrap(),
+        )
+    } else {
+        None
+    };
+
+    let tlas = if Ctx::features().raytracing {
+        Some(
+            Ctx::queue()
+                .execute_command_wait(|cmd| {
+                    AccelerationStructure::new(
+                        vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+                        &[],
+                        &[],
+                        &[],
+                        acceleration_structure_memory.as_ref().unwrap(),
+                        0,
+                        acceleration_structure_scratch_memory.as_mut().unwrap(),
+                        &cmd,
+                    )
+                    .unwrap()
+                })
+                .unwrap(),
+        )
+    } else {
+        None
+    };
 
     let tlas_descriptor = if let Some(tlas) = &tlas {
         Some(BindlessDescriptorHeap::get().allocate_acceleration_structure_handle(&tlas))
@@ -328,8 +340,10 @@ pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
         instance_buffer: rg.0.import(render_world.instances.bindless_handle),
         draw_tasks: rg.0.import(render_world.draw_tasks.bindless_handle),
         tlas: if let Some(desc) = tlas_descriptor {
-            Some(rg.0.import(desc)) 
-        } else { None },
+            Some(rg.0.import(desc))
+        } else {
+            None
+        },
     });
     cmd.insert_resource(render_world);
 }

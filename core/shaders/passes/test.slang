@@ -23,14 +23,7 @@ struct VertOutput {
     uint meshletid;
     float3 color : COLOR0;
 }
-
-struct Bindings{
-    Buffer<uint8_t> dgf_blocks;
-    Buffer<Material> materials;
-    Buffer<Instance> instances;
-    Buffer<InstanceIndecies> instance_indicies;
-}
-
+ 
 static float3[] positions = {
     float3(-0.1, 0.1, 0.0),
     float3(0.1, -0.1, 0.0),
@@ -40,7 +33,6 @@ static float3[] positions = {
 [shader("vertex")]
 VertOutput vert(uint vertex_id: SV_VertexID) {
     let g_Const = loadConstants<GConst>();
-    let bindings = loadBindings<Bindings>();
 
     return VertOutput(
         float4(positions[vertex_id], 1.0),

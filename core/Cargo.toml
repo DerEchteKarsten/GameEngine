@@ -15,7 +15,7 @@ bevy_log = "0.16.0"
 bevy_reflect = "0.16.0"
 bevy_time = "0.16.0"
 bevy_window = "0.16.0"
-bevy_winit = "0.16.0"
+bevy_winit = {version = "0.16.0", features = ["wayland"]}
 rg = { version = "0.1.0", path = "../rg" }
 lava = { version = "0.1.0", path = "../lava" }
 dgfsdk-rs = { version = "0.1.0", path = "../dgfsdk-rs" }

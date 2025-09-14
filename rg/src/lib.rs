@@ -1,6 +1,10 @@
 #![feature(let_chains)]
 use std::{
-    arch::x86_64, collections::{HashMap, HashSet}, ffi::c_void, sync::Arc, time::Instant
+    arch::x86_64,
+    collections::{HashMap, HashSet},
+    ffi::c_void,
+    sync::Arc,
+    time::Instant,
 };
 
 use anyhow::Result;
@@ -15,7 +19,15 @@ pub mod build;
 pub mod executions;
 pub mod resources;
 use executions::*;
-use lava::{bindless::{BindlessDescriptorHeap, DescriptorHandle}, state::{Ctx, Functions}, vkobjects::{buffer::Buffer, image::{Image, ImageHandle, ImageSize}}, FRAMES_IN_FLIGHT};
+use lava::{
+    FRAMES_IN_FLIGHT,
+    bindless::{BindlessDescriptorHeap, DescriptorHandle},
+    state::{Ctx, Functions},
+    vkobjects::{
+        buffer::Buffer,
+        image::{Image, ImageHandle, ImageSize},
+    },
+};
 use resources::*;
 
 pub const IMPORTED: NodeHandle = !0;
@@ -218,15 +230,12 @@ impl Node {
                 && let Some(flush) = flushes.get(&edge.resource)
                 && rg.resources[edge.resource].event.layout != flush.layout
             {
-                invalidates.insert(
-                    edge.resource,
-                    Barrier {
-                        resource: edge.resource,
-                        layout: flush.layout,
-                        access: vk::AccessFlags2::NONE,
-                        stages: self.execution.get_stages(),
-                    },
-                );
+                invalidates.insert(edge.resource, Barrier {
+                    resource: edge.resource,
+                    layout: flush.layout,
+                    access: vk::AccessFlags2::NONE,
+                    stages: self.execution.get_stages(),
+                });
             }
         }
 
@@ -324,11 +333,11 @@ impl RenderGraph {
         let descriptor_buffer_binding = bindless.allocate_buffer_handle(&descriptor_buffer);
 
         let constants_buffer = Buffer::new(
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-                MemoryLocation::CpuToGpu,
-                size_of::<u32>() as u64 * 1024,
-            )
-            .unwrap();
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            MemoryLocation::CpuToGpu,
+            size_of::<u32>() as u64 * 1024,
+        )
+        .unwrap();
         let constants_buffer_binding = bindless.allocate_buffer_handle(&constants_buffer);
 
         Self {
@@ -415,8 +424,7 @@ impl RenderGraph {
                 usage,
                 format,
             } => {
-                let image = Image::new_2d(*usage, MemoryLocation::GpuOnly, *format, *size)
-                    .unwrap();
+                let image = Image::new_2d(*usage, MemoryLocation::GpuOnly, *format, *size).unwrap();
                 Functions::set_debug_name(desc.name, image.image);
                 image.resource()
             }
@@ -437,29 +445,34 @@ impl RenderGraph {
             None
         }
     }
-    
+
     pub fn draw_frame(&mut self, mut record: impl FnMut(&mut RenderGraph, usize)) {
         self.nodes.clear();
         self.constants_offset = 0;
-        
+
         Ctx::next_frame(&mut |cmd, swapchain_image_index| {
-            self.destroy_next_frame = self.destroy_next_frame.iter_mut().filter_map(|e| {
-                if Ctx::current_frame() > e.1   {
-                    Some(e.clone())
-                } else {
-                    e.0.destroy();
-                    None
-                }
-            }).collect::<Vec<_>>();
-            
+            self.destroy_next_frame = self
+                .destroy_next_frame
+                .iter_mut()
+                .filter_map(|e| {
+                    if Ctx::current_frame() < e.1 {
+                        Some(e.clone())
+                    } else {
+                        e.0.destroy();
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
             record(self, swapchain_image_index);
-            
-            
+
             let bindless = BindlessDescriptorHeap::get();
             if Ctx::swapchain().unwrap().resized {
                 for (i, res) in self.swapchain_images.iter().enumerate() {
+                    let desc = self.resources[*res].descriptor;
                     if let ResourceType::Image(image) = &mut self.resources[*res].ty {
                         *image = Ctx::swapchain().unwrap().images[i].clone();
+                        BindlessDescriptorHeap::get().update_image_handle(image, desc);
                         self.resources[*res].event.layout = vk::ImageLayout::UNDEFINED;
                     }
                 }
@@ -472,16 +485,37 @@ impl RenderGraph {
                     ResourceType::Uninitilized(index) => {
                         let desc = self.resource_cache[*index].clone();
                         self.resources[i] = self.resource(&desc);
-                    },
+                    }
                     ResourceType::Image(image) => {
-                        if let ImageSize::FractionalFullScreen(x, y) = image.size && Ctx::swapchain().unwrap().resized {
-                            self.destroy_next_frame.push((image.clone(), Ctx::current_frame()+ FRAMES_IN_FLIGHT as u64));
-                            *image = Image::new_2d(image.usage, MemoryLocation::GpuOnly, image.format, image.size).unwrap();
+                        if let ImageSize::FractionalFullScreen(x, y) = image.size
+                            && Ctx::swapchain().unwrap().resized
+                        {
+                            self.destroy_next_frame.push((
+                                image.clone(),
+                                Ctx::current_frame() + FRAMES_IN_FLIGHT as u64,
+                            ));
+                            *image = Image::new_2d(
+                                image.usage,
+                                MemoryLocation::GpuOnly,
+                                image.format,
+                                image.size,
+                            )
+                            .unwrap();
                             self.resources[i].event.layout = vk::ImageLayout::UNDEFINED;
-
-                        }else if let ImageSize::FullScreen = image.size && Ctx::swapchain().unwrap().resized {
-                            self.destroy_next_frame.push((image.clone(), Ctx::current_frame()+ FRAMES_IN_FLIGHT as u64));
-                            *image = Image::new_2d(image.usage, MemoryLocation::GpuOnly, image.format, image.size).unwrap();
+                        } else if let ImageSize::FullScreen = image.size
+                            && Ctx::swapchain().unwrap().resized
+                        {
+                            self.destroy_next_frame.push((
+                                image.clone(),
+                                Ctx::current_frame() + FRAMES_IN_FLIGHT as u64,
+                            ));
+                            *image = Image::new_2d(
+                                image.usage,
+                                MemoryLocation::GpuOnly,
+                                image.format,
+                                image.size,
+                            )
+                            .unwrap();
                             self.resources[i].event.layout = vk::ImageLayout::UNDEFINED;
                         }
                     }
@@ -503,9 +537,7 @@ impl RenderGraph {
                         .is_some()
                 })
                 .unwrap();
-            bindless
-                .bind(Ctx::features().raytracing, &cmd)
-                .unwrap();
+            bindless.bind(Ctx::features().raytracing, &cmd).unwrap();
             let descriptor_offsets = self.write_bindings().unwrap();
             let execution_order = if self.nodes.len() > 2 {
                 self.bake(root_node).unwrap()
@@ -514,7 +546,7 @@ impl RenderGraph {
             } else {
                 vec![0]
             };
-        
+
             let barriers = self.create_barriers(&execution_order, swapchain_image_index);
             for (pass_index, pass_handle) in execution_order.iter().enumerate() {
                 let pass = &self.nodes[*pass_handle];
@@ -525,7 +557,7 @@ impl RenderGraph {
                         cmd,
                         descriptor_offsets[*pass_handle] as u32 * size_of::<u32>() as u32,
                     );
-        
+
                     let barrier = &barriers[pass_index];
                     // println!("{}:{:#?}", pass.name, barrier);
                     if barrier.images.len() != 0 || barrier.buffers.len() != 0 {
@@ -533,28 +565,23 @@ impl RenderGraph {
                         let dependency_info = vk::DependencyInfo::default()
                             .buffer_memory_barriers(&barrier.buffers)
                             .image_memory_barriers(&barrier.images);
-                        Ctx::device()
-                            .cmd_pipeline_barrier2(*cmd, &dependency_info);
+                        Ctx::device().cmd_pipeline_barrier2(*cmd, &dependency_info);
                     }
-        
-                    pass.execution
-                        .execute(cmd, self, &pass.edges)
-                        .unwrap();
+
+                    pass.execution.execute(cmd, self, &pass.edges).unwrap();
                     Functions::cmd_end_label(cmd);
                 }
             }
-        
+
             if let Some(barrier) = barriers.get(execution_order.len()) {
                 Functions::cmd_insert_label(&cmd, "Transitioning Swapchain Image");
                 let dependency_info = vk::DependencyInfo::default()
                     .buffer_memory_barriers(&barrier.buffers)
                     .image_memory_barriers(&barrier.images);
-                unsafe {
-                    Ctx::device()
-                        .cmd_pipeline_barrier2(*cmd, &dependency_info)
-                };
+                unsafe { Ctx::device().cmd_pipeline_barrier2(*cmd, &dependency_info) };
             }
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
 }

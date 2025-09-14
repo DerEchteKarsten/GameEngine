@@ -1,16 +1,17 @@
 use core::slice;
 use std::{
-    collections::HashMap, f16, fmt::Debug, future::IntoFuture, mem::offset_of, sync::atomic::AtomicU32
+    collections::HashMap, f16, fmt::Debug, future::IntoFuture, mem::offset_of,
+    sync::atomic::AtomicU32,
 };
 
 use anyhow::{Ok, Result};
-use ash::{vk::QCOM_FILTER_CUBIC_CLAMP_NAME, Instance};
+use ash::{Instance, vk::QCOM_FILTER_CUBIC_CLAMP_NAME};
 use bevy_app::Plugin;
 use bevy_asset::{
+    AssetApp, AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext,
     processor::LoadTransformAndSave,
     saver::AssetSaver,
     transformer::{AssetTransformer, TransformedAsset},
-    AssetApp, AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext,
 };
 use bevy_reflect::TypePath;
 use bincode::{config::Configuration, de::read::Reader, enc::write::Writer};

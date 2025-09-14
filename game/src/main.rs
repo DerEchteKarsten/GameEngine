@@ -1,12 +1,24 @@
-use core::{assets::Mesh, components::{camera::{Camera, Controls}, transform::Transform}, world::Instance, CorePlugin, INITIAL_WINDOW_SIZE};
+use core::{
+    CorePlugin, INITIAL_WINDOW_SIZE,
+    assets::Mesh,
+    components::{
+        camera::{Camera, Controls},
+        transform::Transform,
+    },
+    world::Instance,
+};
 use std::f32::consts::PI;
 
 use bevy_app::{App, Startup, Update};
 use bevy_asset::{AssetServer, Handle};
-use bevy_ecs::{component::Component, hierarchy::Children, query::With, system::{Commands, Query, Res}};
+use bevy_ecs::{
+    component::Component,
+    hierarchy::Children,
+    query::With,
+    system::{Commands, Query, Res},
+};
 use bevy_time::Time;
-use glam::{vec3, Vec3};
-
+use glam::{Vec3, vec3};
 
 #[derive(Component)]
 struct Model;
@@ -16,12 +28,7 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
         ..Default::default()
     };
 
-    let camera = Camera::new(
-        vec3(0.0, 0.0, 0.0),
-        65.0_f32.to_radians(),
-        0.1,
-        1000.0,
-    );
+    let camera = Camera::new(vec3(0.0, 0.0, 0.0), 65.0_f32.to_radians(), 0.1, 1000.0);
     // let model: Handle<Mesh> = asset_server.load("stanford_dragon.glb");
     cmd.insert_resource(controles);
     cmd.spawn(camera);
@@ -60,7 +67,6 @@ fn update(
     //         log::debug!("parent: {:?}, child: {:?}", transform, qchildren.get(*i).unwrap().as_matrix());
     //     }
     // }
-    
 }
 
 fn main() {
@@ -68,9 +74,7 @@ fn main() {
     // let image_thread = std::thread::spawn(|| image::open("./assets/skybox2.exr").unwrap());
 
     App::new()
-        .add_plugins((
-            CorePlugin,
-        ))
+        .add_plugins((CorePlugin,))
         .add_systems(Startup, init)
         .add_systems(Update, update)
         .run();

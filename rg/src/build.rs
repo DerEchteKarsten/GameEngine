@@ -6,11 +6,10 @@ use glam::{UVec2, UVec3};
 use lava::pipelines::{PipelineModel, RasterPipelineHandle, RayTracingPipelineHandle, ShaderPath};
 use lava::state::Ctx;
 
-
 use super::executions::{ComputePass, RasterPass, RayTracingPass, WorkSize2D};
 use super::{
-    EdgeType, Execution, ExecutionTrait, Node, NodeEdge, NodeHandle, RenderGraph,
-    ResourceDescriptionType, ResourceHandle, ResourceType, IMPORTED,
+    EdgeType, Execution, ExecutionTrait, IMPORTED, Node, NodeEdge, NodeHandle, RenderGraph,
+    ResourceDescriptionType, ResourceHandle, ResourceType,
 };
 
 use std::ffi::{self, c_void};
@@ -182,7 +181,7 @@ pub enum DispatchSize {
     FractionalFullScreen(u32, u32),
     X(u32),
     XY(u32, u32),
-    VertexCountInstanceCount(u32,u32),
+    VertexCountInstanceCount(u32, u32),
     XYZ(u32, u32, u32),
     Custom(fn() -> UVec3),
 }
@@ -207,57 +206,69 @@ impl DispatchSize {
             DispatchSize::X(x) => (*x, 1, 1),
             DispatchSize::XY(x, y) => (*x, *y, 1),
             DispatchSize::XYZ(x, y, z) => (*x, *y, *z),
-            DispatchSize::VertexCountInstanceCount(x, y) => (*x, *y, 0)
+            DispatchSize::VertexCountInstanceCount(x, y) => (*x, *y, 0),
         }
     }
 }
 
 impl<'b> NodeBuilder<'b, RasterPass> {
     pub fn mesh_path(mut self, path: &'static str) -> Self {
-        if let PipelineModel::Mesh { task, mesh } = &mut self.execution.as_mut().unwrap().pipeline.model {
+        if let PipelineModel::Mesh { task, mesh } =
+            &mut self.execution.as_mut().unwrap().pipeline.model
+        {
             mesh.path = path;
             mesh.entry = "main";
-        }else {
-            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Mesh { task: None, mesh: ShaderPath {
-                entry: "main",
-                path,
-            }}
+        } else {
+            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Mesh {
+                task: None,
+                mesh: ShaderPath {
+                    entry: "main",
+                    path,
+                },
+            }
         }
         self
     }
     pub fn mesh(mut self, entry: &'static str, path: &'static str) -> Self {
-        if let PipelineModel::Mesh { task, mesh } = &mut self.execution.as_mut().unwrap().pipeline.model {
+        if let PipelineModel::Mesh { task, mesh } =
+            &mut self.execution.as_mut().unwrap().pipeline.model
+        {
             mesh.entry = entry;
             mesh.path = path;
-        }else {
-            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Mesh { task: None, mesh: ShaderPath {
-                entry,
-                path,
-            }}
+        } else {
+            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Mesh {
+                task: None,
+                mesh: ShaderPath { entry, path },
+            }
         }
         self
     }
     pub fn vertex_path(mut self, path: &'static str) -> Self {
-        if let PipelineModel::Vertex { vertex } = &mut self.execution.as_mut().unwrap().pipeline.model {
+        if let PipelineModel::Vertex { vertex } =
+            &mut self.execution.as_mut().unwrap().pipeline.model
+        {
             vertex.path = path;
             vertex.entry = "main";
-        }else {
-            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Vertex { vertex: ShaderPath {
-                entry: "main",
-                path,
-            }}
+        } else {
+            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Vertex {
+                vertex: ShaderPath {
+                    entry: "main",
+                    path,
+                },
+            }
         }
         self
     }
     pub fn vertex(mut self, entry: &'static str, path: &'static str) -> Self {
-        if let PipelineModel::Vertex { vertex } = &mut self.execution.as_mut().unwrap().pipeline.model {
+        if let PipelineModel::Vertex { vertex } =
+            &mut self.execution.as_mut().unwrap().pipeline.model
+        {
             vertex.path = path;
             vertex.entry = entry;
-        }else {
-            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Vertex { vertex: ShaderPath {
-                entry,
-                path,
-            }}
+        } else {
+            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Vertex {
+                vertex: ShaderPath { entry, path },
+            }
         }
         self
     }
@@ -270,28 +281,38 @@ impl<'b> NodeBuilder<'b, RasterPass> {
         self
     }
     pub fn task_path(mut self, path: &'static str) -> Self {
-        if let PipelineModel::Mesh { task, mesh } = &mut self.execution.as_mut().unwrap().pipeline.model {
+        if let PipelineModel::Mesh { task, mesh } =
+            &mut self.execution.as_mut().unwrap().pipeline.model
+        {
             if let Some(task) = task {
                 task.path = path;
-            }else {
+            } else {
                 *task = Some(ShaderPath {
                     entry: "main",
                     path,
                 })
             }
-        }else {
-            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Mesh { task: None, mesh: ShaderPath {
-                entry: "main",
-                path,
-            }}
+        } else {
+            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Mesh {
+                task: None,
+                mesh: ShaderPath {
+                    entry: "main",
+                    path,
+                },
+            }
         }
         self
     }
     pub fn task(mut self, entry: &'static str, path: &'static str) -> Self {
-        if let PipelineModel::Mesh { task, mesh } = &mut self.execution.as_mut().unwrap().pipeline.model {
-            *task = Some(ShaderPath {entry, path});
-        }else {
-            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Mesh { task: Some(ShaderPath { path, entry }), mesh: ShaderPath::default()}
+        if let PipelineModel::Mesh { task, mesh } =
+            &mut self.execution.as_mut().unwrap().pipeline.model
+        {
+            *task = Some(ShaderPath { entry, path });
+        } else {
+            self.execution.as_mut().unwrap().pipeline.model = PipelineModel::Mesh {
+                task: Some(ShaderPath { path, entry }),
+                mesh: ShaderPath::default(),
+            }
         }
         self
     }
@@ -406,41 +427,32 @@ impl<'b> NodeBuilder<'b, ComputePass> {
 }
 
 impl RasterPass {
-    pub fn new<'a>(
-        rg: &'a mut RenderGraph,
-        name: &'static str,
-    ) -> NodeBuilder<'a, RasterPass> {
+    pub fn new<'a>(rg: &'a mut RenderGraph, name: &'static str) -> NodeBuilder<'a, RasterPass> {
         let mut builder = NodeBuilder::<RasterPass>::new::<RasterPass>(rg, name);
         builder.execution = Some(RasterPass {
             dispatch: DispatchSize::FullScreen,
             render_area: WorkSize2D::FullScreen,
-            pipeline: RasterPipelineHandle::default()
+            pipeline: RasterPipelineHandle::default(),
         });
         builder
     }
 }
 
 impl RayTracingPass {
-    pub fn new<'a>(
-        rg: &'a mut RenderGraph,
-        name: &'static str,
-    ) -> NodeBuilder<'a, RayTracingPass> {
+    pub fn new<'a>(rg: &'a mut RenderGraph, name: &'static str) -> NodeBuilder<'a, RayTracingPass> {
         let mut builder = NodeBuilder::<RayTracingPass>::new::<RayTracingPass>(rg, name);
         builder.execution = Some(RayTracingPass {
             launch: WorkSize2D::FullScreen,
             pipeline: RayTracingPipelineHandle {
                 path: ShaderPath::default(),
-            }
+            },
         });
         builder
     }
 }
 
 impl ComputePass {
-    pub fn new<'a>(
-        rg: &'a mut RenderGraph,
-        name: &'static str,
-    ) -> NodeBuilder<'a, ComputePass> {
+    pub fn new<'a>(rg: &'a mut RenderGraph, name: &'static str) -> NodeBuilder<'a, ComputePass> {
         let mut builder = NodeBuilder::<ComputePass>::new::<ComputePass>(rg, name);
         builder.execution = Some(ComputePass::default());
         builder

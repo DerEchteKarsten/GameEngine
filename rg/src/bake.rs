@@ -8,10 +8,9 @@ use anyhow::Result;
 use ash::vk;
 use lava::vkobjects::{buffer::CopySrc, image::ImageType};
 
-
 use super::{
-    depends_on, Barrier, Barriers, EdgeType, Event, ExecutionTrait, Node, NodeEdge, NodeHandle,
-    RenderGraph, ResourceHandle,
+    Barrier, Barriers, EdgeType, Event, ExecutionTrait, Node, NodeEdge, NodeHandle, RenderGraph,
+    ResourceHandle, depends_on,
 };
 
 #[derive(Default, Debug)]

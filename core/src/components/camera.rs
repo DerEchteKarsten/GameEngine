@@ -3,13 +3,13 @@ use std::{f32::consts::PI, time::Duration};
 use bevy_app::{App, PreUpdate, Update};
 use bevy_ecs::resource::Resource;
 use bevy_input::{
+    ButtonInput, ButtonState,
     keyboard::KeyCode,
     mouse::{MouseButton, MouseButtonInput, MouseMotion},
-    ButtonInput, ButtonState,
 };
 use bevy_time::Time;
 use bevy_window::{CursorGrabMode, PrimaryWindow, Window};
-use glam::{vec3, Mat3, Mat4, Quat, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3, vec3};
 
 use bevy_ecs::prelude::*;
 use lava::state::Ctx;
@@ -44,7 +44,12 @@ impl Camera {
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov, Ctx::window_width().unwrap() as f32 / Ctx::window_height().unwrap() as f32, self.z_far, self.z_near)
+        Mat4::perspective_rh(
+            self.fov,
+            Ctx::window_width().unwrap() as f32 / Ctx::window_height().unwrap() as f32,
+            self.z_far,
+            self.z_near,
+        )
     }
 }
 
