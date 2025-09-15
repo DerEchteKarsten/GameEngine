@@ -1,6 +1,7 @@
 #![feature(f16)]
+#![feature(random)]
 
-use std::ops::Deref;
+use std::{ops::Deref, random::random};
 
 use ash::vk::{self, BufferUsageFlags, Format};
 use bevy_a11y::AccessibilityPlugin;
@@ -108,19 +109,17 @@ struct GConst {
 #[derive(Resource)]
 struct VoxelWorld {
     buffer: Buffer,
-    data: [u64; 8],
+    data: Vec<u64>,
     handle: ResourceHandle,
 }
 
 fn init_voxel_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
-    let mut data = [0u64; 8];
+    let mut data = vec![0];
 
-    for x in 0..8 {
-        for y in 0..8 {
-            for z in 0..8 {
-                if x == 0 || x == 7 || y == 0 || y == 7 || z == 0 || z == 7 {
-                    data[z] |= 1 << (y * 8 + x);
-                }
+    for x in 0..4 {
+        for y in 0..4 {
+            for z in 0..4 {
+                data[0] |= (random::<bool>() as u64) << (z * 16 + y * 4 + x);
             }
         }
     }
@@ -241,7 +240,6 @@ fn commands(
             .constants(gconst.as_ref())
             .dispatch(DispatchSize::FullScreen);
     });
-
 }
 
 pub fn CorePlugin(app: &mut App) {

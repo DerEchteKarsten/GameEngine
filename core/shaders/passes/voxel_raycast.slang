@@ -2,7 +2,7 @@
 #include "datatypes.slang"
 
 struct Block {
-    uint64_t data[8];
+    uint64_t occupancy_mask;
 }
 
 struct Bindings{
@@ -42,7 +42,7 @@ float intersectRayAABB(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 bo
 float dda(uint block_index, RWByteAddressBuffer world, RayDesc ray) {
     Block s = world.LoadAligned<Block>(block_index, 64);
 
-    let t_box = intersectRayAABB(ray.Origin, ray.Direction, float3(0.0), float3(8.0));
+    let t_box = intersectRayAABB(ray.Origin, ray.Direction, float3(0.0), float3(4.0));
     if (t_box < 0.0) {
         return ray.TMax;
     }
@@ -56,15 +56,13 @@ float dda(uint block_index, RWByteAddressBuffer world, RayDesc ray) {
     var tnext = 0.0;
 
     bool3 mask;
-    for (int i = 0; i < 18; i++) {
-        if (any(mapPos < 0) || any(mapPos >= 8)) {
+    for (int i = 0; i < 10; i++) {
+        if (any(mapPos < 0) || any(mapPos >= 4)) {
             return ray.TMax;
         }
 
-        uint i64 = mapPos.x + (mapPos.y << 3);
-        uint64_t slice = s.data[mapPos.z];
-
-        if ((slice & (uint64_t(1) << i64)) > uint64_t(0)) {
+        uint i64 = mapPos.x + (mapPos.y << 2) + (mapPos.z << 4);
+        if ((s.occupancy_mask & (uint64_t(1) << i64)) > uint64_t(0)) {
             return tnext + t_box;
         }
 

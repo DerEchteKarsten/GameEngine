@@ -230,12 +230,15 @@ impl Node {
                 && let Some(flush) = flushes.get(&edge.resource)
                 && rg.resources[edge.resource].event.layout != flush.layout
             {
-                invalidates.insert(edge.resource, Barrier {
-                    resource: edge.resource,
-                    layout: flush.layout,
-                    access: vk::AccessFlags2::NONE,
-                    stages: self.execution.get_stages(),
-                });
+                invalidates.insert(
+                    edge.resource,
+                    Barrier {
+                        resource: edge.resource,
+                        layout: flush.layout,
+                        access: vk::AccessFlags2::NONE,
+                        stages: self.execution.get_stages(),
+                    },
+                );
             }
         }
 
@@ -333,7 +336,7 @@ impl RenderGraph {
         let descriptor_buffer_binding = bindless.allocate_buffer_handle(&descriptor_buffer);
 
         let constants_buffer = Buffer::new(
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
             MemoryLocation::CpuToGpu,
             size_of::<u32>() as u64 * 1024,
         )
