@@ -119,7 +119,7 @@ impl Node {
         descriptor_offset: u32,
     ) {
         unsafe {
-            let mut constants = [0u8; 16];
+            let mut constants = [0u8; 8];
             constants[0..4].copy_from_slice(&self.constant_offset.unwrap_or(0).to_ne_bytes());
 
             constants[4..8].copy_from_slice(
@@ -130,9 +130,7 @@ impl Node {
                 }
                 .to_ne_bytes(),
             );
-            constants[8..12].copy_from_slice(&rg.descriptor_buffer_binding.0.to_ne_bytes());
-            constants[12..16].copy_from_slice(&rg.constants_buffer_binding.0.to_ne_bytes());
-
+           
             Ctx::device().cmd_push_constants(
                 *cmd,
                 BindlessDescriptorHeap::get().layout,
@@ -342,6 +340,9 @@ impl RenderGraph {
         )
         .unwrap();
         let constants_buffer_binding = bindless.allocate_buffer_handle(&constants_buffer);
+
+        assert!(descriptor_buffer_binding.index() == 0);
+        assert!(constants_buffer_binding.index() == 1);
 
         Self {
             swapchain_images,

@@ -5,12 +5,12 @@ struct Block {
     uint64_t occupancy_mask;
 }
 
-struct Bindings{
+struct Bindings {
     Buffer<Block> world;
     Image4 out;
 }
 
-float3 view_dir(uint2 pixelCoord, GConst view) {
+float3 view_dir(uint2 pixelCoord, Constants view) {
     const var pixelCenter = float2(pixelCoord) + float2(0.5);
     const var inUV = pixelCenter / float2(view.window_size);
     var d = inUV * 2.0 - 1.0;
@@ -21,12 +21,10 @@ float3 view_dir(uint2 pixelCoord, GConst view) {
 }
 
 
-float intersectRayAABB(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMax)
+float intersectRayAABB(float3 rayOrigin, float3 recp_rayDir, float3 boxMin, float3 boxMax)
 {
-    float3 invDir = 1.0 / rayDir;
-
-    float3 t0 = (boxMin - rayOrigin) * invDir;
-    float3 t1 = (boxMax - rayOrigin) * invDir;
+    float3 t0 = (boxMin - rayOrigin) * recp_rayDir;
+    float3 t1 = (boxMax - rayOrigin) * recp_rayDir;
 
     float3 tMin3 = min(t0, t1);
     float3 tMax3 = max(t0, t1);
@@ -42,10 +40,13 @@ float intersectRayAABB(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 bo
 float dda(uint block_index, RWByteAddressBuffer world, RayDesc ray) {
     Block s = world.LoadAligned<Block>(block_index, 64);
 
-    let t_box = intersectRayAABB(ray.Origin, ray.Direction, float3(0.0), float3(4.0));
+    let recp_dir = rcp(ray.Direction);
+
+    let t_box = intersectRayAABB(ray.Origin, recp_dir, float3(0.0), float3(4.0));
     if (t_box < 0.0) {
         return ray.TMax;
     }
+
     let origin = ray.Origin;
     ray.Origin += ray.Direction * (t_box + 0.001);
     let flat_pos = floor(ray.Origin);
@@ -74,14 +75,21 @@ float dda(uint block_index, RWByteAddressBuffer world, RayDesc ray) {
     return ray.TMax;
 }
 
+struct Constants {
+    column_major float4x4 proj_inverse;
+    column_major float4x4 view_inverse;
+    float2 window_size;
+    float3 camera_position;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main(uint3 threadId: SV_DispatchThreadID) {
-    let gconst = loadConstants<GConst>();
-    
     var pixelCoord = threadId.xy;
+
+    let gconst = loadConstants<Constants>();
     var ray = RayDesc(
-        gconst.camera_pos,
+        gconst.camera_position,
         0.0,
         view_dir(pixelCoord, gconst),
         1000.0,

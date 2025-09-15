@@ -20,28 +20,6 @@ struct InstanceIndecies {
     uint geometry_id;
 }
 
-struct GConst {
-    column_major float4x4 proj;
-    column_major float4x4 view;
-    column_major float4x4 proj_inverse;
-    column_major float4x4 view_inverse;
-    float2 window_size;
-    uint frame_index;
-    float blendfactor;
-    uint bounces;
-    uint samples;
-
-    uint proberng;
-    float cell_size;
-    uint2 mouse;
-    float3 camera_pos;
-    float3 camera_direction;
-    float zfar;
-    float znear;
-    float fov;
-    uint pad;
-};
-
 struct RayPayload {
     float depth;
     float2 uv;

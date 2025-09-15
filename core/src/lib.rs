@@ -21,7 +21,7 @@ use bevy_window::{
     WindowScaleFactorChanged,
 };
 use bevy_winit::{WinitPlugin, WinitWindows};
-use glam::{Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use gpu_allocator::MemoryLocation;
 use lava::{
     bindless::BindlessDescriptorHeap,
@@ -59,7 +59,6 @@ pub fn init(world: &mut World) {
 
     lava::init(Some(&window), true).unwrap();
 
-    world.insert_resource(GConst::default());
     world.insert_resource(Rg(RenderGraph::new()));
 }
 
@@ -82,29 +81,6 @@ pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
 //         }
 //     }
 // }
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Resource)]
-struct GConst {
-    pub proj: glam::Mat4,
-    pub view: glam::Mat4,
-    pub proj_inverse: glam::Mat4,
-    pub view_inverse: glam::Mat4,
-    pub window_size: glam::Vec2,
-    pub frame: u32,
-    pub blendfactor: f32,
-    pub bounces: u32,
-    pub samples: u32,
-    pub proberng: u32,
-    pub cell_size: f32,
-    pub mouse: [u32; 2],
-    pub camera_position: Vec3,
-    pub camera_direction: Vec3,
-    pub far: f32,
-    pub near: f32,
-    pub fov: f32,
-    pub pad: u32,
-}
 
 #[derive(Resource)]
 struct VoxelWorld {
@@ -171,29 +147,32 @@ fn init_voxel_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
     cmd.insert_resource(StagingBuffer(staging_buffer));
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Constants {
+    proj_inverse: Mat4,
+    view_inverse: Mat4,
+    window_size: Vec2,
+    camera_position: Vec3,
+}
+
 fn commands(
     mut rg: ResMut<Rg>,
     // world: Res<WorldResources>,
     // render_world: Res<RenderWorld>,
     world: Res<VoxelWorld>,
-    mut gconst: ResMut<GConst>,
     query: Query<&Camera>,
 ) {
     let camera = query.single().unwrap();
-    gconst.proj = camera.projection_matrix();
-    gconst.proj_inverse = gconst.proj.inverse();
-    gconst.view = camera.view_matrix();
-    gconst.view_inverse = gconst.view.inverse();
-    gconst.window_size = Vec2::new(
-        Ctx::window_width().unwrap() as f32,
-        Ctx::window_height().unwrap() as f32,
-    );
-    gconst.frame = Ctx::current_frame() as u32;
-    gconst.camera_position = camera.position;
-    gconst.camera_direction = camera.direction;
-    gconst.far = camera.z_far;
-    gconst.near = camera.z_near;
-    gconst.fov = camera.fov;
+    let constants = Constants {
+        proj_inverse: camera.projection_matrix().inverse(),
+        camera_position: camera.position,
+        view_inverse: camera.view_matrix().inverse(),
+        window_size: Vec2::new(
+            Ctx::window_width().unwrap() as f32,
+            Ctx::window_height().unwrap() as f32,
+        )
+    };
 
     // let depth = rg.0.image(ImageSize::FullScreen, Format::D32_SFLOAT, "depth");
     // let color = rg.0.image(ImageSize::FullScreen, Format::R32G32B32A32_SFLOAT, "color");
@@ -237,8 +216,8 @@ fn commands(
             .shader("voxel_raycast")
             .read(IMPORTED, world.handle)
             .write(IMPORTED, swapchain)
-            .constants(gconst.as_ref())
-            .dispatch(DispatchSize::FullScreen);
+            .constants(&constants)
+            .dispatch(DispatchSize::FractionalFullScreen(8, 8));
     });
 }
 
