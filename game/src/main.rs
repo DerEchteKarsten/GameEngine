@@ -67,6 +67,7 @@ fn update(
     //         log::debug!("parent: {:?}, child: {:?}", transform, qchildren.get(*i).unwrap().as_matrix());
     //     }
     // }
+    println!("{:?}", time.delta());
 }
 
 fn main() {

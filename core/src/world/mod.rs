@@ -23,15 +23,11 @@ use gpu_allocator::MemoryLocation;
 use lava::vkobjects::buffer::{Buffer, DynamicBuffer};
 #[cfg(not(feature = "no_raytracing"))]
 use lava::{
-    bindless::BindlessDescriptorHeap, state::Ctx,
+    state::Ctx,
     vkobjects::acceleration_structure::AccelerationStructure,
 };
-use rg::RenderGraph;
-#[cfg(not(feature = "no_raytracing"))]
-use rg::resources::ResourceHandle;
 
 use crate::{
-    Rg,
     assets::{Material, Mesh},
     components::transform::Transform,
 };
@@ -219,16 +215,8 @@ pub struct RenderWorld {
     pub num_instances: usize,
 }
 
-#[derive(Resource, Debug)]
-pub struct WorldResources {
-    pub tlas: Option<ResourceHandle>,
-    pub dgf_buffer: ResourceHandle,
-    pub material_buffer: ResourceHandle,
-    pub instance_buffer: ResourceHandle,
-    pub draw_tasks: ResourceHandle,
-}
 
-pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
+pub(super) fn init_world(mut cmd: Commands) {
     let mut acceleration_structure_scratch_memory = if Ctx::features().raytracing {
         Some(
             DynamicBuffer::new(
@@ -281,12 +269,6 @@ pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
         None
     };
 
-    let tlas_descriptor = if let Some(tlas) = &tlas {
-        Some(BindlessDescriptorHeap::get().allocate_acceleration_structure_handle(&tlas))
-    } else {
-        None
-    };
-
     let render_world = RenderWorld {
         loading: Vec::new(),
         instances: DynamicBuffer::new(
@@ -334,16 +316,5 @@ pub(super) fn init_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
         .unwrap(),
     ));
 
-    cmd.insert_resource(WorldResources {
-        dgf_buffer: rg.0.import(render_world.dgf_blocks.bindless_handle),
-        material_buffer: rg.0.import(render_world.materials.bindless_handle),
-        instance_buffer: rg.0.import(render_world.instances.bindless_handle),
-        draw_tasks: rg.0.import(render_world.draw_tasks.bindless_handle),
-        tlas: if let Some(desc) = tlas_descriptor {
-            Some(rg.0.import(desc))
-        } else {
-            None
-        },
-    });
     cmd.insert_resource(render_world);
 }

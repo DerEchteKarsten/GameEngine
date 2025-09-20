@@ -3,7 +3,7 @@
 
 use std::{ops::Deref, random::random};
 
-use ash::vk::{self, BufferUsageFlags, Format};
+use ash::vk::{self, BufferUsageFlags, Format, VideoChromaSubsamplingFlagsKHR};
 use bevy_a11y::AccessibilityPlugin;
 use bevy_app::{App, PostUpdate, PreStartup, PreUpdate, Startup, TaskPoolPlugin, Update};
 use bevy_asset::AssetPlugin;
@@ -21,25 +21,18 @@ use bevy_window::{
     WindowScaleFactorChanged,
 };
 use bevy_winit::{WinitPlugin, WinitWindows};
-use glam::{Mat4, Vec2, Vec3};
+use glam::{IVec3, Mat4, Vec2, Vec3};
 use gpu_allocator::MemoryLocation;
 use lava::{
-    bindless::BindlessDescriptorHeap,
     state::Ctx,
-    vkobjects::{buffer::Buffer, image::ImageSize},
-};
-use rg::{
-    IMPORTED, RenderGraph,
-    build::DispatchSize,
-    executions::{ComputePass, RasterPass, WorkSize2D},
-    resources::ResourceHandle,
+    vkobjects::{buffer::{Buffer, DynamicBuffer}, image::ImageSize},
 };
 
 use crate::{
     assets::MeshAssets,
     components::camera::{Camera, CameraPlugin},
     world::{
-        RenderWorld, STAGING_BUFFER_SIZE, StagingBuffer, WorldResources, add_instance, init_world,
+        RenderWorld, STAGING_BUFFER_SIZE, StagingBuffer, add_instance, init_world,
         load_assets, transform_child_changed, transform_parent_changed,
     },
 };
@@ -50,16 +43,12 @@ pub mod world;
 
 pub const INITIAL_WINDOW_SIZE: Vec2 = Vec2::new(1280.0, 720.0);
 
-#[derive(Resource)]
-struct Rg(RenderGraph);
 
 pub fn init(world: &mut World) {
     let windows = world.get_non_send_resource::<WinitWindows>().unwrap();
     let window = windows.windows.values().into_iter().last().unwrap().deref();
 
     lava::init(Some(&window), true).unwrap();
-
-    world.insert_resource(Rg(RenderGraph::new()));
 }
 
 pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
@@ -84,32 +73,89 @@ pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
 
 #[derive(Resource)]
 struct VoxelWorld {
-    buffer: Buffer,
-    data: Vec<u64>,
-    handle: ResourceHandle,
+    buffer: DynamicBuffer,
+    nodes: Vec<CompressedNode>,
+    leaf_data: Vec<u8>,
 }
 
-fn init_voxel_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
-    let mut data = vec![0];
+#[derive(Default, Clone, Copy)]
+#[repr(C)]
+struct CompressedNode {
+    child_ptr: u32,
+    pop_mask: u64,
+}
 
-    for x in 0..4 {
-        for y in 0..4 {
-            for z in 0..4 {
-                data[0] |= (random::<bool>() as u64) << (z * 16 + y * 4 + x);
-            }
+impl CompressedNode {
+    fn is_leaf(&self) -> bool {
+        self.child_ptr & 1 != 0
+    }
+    fn make_leaf(&mut self) {
+        self.child_ptr |= 1;
+    }
+    fn child_ptr(&self) -> u32 {
+        self.child_ptr >> 2
+    }
+    fn set_child_ptr(&mut self, ptr: u32) {
+        assert!(ptr < 0x3fff_ffff);
+        self.child_ptr = (self.child_ptr & 3) | ptr << 2;
+    }
+}
+
+
+fn build_voxel_world(data: &mut Vec<CompressedNode>, leaf_data: &mut Vec<u8>, mut scale: u32, pos: IVec3) -> CompressedNode {
+    let mut node = CompressedNode::default();
+    if scale == 2 {
+        assert!((pos.x | pos.y | pos.z) % 4 == 0);
+        node.make_leaf();
+        node.set_child_ptr((leaf_data.len() / 4) as u32);
+        node.pop_mask = random();
+        let num_children = node.pop_mask.count_ones();
+        let mut children_data = [1u8; 64];
+        // children_data[0..num_children as usize].copy_from_slice(&vec![1u8; num_children as usize]);
+
+        let size = (num_children + 3) & !3; //align as 4 bytes
+
+        leaf_data.extend_from_slice(&children_data[0..size as usize]);
+        return node;
+    }
+
+    scale -= 2;
+
+    let mut children = Vec::new();
+    for i in 0..64 {
+        let child_pos = IVec3::splat(i) >> IVec3::new(0, 4, 2) & 3;
+        let child = build_voxel_world(data, leaf_data, scale, pos + (child_pos << scale));
+
+        if child.pop_mask != 0 {
+            node.pop_mask |= 1u64 << i;
+            children.push(child);
         }
     }
 
-    let voxel_world = VoxelWorld {
-        buffer: Buffer::new_aligned(
+    node.set_child_ptr(data.len() as u32);
+    data.extend(children);
+
+    node
+}
+
+
+fn init_voxel_world(mut cmd: Commands) {
+    let mut data = Vec::new();
+    let mut leaf_data = Vec::new();
+    data.push(CompressedNode::default());
+    let root_node = build_voxel_world(&mut data, &mut leaf_data, 4, IVec3::new(0,0,0));
+    data[0] = root_node;
+
+    let mut voxel_world = VoxelWorld {
+        buffer: DynamicBuffer::new(
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
-            64,
+            10000,
             Some(64),
         )
         .unwrap(),
-        data,
-        handle: 0,
+        leaf_data,
+        nodes: data,
     };
 
     let staging_buffer = Buffer::new(
@@ -119,29 +165,38 @@ fn init_voxel_world(mut cmd: Commands, mut rg: ResMut<Rg>) {
     )
     .unwrap();
 
-    staging_buffer
-        .copy_data_to_buffer(&voxel_world.data)
-        .unwrap();
+    // staging_buffer
+    //     .copy_data_to_buffer(&voxel_world.data)
+    //     .unwrap();
 
-    Ctx::queue()
-        .execute_command_wait(|cmd_buf| {
-            let copy_region = vk::BufferCopy::default().size(64);
-            unsafe {
-                Ctx::device().cmd_copy_buffer(
-                    *cmd_buf,
-                    staging_buffer.buffer,
-                    voxel_world.buffer.buffer,
-                    &[copy_region],
-                );
-            }
-        })
-        .unwrap();
+    // Ctx::queue()
+    //     .execute_command_wait(|cmd_buf| {
+    //         let copy_region = vk::BufferCopy::default().size(64);
+    //         unsafe {
+    //             Ctx::device().cmd_copy_buffer(
+    //                 *cmd_buf,
+    //                 staging_buffer.buffer,
+    //                 voxel_world.buffer.buffer,
+    //                 &[copy_region],
+    //             );
+    //         }
+    //     })
+    //     .unwrap();
+    let mut node = CompressedNode::default();
+    node.set_child_ptr(3);
+    node.make_leaf();
+    node.pop_mask = u64::MAX;
+    let nodes = vec![
+        node
+    ];
+    let leaf_data = vec![
+        1u8; 128
+    ];
+    voxel_world.buffer.push(&staging_buffer, &nodes);
+    voxel_world.buffer.push(&staging_buffer, &leaf_data);
 
-    let handle = BindlessDescriptorHeap::get().allocate_buffer_handle(&voxel_world.buffer);
-
-    let handle = rg.0.import(handle);
+    
     cmd.insert_resource(VoxelWorld {
-        handle,
         ..voxel_world
     });
     cmd.insert_resource(StagingBuffer(staging_buffer));
@@ -157,9 +212,6 @@ struct Constants {
 }
 
 fn commands(
-    mut rg: ResMut<Rg>,
-    // world: Res<WorldResources>,
-    // render_world: Res<RenderWorld>,
     world: Res<VoxelWorld>,
     query: Query<&Camera>,
 ) {
@@ -177,8 +229,7 @@ fn commands(
     // let depth = rg.0.image(ImageSize::FullScreen, Format::D32_SFLOAT, "depth");
     // let color = rg.0.image(ImageSize::FullScreen, Format::R32G32B32A32_SFLOAT, "color");
 
-    rg.0.draw_frame(|rg, swapchain_image_index| {
-        let swapchain = rg.get_swapchain(swapchain_image_index);
+    Ctx::next_frame(&mut |mut cmd, swapchain_image| {
         // let test2 = RasterPass::new(&mut rg, "test2")
         //     .fragment("fragment", "bindless_test2")
         //     .mesh("mesh", "bindless_test2")
@@ -212,13 +263,14 @@ fn commands(
         //     .write(IMPORTED, swapchain)
         //     .dispatch(DispatchSize::FullScreen);
 
-        ComputePass::new(rg, "VoxelRaytrace")
-            .shader("voxel_raycast")
-            .read(IMPORTED, world.handle)
-            .write(IMPORTED, swapchain)
-            .constants(&constants)
-            .dispatch(DispatchSize::FractionalFullScreen(8, 8));
-    });
+        cmd.compute()
+            .shader_path("gbuffer")
+            .constant(&constants)
+            .read(&world.buffer)
+            .write(&swapchain_image)
+            .dispatch_fullscreen();
+        Ok(())
+    }).unwrap();
 }
 
 pub fn CorePlugin(app: &mut App) {
