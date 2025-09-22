@@ -41,7 +41,7 @@ void main(uint3 threadId: SV_DispatchThreadID) {
     var world = VoxelMap(4, bindings.world);
 
     let direction = view_dir(pixelCoord);
-    let hit_info = world.RayCast(int3(0), bindings.const.camara_position.xyz / float(bindings.const.tree_scale), direction, true);
+    let hit_info = world.RayCast(int3(0), bindings.const.camara_position.xyz / float(bindings.const.tree_scale), direction, false);
 
     float3 color;
     if (!hit_info.Miss) {

@@ -1,7 +1,7 @@
 #![feature(f16)]
 #![feature(random)]
 
-use std::{ops::Deref, path::PathBuf, random::random};
+use std::{collections::HashMap, ops::Deref, path::PathBuf, random::random};
 
 use ash::vk::{self, BufferUsageFlags, Format, VideoChromaSubsamplingFlagsKHR};
 use bevy_a11y::AccessibilityPlugin;
@@ -21,6 +21,7 @@ use bevy_window::{
     WindowScaleFactorChanged,
 };
 use bevy_winit::{WinitPlugin, WinitWindows};
+use fastnbt::{from_bytes, DeOpts, Value};
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec3Swizzles, Vec4};
 use gpu_allocator::MemoryLocation;
 use lava::{
@@ -29,11 +30,10 @@ use lava::{
 };
 
 use crate::{
-    assets::MeshAssets,
+    assets::{MeshAssets},
     components::camera::{Camera, CameraPlugin},
     world::{
-        RenderWorld, STAGING_BUFFER_SIZE, StagingBuffer, add_instance, init_world,
-        load_assets, transform_child_changed, transform_parent_changed,
+        add_instance, init_world, load_assets, transform_child_changed, transform_parent_changed, RenderWorld, StagingBuffer, STAGING_BUFFER_SIZE
     },
 };
 
@@ -100,29 +100,114 @@ impl CompressedNode {
     }
 }
 
-const MAX_DEPTH: u32 = 4;
+const MAX_DEPTH: u32 = 3;
+
+
+fn as_i8<'a>(v: &'a Value) -> i8 {
+    match v {
+        Value::Byte(v) => *v,
+        _ => {unreachable!()}
+    }
+}
+
+fn as_compound<'a>(v: &'a Value) -> &'a HashMap<String, Value> {
+    match v {
+        Value::Compound(v) => v,
+        _ => {unreachable!()}
+    }
+}
+
+fn bits_per_block_from_palette(palette_len: usize) -> u32 {
+    let mut bpb = (usize::BITS - (palette_len.saturating_sub(1)).leading_zeros()) as u32;
+    if bpb < 4 { bpb = 4; }
+    bpb
+}
+
+fn get_packed_index(block_states: &[i64], idx: usize, bpb: u32) -> u64 {
+    let block_states: &[u64] = unsafe {
+        std::slice::from_raw_parts(block_states.as_ptr() as *const u64, block_states.len())
+    };
+
+    let start_bit = (idx as u64) * (bpb as u64);
+    let word = (start_bit / 64) as usize;
+    let bit_off = (start_bit % 64) as u32;
+    let mask = if bpb == 64 { u64::MAX } else { (1u64 << bpb) - 1 };
+
+    let first = block_states.get(word).copied().unwrap_or(0);
+    let mut value = first >> bit_off;
+
+    let spill = (bit_off + bpb) > 64;
+    if spill {
+        let next = block_states.get(word + 1).copied().unwrap_or(0);
+        let lo_bits = 64 - bit_off;
+        value |= next << lo_bits;
+    }
+    value & mask
+}
 
 pub fn generate_random_tree() -> Vec<CompressedNode> {
-    let file = fastanvil::RegionFileLoader::new(PathBuf::from("./minecraft"));
+    let file = std::fs::File::open("./core/minecraft/r.0.0.mca").unwrap();
+    let mut region = fastanvil::Region::from_stream(file).unwrap();
 
-    fastanvil::render_region(x, z, loader, renderer).unwrap();
-    
+    let chunk = region.read_chunk(0, 0).unwrap().unwrap();
+
+    let root: Value = from_bytes(&chunk).unwrap();
+    let level = as_compound(&root);
+
+    let mut chunk_data = [[false; 16*16*16]; 20];
+
+    if let Some(Value::List(sections)) = level.get("sections") {
+        for sec in sections {
+            let sec = as_compound(sec);
+
+            let y = as_i8(sec.get("Y").unwrap());
+            let block_states = as_compound(sec.get("block_states").unwrap());
+            let palette = block_states.get("palette");
+            let data = block_states.get("data");
+
+            if let (Some(Value::List(palette)), Some(Value::LongArray(data))) = (palette, data) {
+                let parsed_palette: Vec<(String, Option<&HashMap<String, Value>>)> =
+                    palette.iter().map(|entry| {
+                        let c = as_compound(entry);
+                        let name = c.get("Name").and_then(Value::as_str).unwrap_or("").to_string();
+                        let props = c.get("Properties").map(|e| as_compound(e));
+                        (name, props)
+                    }).collect();
+
+                let bpb = bits_per_block_from_palette(parsed_palette.len());
+                
+                for i in 0..(16*16*16) {
+                    let pal_idx = get_packed_index(&data[..], i, bpb) as usize;
+                    if let Some((name, _props)) = parsed_palette.get(pal_idx) {
+                        chunk_data[(-y) as usize][i] = name != "minecraft:air";
+                    }
+                }
+            }
+        }
+    }
+
     let mut nodes: Vec<CompressedNode> = Vec::with_capacity(1024);
     nodes.push(CompressedNode {data: [0;3]});
 
     fn build(nodes: &mut Vec<CompressedNode>, depth: u32) -> CompressedNode {
         if depth >= MAX_DEPTH {
-            let mask = random::<u64>().wrapping_add(1);
+            let mut mask = random::<u64>();
+            if mask == 0 {
+                mask += 1;
+            }
             return CompressedNode::new_leaf(mask);
         }
 
-        let child_mask = random::<u64>().wrapping_add(1);
+        let mut child_mask = random::<u64>();
+        if child_mask == 0 {
+            child_mask += 1;
+        }
         let num_children = child_mask.count_ones() as usize;
 
         let child_ptr = nodes.len();
         nodes.extend(vec![CompressedNode::default(); num_children]);
 
-        for i in 0..child_mask.count_ones() {
+        for i in 0..num_children {
             nodes[i as usize + child_ptr] = build(nodes, depth + 1);
         }
         
@@ -143,7 +228,7 @@ fn init_voxel_world(mut cmd: Commands) {
         buffer: DynamicBuffer::new(
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
-            1<<30,
+            1<<20,
             None
         )
         .unwrap(),
@@ -154,7 +239,7 @@ fn init_voxel_world(mut cmd: Commands) {
     let staging_buffer = Buffer::new(
         BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::TRANSFER_DST,
         MemoryLocation::CpuToGpu,
-        1<<26,
+        1<<20,
     )
     .unwrap();
 

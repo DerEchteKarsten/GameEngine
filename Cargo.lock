@@ -992,11 +992,13 @@ dependencies = [
  "bincode",
  "dgfsdk-rs",
  "fastanvil",
+ "fastnbt",
  "glam 0.30.5",
  "gltf",
  "gpu-allocator",
  "lava",
  "log",
+ "serde",
 ]
 
 [[package]]
