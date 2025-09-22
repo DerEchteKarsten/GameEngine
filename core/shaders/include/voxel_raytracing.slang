@@ -145,6 +145,8 @@ public struct Node {
     }
 }
 
+groupshared uint gs_stack[WORKGROUP_SIZE][11];
+
 public struct VoxelMap {
     public uint TreeScale;
     public Node* TreeNodes;
@@ -163,7 +165,7 @@ public struct VoxelMap {
         return hit;
     }
 
-    private HitInfo Traversal(float3 origin, float3 dir, bool coarse) {
+    public HitInfo Traversal(float3 origin, float3 dir, bool coarse) {
         uint stack[11];
         int scaleExp = 21;  // 0.25
 
@@ -254,12 +256,11 @@ public struct VoxelMap {
         return hit;
     }
 
-    private HitInfo Traversal_OctMirror(float3 origin, float3 dir, bool coarse) {
+    public HitInfo Traversal_OctMirror(float3 origin, float3 dir, bool coarse) {
         uint groupId = spirv_asm {
             OpCapability VariablePointers;
             result:$$uint = OpLoad builtin(LocalInvocationIndex:uint);
         };
-        static groupshared uint gs_stack[64][11];
         //uint stack[11];
         uint* stack = &gs_stack[groupId][0];
         int scaleExp = 21;  // 0.25
@@ -506,7 +507,7 @@ public struct VoxelMap {
 
     uint8_t ReadMaterialId(Node node, uint childIdx) {
         uint8_t *data = (uint8_t *)TreeNodes;
-        return data[node.ChildPtr * 4 + prefix_popcnt64(node.PopMask, childIdx)];
+        return 1;//data[node.ChildPtr * 4 + prefix_popcnt64(node.PopMask, childIdx)];
     }
     static int GetNodeCellIndex(float3 pos, int scale_exp) {
         uint3 cellPos = asuint(pos) >> scale_exp & 3;

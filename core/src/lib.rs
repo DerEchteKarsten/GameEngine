@@ -1,7 +1,7 @@
 #![feature(f16)]
 #![feature(random)]
 
-use std::{ops::Deref, random::random};
+use std::{ops::Deref, path::PathBuf, random::random};
 
 use ash::vk::{self, BufferUsageFlags, Format, VideoChromaSubsamplingFlagsKHR};
 use bevy_a11y::AccessibilityPlugin;
@@ -21,7 +21,7 @@ use bevy_window::{
     WindowScaleFactorChanged,
 };
 use bevy_winit::{WinitPlugin, WinitWindows};
-use glam::{IVec3, Mat4, Vec2, Vec3};
+use glam::{IVec3, Mat4, Vec2, Vec3, Vec3Swizzles, Vec4};
 use gpu_allocator::MemoryLocation;
 use lava::{
     state::Ctx,
@@ -78,122 +78,88 @@ struct VoxelWorld {
     leaf_data: Vec<u8>,
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
-struct CompressedNode {
-    child_ptr: u32,
-    pop_mask: u64,
+pub struct CompressedNode {
+    pub data: [u32; 3],
 }
 
 impl CompressedNode {
-    fn is_leaf(&self) -> bool {
-        self.child_ptr & 1 != 0
+    fn new_leaf(mask: u64) -> Self {
+        // bit0 = 1 (IsLeaf), ChildPtr unused (0)
+        CompressedNode { data: [1u32, mask as u32, (mask >> 32) as u32] }
     }
-    fn make_leaf(&mut self) {
-        self.child_ptr |= 1;
+    fn new_internal(child_ptr: u32, child_mask: u64) -> Self {
+        CompressedNode { data: [child_ptr << 2, child_mask as u32, (child_mask >> 32) as u32] }
     }
-    fn child_ptr(&self) -> u32 {
-        self.child_ptr >> 2
-    }
-    fn set_child_ptr(&mut self, ptr: u32) {
-        assert!(ptr < 0x3fff_ffff);
-        self.child_ptr = (self.child_ptr & 3) | ptr << 2;
+
+    pub fn is_leaf(&self) -> bool { (self.data[0] & 1) != 0 }
+    pub fn child_ptr(&self) -> u32 { self.data[0] >> 2 }
+    pub fn pop_mask(&self) -> u64 {
+        (self.data[1] as u64) | ((self.data[2] as u64) << 32)
     }
 }
 
+const MAX_DEPTH: u32 = 4;
 
-fn build_voxel_world(data: &mut Vec<CompressedNode>, leaf_data: &mut Vec<u8>, mut scale: u32, pos: IVec3) -> CompressedNode {
-    let mut node = CompressedNode::default();
-    if scale == 2 {
-        assert!((pos.x | pos.y | pos.z) % 4 == 0);
-        node.make_leaf();
-        node.set_child_ptr((leaf_data.len() / 4) as u32);
-        node.pop_mask = random();
-        let num_children = node.pop_mask.count_ones();
-        let mut children_data = [1u8; 64];
-        // children_data[0..num_children as usize].copy_from_slice(&vec![1u8; num_children as usize]);
+pub fn generate_random_tree() -> Vec<CompressedNode> {
+    let file = fastanvil::RegionFileLoader::new(PathBuf::from("./minecraft"));
 
-        let size = (num_children + 3) & !3; //align as 4 bytes
+    fastanvil::render_region(x, z, loader, renderer).unwrap();
+    
+    let mut nodes: Vec<CompressedNode> = Vec::with_capacity(1024);
+    nodes.push(CompressedNode {data: [0;3]});
 
-        leaf_data.extend_from_slice(&children_data[0..size as usize]);
-        return node;
-    }
-
-    scale -= 2;
-
-    let mut children = Vec::new();
-    for i in 0..64 {
-        let child_pos = IVec3::splat(i) >> IVec3::new(0, 4, 2) & 3;
-        let child = build_voxel_world(data, leaf_data, scale, pos + (child_pos << scale));
-
-        if child.pop_mask != 0 {
-            node.pop_mask |= 1u64 << i;
-            children.push(child);
+    fn build(nodes: &mut Vec<CompressedNode>, depth: u32) -> CompressedNode {
+        if depth >= MAX_DEPTH {
+            let mask = random::<u64>().wrapping_add(1);
+            return CompressedNode::new_leaf(mask);
         }
+
+        let child_mask = random::<u64>().wrapping_add(1);
+        let num_children = child_mask.count_ones() as usize;
+
+        let child_ptr = nodes.len();
+        nodes.extend(vec![CompressedNode::default(); num_children]);
+
+        for i in 0..child_mask.count_ones() {
+            nodes[i as usize + child_ptr] = build(nodes, depth + 1);
+        }
+        
+        CompressedNode::new_internal(child_ptr as u32, child_mask)
     }
 
-    node.set_child_ptr(data.len() as u32);
-    data.extend(children);
-
-    node
+    let _root = build(&mut nodes, 0);
+    nodes[0] = _root;
+    nodes
 }
 
 
 fn init_voxel_world(mut cmd: Commands) {
-    let mut data = Vec::new();
-    let mut leaf_data = Vec::new();
-    data.push(CompressedNode::default());
-    let root_node = build_voxel_world(&mut data, &mut leaf_data, 4, IVec3::new(0,0,0));
-    data[0] = root_node;
 
+    let nodes = generate_random_tree();
+    log::info!("Generated {} Nodes", nodes.len());
     let mut voxel_world = VoxelWorld {
         buffer: DynamicBuffer::new(
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
-            10000,
-            Some(64),
+            1<<30,
+            None
         )
         .unwrap(),
-        leaf_data,
-        nodes: data,
+        leaf_data: vec![],
+        nodes,
     };
 
     let staging_buffer = Buffer::new(
         BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::TRANSFER_DST,
         MemoryLocation::CpuToGpu,
-        STAGING_BUFFER_SIZE,
+        1<<26,
     )
     .unwrap();
 
-    // staging_buffer
-    //     .copy_data_to_buffer(&voxel_world.data)
-    //     .unwrap();
-
-    // Ctx::queue()
-    //     .execute_command_wait(|cmd_buf| {
-    //         let copy_region = vk::BufferCopy::default().size(64);
-    //         unsafe {
-    //             Ctx::device().cmd_copy_buffer(
-    //                 *cmd_buf,
-    //                 staging_buffer.buffer,
-    //                 voxel_world.buffer.buffer,
-    //                 &[copy_region],
-    //             );
-    //         }
-    //     })
-    //     .unwrap();
-    let mut node = CompressedNode::default();
-    node.set_child_ptr(3);
-    node.make_leaf();
-    node.pop_mask = u64::MAX;
-    let nodes = vec![
-        node
-    ];
-    let leaf_data = vec![
-        1u8; 128
-    ];
-    voxel_world.buffer.push(&staging_buffer, &nodes);
-    voxel_world.buffer.push(&staging_buffer, &leaf_data);
+    voxel_world.buffer.push(&staging_buffer, &voxel_world.nodes);
+    // voxel_world.buffer.push(&staging_buffer, &voxel_world.leaf_data);
 
     
     cmd.insert_resource(VoxelWorld {
@@ -208,7 +174,9 @@ struct Constants {
     proj_inverse: Mat4,
     view_inverse: Mat4,
     window_size: Vec2,
-    camera_position: Vec3,
+    tree_scale: u32,
+    pad: u32,
+    camera_position: Vec4,
 }
 
 fn commands(
@@ -218,18 +186,20 @@ fn commands(
     let camera = query.single().unwrap();
     let constants = Constants {
         proj_inverse: camera.projection_matrix().inverse(),
-        camera_position: camera.position,
+        camera_position: camera.position.xyzx(),
         view_inverse: camera.view_matrix().inverse(),
         window_size: Vec2::new(
             Ctx::window_width().unwrap() as f32,
             Ctx::window_height().unwrap() as f32,
-        )
+        ),
+        tree_scale: 1 << MAX_DEPTH,
+        pad: 0,
     };
 
     // let depth = rg.0.image(ImageSize::FullScreen, Format::D32_SFLOAT, "depth");
     // let color = rg.0.image(ImageSize::FullScreen, Format::R32G32B32A32_SFLOAT, "color");
 
-    Ctx::next_frame(&mut |mut cmd, swapchain_image| {
+    Ctx::next_frame(&mut |cmd, swapchain_image| {
         // let test2 = RasterPass::new(&mut rg, "test2")
         //     .fragment("fragment", "bindless_test2")
         //     .mesh("mesh", "bindless_test2")
@@ -268,7 +238,9 @@ fn commands(
             .constant(&constants)
             .read(&world.buffer)
             .write(&swapchain_image)
-            .dispatch_fullscreen();
+            .dispatch_fractional_fullscreen(8, 4);
+
+        cmd.present(swapchain_image);
         Ok(())
     }).unwrap();
 }
@@ -299,15 +271,15 @@ pub fn CorePlugin(app: &mut App) {
                     ..Default::default()
                 }),
             },
-            AssetPlugin {
-                mode: bevy_asset::AssetMode::Processed,
-                ..Default::default()
-            },
+            // AssetPlugin {
+            //     mode: bevy_asset::AssetMode::Processed,
+            //     ..Default::default()
+            // },
             WinitPlugin::<bevy_winit::WakeUp>::default(),
             TimePlugin,
             CameraPlugin,
             TaskPoolPlugin::default(),
-            MeshAssets,
+            // MeshAssets,
         ))
         .add_systems(PreUpdate, on_resize)
         // .add_systems(

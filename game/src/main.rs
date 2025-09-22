@@ -23,7 +23,7 @@ use glam::{Vec3, vec3};
 #[derive(Component)]
 struct Model;
 
-fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
+fn init(mut cmd: Commands) {
     let controles = Controls {
         ..Default::default()
     };
