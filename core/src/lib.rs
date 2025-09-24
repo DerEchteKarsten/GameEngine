@@ -224,19 +224,37 @@ fn index_to_3d(mut idx: i32) -> IVec3 {
 //     }
 // }
 
+#[derive(Default, Clone)]
+struct Section {
+    mask: u64,
+    children: Vec<u64>,
+}
+
+#[derive(Default, Clone)]
+struct Chunk {
+    sections: Vec<Section>,
+    mask: u32,
+}
+
 pub fn generate_random_tree() -> Vec<CompressedNode> {
     let file = std::fs::File::open("./core/minecraft/r.0.0.mca").unwrap();
     let mut region = fastanvil::Region::from_stream(file).unwrap();
 
 
+    let render_distance = 32;
     
-    let mut chunk_data = [[[true; 16*16*16]; 20]; 10*10];
+    let mut chunk_data = vec![Chunk::default(); render_distance * render_distance];
     
-    for x in 0..10 {
-        for z in 0..10 {
-            let chunk = region.read_chunk(x, z).unwrap().unwrap();
-            let root: Value = from_bytes(&chunk).unwrap();
+    for x in 0..render_distance {
+        for z in 0..render_distance {
+            let root = {
+                let chunk = region.read_chunk(x, z).unwrap().unwrap();
+                from_bytes(&chunk).unwrap()
+            };
             let sections = as_list(as_compound(&root).get("sections").unwrap());
+            let mut mask = 0;
+
+            let m_sections = Vec::new();
             for sec in sections {
                 let sec = as_compound(sec);
     
@@ -246,6 +264,8 @@ pub fn generate_random_tree() -> Vec<CompressedNode> {
                 let data = block_states.get("data");
     
                 if let (Some(Value::List(palette)), Some(Value::LongArray(data))) = (palette, data) {
+                    section_mask |= 1 << (y+4);
+
                     let parsed_palette: Vec<(String, Option<&HashMap<String, Value>>)> = palette
                         .iter()
                         .map(|entry| {
@@ -261,15 +281,20 @@ pub fn generate_random_tree() -> Vec<CompressedNode> {
                         .collect();
     
                     let bpb = bits_per_block_from_palette(parsed_palette.len());
-    
+
+                    let mut mask = 0; 
+                    let mut children = Vec::new();
                     for i in 0..(16 * 16 * 16) {
                         let pal_idx = get_packed_index(&data[..], i, bpb) as usize;
+                        
                         if let Some((name, _props)) = parsed_palette.get(pal_idx) {
-                            chunk_data[x+z*10][(y + 4) as usize][i] = name != "minecraft:air";
+
                         }
                     }
+                    m_sections.push(Section { mask: section_mask, children });
                 }
             }
+            chunk_data[x+z*render_distance].sections = m_sections;
         }
     }
 
@@ -279,7 +304,7 @@ pub fn generate_random_tree() -> Vec<CompressedNode> {
         nodes: &mut Vec<CompressedNode>,
         depth: u32,
         pos: IVec3,
-        chunk: &[[[bool; 16 * 16 * 16]; 20]; 10 * 10],
+        chunk: &[[[bool; 16 * 16 * 16]; 24]],
     ) -> CompressedNode {
         if depth >= MAX_DEPTH {
             let mut mask = 0;
@@ -288,11 +313,11 @@ pub fn generate_random_tree() -> Vec<CompressedNode> {
                 let sub_chunk_coordinates = child_pos % 16;
                 let chunk_coordinates = child_pos / 10;
                 let index = sub_chunk_coordinates.x
-                    + sub_chunk_coordinates.y * 16
+                    + (15 - sub_chunk_coordinates.y) * 16
                     + (15 - sub_chunk_coordinates.z) * 16 * 16;
 
                 if chunk_coordinates.x >= 10
-                    || child_pos.z > 320
+                    || child_pos.z >= 320
                     || chunk_coordinates.y >= 10
                     || chunk_coordinates.x < 0
                     || chunk_coordinates.z < 0
@@ -301,7 +326,7 @@ pub fn generate_random_tree() -> Vec<CompressedNode> {
                     break;
                 }
                 // mask |= 1 << i;
-                if chunk[(chunk_coordinates.x + chunk_coordinates.y*10) as usize][19 - (child_pos.z as usize / 16)][index as usize] {
+                if chunk[(chunk_coordinates.x + chunk_coordinates.y*10) as usize][23 - (child_pos.z as usize / 16)][index as usize] {
                     mask |= 1 << i;
                 }
             }
