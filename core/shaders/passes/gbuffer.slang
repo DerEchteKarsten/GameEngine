@@ -1,6 +1,6 @@
 #include "bindless.slang"
 #include "datatypes.slang"
-
+#include "random.slang"
 #define WORKGROUP_SIZE 32
 #include "voxel_raytracing.slang"
 
@@ -35,17 +35,18 @@ float3 view_dir(uint2 pixelCoord) {
 [numthreads(8, 4, 1)]
 void main(uint3 threadId: SV_DispatchThreadID) {
     var pixelCoord = threadId.xy;
-
     // printf("%i", bindings.const.tree_scale);
 
-    var world = VoxelMap(4, bindings.world);
+    var world = VoxelMap(6, bindings.world);
 
     let direction = view_dir(pixelCoord);
-    let hit_info = world.RayCast(int3(0), bindings.const.camara_position.xyz / float(bindings.const.tree_scale), direction, false);
+    let hit_info = world.RayCast(int3(0), bindings.const.camara_position.xyz * 4.0, direction, false);
 
     float3 color;
     if (!hit_info.Miss) {
-        color = float3((dot(hit_info.Normal, normalize(float3(0.3, -0.8, 0.5))) + 1.0) / 2.0);
+        var rnd = RandomSamplerState(uint2(0,0), hit_info.voxelId);
+        let vox_color = float3(rnd.uniform_float(), rnd.uniform_float(), rnd.uniform_float());
+        color = float3(((dot(hit_info.Normal, normalize(float3(0.3, -0.8, 0.5))) + 1.0) / 2.0) * vox_color);
     } else {
         color = direction;
     }

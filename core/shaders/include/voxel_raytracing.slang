@@ -18,6 +18,7 @@ public struct HitInfo {
     public float3 Normal;
     public float2 FaceUV;
     public uint MaterialId;
+    public uint voxelId;
 
     public property bool Miss {
         get { return MaterialId == 0; }
@@ -350,7 +351,7 @@ public struct VoxelMap {
         
         if (node.IsLeaf && scaleExp <= 21) {
             pos = GetMirroredPos(pos, dir, false);
-
+            hit.voxelId = node.ChildPtr + childIdx;
             hit.MaterialId = ReadMaterialId(node, childIdx);
             hit.Pos = pos;
 

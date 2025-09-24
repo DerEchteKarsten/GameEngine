@@ -22,10 +22,7 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 use lava::vkobjects::buffer::{Buffer, DynamicBuffer};
 #[cfg(not(feature = "no_raytracing"))]
-use lava::{
-    state::Ctx,
-    vkobjects::acceleration_structure::AccelerationStructure,
-};
+use lava::{state::Ctx, vkobjects::acceleration_structure::AccelerationStructure};
 
 use crate::{
     assets::{Material, Mesh},
@@ -35,7 +32,7 @@ use crate::{
 const INSTANCE_BUFFER_CAPACITY: u64 = 1048576; //TODO
 const VERTEX_BUFFER_CAPACITY: u64 = 1048576; //TODO
 const ACCELERATION_STRUCTURE_SCRATCH_MEMORY: u64 = 1048576; //TODO
-pub const STAGING_BUFFER_SIZE: u64 = 2^24; //TODO
+pub const STAGING_BUFFER_SIZE: u64 = 2 ^ 24; //TODO
 const MESHLET_BUFFER_CAPACITY: u64 = 1048576;
 const INDEX_BUFFER_CAPACITY: u64 = 1048576;
 const INSTANCE_INDEX_BUFFER_CAPACITY: u64 = 1048576;
@@ -214,7 +211,6 @@ pub struct RenderWorld {
     pub num_instance_indices: usize,
     pub num_instances: usize,
 }
-
 
 pub(super) fn init_world(mut cmd: Commands) {
     let mut acceleration_structure_scratch_memory = if Ctx::features().raytracing {
