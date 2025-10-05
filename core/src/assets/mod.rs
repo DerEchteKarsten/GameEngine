@@ -124,7 +124,7 @@ pub struct SavedMesh {
     pub num_geometries: u32,
 }
 
-const CONFIG: Configuration<bincode::config::BigEndian> = bincode::config::standard()
+pub const CONFIG: Configuration<bincode::config::BigEndian> = bincode::config::standard()
     .with_variable_int_encoding()
     .with_big_endian()
     .with_no_limit();

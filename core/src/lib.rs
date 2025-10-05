@@ -2,10 +2,7 @@
 #![feature(random)]
 
 use std::{
-    collections::{HashMap, HashSet},
-    ops::Deref,
-    path::PathBuf,
-    random::random,
+    collections::{HashMap, HashSet}, fs, io::{BufReader, BufWriter, Read, Seek, Write}, ops::Deref, path::PathBuf, random::random
 };
 
 use ash::vk::{self, BufferUsageFlags, Format, VideoChromaSubsamplingFlagsKHR};
@@ -29,6 +26,7 @@ use bevy_winit::{WinitPlugin, WinitWindows};
 use fastnbt::{DeOpts, Value, from_bytes};
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec3Swizzles, Vec4};
 use gpu_allocator::MemoryLocation;
+use image::{DynamicImage, ImageBuffer, Rgb};
 use lava::{
     state::Ctx,
     vkobjects::{
@@ -36,13 +34,14 @@ use lava::{
         image::ImageSize,
     },
 };
+use noise::{MultiFractal, NoiseFn, Perlin};
+use smallvec::SmallVec;
 
 use crate::{
-    assets::MeshAssets,
+    assets::{MeshAssets, CONFIG},
     components::camera::{Camera, CameraPlugin},
     world::{
-        RenderWorld, STAGING_BUFFER_SIZE, StagingBuffer, add_instance, init_world, load_assets,
-        transform_child_changed, transform_parent_changed,
+        add_instance, init_world, load_assets, transform_child_changed, transform_parent_changed, RenderWorld, StagingBuffer, STAGING_BUFFER_SIZE
     },
 };
 
@@ -86,27 +85,30 @@ struct VoxelWorld {
     leaf_data: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, bincode::Encode, bincode::Decode)]
 #[repr(C)]
 pub struct CompressedNode {
     pub data: [u32; 3],
 }
 
 impl CompressedNode {
-    fn new_leaf(child_ptr: u32, mask: u64) -> Self {
+    fn new_leaf(child_ptr: u32, mask: u64, full: bool) -> Self {
         // bit0 = 1 (IsLeaf), ChildPtr unused (0)
         CompressedNode {
-            data: [(child_ptr << 2) | 1u32, mask as u32, (mask >> 32) as u32],
+            data: [(child_ptr << 2) | (full as u32) << 1 | 1u32, mask as u32, (mask >> 32) as u32],
         }
     }
-    fn new_internal(child_ptr: u32, child_mask: u64) -> Self {
+    fn new_internal(child_ptr: u32, child_mask: u64, full: bool) -> Self {
         CompressedNode {
-            data: [child_ptr << 2, child_mask as u32, (child_mask >> 32) as u32],
+            data: [child_ptr << 2 | (full as u32) << 1, child_mask as u32, (child_mask >> 32) as u32],
         }
     }
 
     pub fn is_leaf(&self) -> bool {
         (self.data[0] & 1) != 0
+    }
+    pub fn is_full(&self) -> bool {
+        (self.data[0] & 0b10) != 0
     }
     pub fn child_ptr(&self) -> u32 {
         self.data[0] >> 2
@@ -118,68 +120,6 @@ impl CompressedNode {
 
 const MAX_DEPTH: u32 = 4;
 
-fn as_i8<'a>(v: &'a Value) -> i8 {
-    match v {
-        Value::Byte(v) => *v,
-        _ => {
-            unreachable!()
-        }
-    }
-}
-
-fn as_compound<'a>(v: &'a Value) -> &'a HashMap<String, Value> {
-    match v {
-        Value::Compound(v) => v,
-        _ => {
-            unreachable!()
-        }
-    }
-}
-
-fn as_list<'a>(v: &'a Value) -> &'a Vec<Value> {
-    match v {
-        Value::List(v) => v,
-        _ => {
-            unreachable!()
-        }
-    }
-}
-
-
-fn bits_per_block_from_palette(palette_len: usize) -> u32 {
-    let mut bpb = (usize::BITS - (palette_len.saturating_sub(1)).leading_zeros()) as u32;
-    if bpb < 4 {
-        bpb = 4;
-    }
-    bpb
-}
-
-fn get_packed_index(block_states: &[i64], idx: usize, bpb: u32) -> u64 {
-    let block_states: &[u64] = unsafe {
-        std::slice::from_raw_parts(block_states.as_ptr() as *const u64, block_states.len())
-    };
-
-    let start_bit = (idx as u64) * (bpb as u64);
-    let word = (start_bit / 64) as usize;
-    let bit_off = (start_bit % 64) as u32;
-    let mask = if bpb == 64 {
-        u64::MAX
-    } else {
-        (1u64 << bpb) - 1
-    };
-
-    let first = block_states.get(word).copied().unwrap_or(0);
-    let mut value = first >> bit_off;
-
-    let spill = (bit_off + bpb) > 64;
-    if spill {
-        let next = block_states.get(word + 1).copied().unwrap_or(0);
-        let lo_bits = 64 - bit_off;
-        value |= next << lo_bits;
-    }
-    value & mask
-}
-
 fn index_to_3d(mut idx: i32) -> IVec3 {
     assert!(idx < 4 * 4 * 4, "Index out of bounds");
     let x = idx % 4;
@@ -190,177 +130,96 @@ fn index_to_3d(mut idx: i32) -> IVec3 {
     IVec3::new(x, y, z)
 }
 
-// enum WorldNode {
-//     Leaf([u32; 16]),
-//     Children(Vec<WorldNode>),
-// }
 
-// impl WorldNode {
-//     fn place_block(&mut self, pos: IVec3, value: u8) {
-//         fn rec(node: &mut WorldNode, pos: IVec3, value: u8, current_pos: IVec3, depth: u32) {
-//             match node {
-//                 WorldNode::Children(children) => {
-//                     children.iter_mut().enumerate().for_each(|(i, e)| {
-//                         rec(e,
-//                             pos,
-//                             value,
-//                             pos + index_to_3d(i as i32)
-//                                 * (4_i32.pow(MAX_DEPTH as u32 - depth as u32)),
-//                             depth + 1,
-//                         )
-//                     })
-//                 }
-//                 WorldNode::Leaf(leaf) => {
-//                     for i in 0..64 {
-//                         if current_pos == pos + index_to_3d(i) {
-//                             leaf[(i / 4) as usize] &= !(0xff << (i % 4));
-//                             leaf[(i / 4) as usize] |= (value as u32) << (i % 4);
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//         rec(self, pos, value, IVec3::splat(0), 0);
-//     }
-// }
-
-#[derive(Default, Clone)]
-struct Section {
-    mask: u64,
-    children: Vec<u64>,
-}
-
-#[derive(Default, Clone)]
-struct Chunk {
-    sections: Vec<Section>,
-    mask: u32,
+fn side_length(value: u32) -> u32{
+    1<<(2*(value))
 }
 
 pub fn generate_random_tree() -> Vec<CompressedNode> {
-    let file = std::fs::File::open("./core/minecraft/r.0.0.mca").unwrap();
-    let mut region = fastanvil::Region::from_stream(file).unwrap();
+    let hight_map = image::open("./core/minecraft/hightmap_small.png").unwrap().to_rgb32f();
+    let mips = vec![hight_map];
+    let mut level = 0;
+    loop {
+        let (image_width, image_height) = mips[level].dimensions();
+        let mut image = image::ImageBuffer::new(image_width/2, image_height/2);
+        
+        for x in 0..image_width {
+            for y in 0..image_height {
 
-
-    let render_distance = 32;
-    
-    let mut chunk_data = vec![Chunk::default(); render_distance * render_distance];
-    
-    for x in 0..render_distance {
-        for z in 0..render_distance {
-            let root = {
-                let chunk = region.read_chunk(x, z).unwrap().unwrap();
-                from_bytes(&chunk).unwrap()
-            };
-            let sections = as_list(as_compound(&root).get("sections").unwrap());
-            let mut mask = 0;
-
-            let m_sections = Vec::new();
-            for sec in sections {
-                let sec = as_compound(sec);
-    
-                let y = as_i8(sec.get("Y").unwrap());
-                let block_states = as_compound(sec.get("block_states").unwrap());
-                let palette = block_states.get("palette");
-                let data = block_states.get("data");
-    
-                if let (Some(Value::List(palette)), Some(Value::LongArray(data))) = (palette, data) {
-                    section_mask |= 1 << (y+4);
-
-                    let parsed_palette: Vec<(String, Option<&HashMap<String, Value>>)> = palette
-                        .iter()
-                        .map(|entry| {
-                            let c = as_compound(entry);
-                            let name = c
-                                .get("Name")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string();
-                            let props = c.get("Properties").map(|e| as_compound(e));
-                            (name, props)
-                        })
-                        .collect();
-    
-                    let bpb = bits_per_block_from_palette(parsed_palette.len());
-
-                    let mut mask = 0; 
-                    let mut children = Vec::new();
-                    for i in 0..(16 * 16 * 16) {
-                        let pal_idx = get_packed_index(&data[..], i, bpb) as usize;
-                        
-                        if let Some((name, _props)) = parsed_palette.get(pal_idx) {
-
-                        }
-                    }
-                    m_sections.push(Section { mask: section_mask, children });
-                }
             }
-            chunk_data[x+z*render_distance].sections = m_sections;
-        }
+        } 
     }
 
-    let mut nodes: Vec<CompressedNode> = Vec::with_capacity(4096);
+    log::info!("Generated Hightes");
+
+    let mut nodes = Vec::new();
     nodes.push(CompressedNode::default());
     fn build(
         nodes: &mut Vec<CompressedNode>,
         depth: u32,
         pos: IVec3,
-        chunk: &[[[bool; 16 * 16 * 16]; 24]],
+        hight_map: &Vec<ImageBuffer<Rgb<f32>, Vec<f32>>>,
     ) -> CompressedNode {
         if depth >= MAX_DEPTH {
             let mut mask = 0;
             for i in 0..64 {
                 let child_pos = pos + index_to_3d(i);
-                let sub_chunk_coordinates = child_pos % 16;
-                let chunk_coordinates = child_pos / 10;
-                let index = sub_chunk_coordinates.x
-                    + (15 - sub_chunk_coordinates.y) * 16
-                    + (15 - sub_chunk_coordinates.z) * 16 * 16;
+                let (image_width, image_height) = hight_map[0].dimensions();
+                let aspect_x = (1<<(2*MAX_DEPTH)) as f32 / image_width as f32;
+                let aspect_y = (1<<(2*MAX_DEPTH)) as f32 / image_height as f32;
 
-                if chunk_coordinates.x >= 10
-                    || child_pos.z >= 320
-                    || chunk_coordinates.y >= 10
-                    || chunk_coordinates.x < 0
-                    || chunk_coordinates.z < 0
-                    || chunk_coordinates.y < 0
-                {
-                    break;
-                }
-                // mask |= 1 << i;
-                if chunk[(chunk_coordinates.x + chunk_coordinates.y*10) as usize][23 - (child_pos.z as usize / 16)][index as usize] {
-                    mask |= 1 << i;
-                }
+                let filled = (child_pos.z as f32) > (1.0-hight_map[0][(child_pos.x as f32*aspect_x, child_pos.y as f32*aspect_y)].0[0]) * 1000.0;
+                mask |= (filled as u64) << i;
             }
             let child_ptr = nodes.len() as u32;
-            return CompressedNode::new_leaf(child_ptr, mask);
+            return CompressedNode::new_leaf(child_ptr, mask, mask == u64::MAX);
         }
 
         let mut child_mask = 0u64;
-        let mut children = Vec::new();
+        let mut full = true;
+        let mut children = SmallVec::<[CompressedNode; 64]>::new();
         for i in 0..64 {
-            let child_pos = pos + index_to_3d(i) * (4_i32.pow(MAX_DEPTH as u32 - depth as u32));
-            let child = build(nodes, depth + 1, child_pos, &chunk);
+            let child_pos = pos + index_to_3d(i) * (1<<(2*(MAX_DEPTH - depth)));
+            let child = build(nodes, depth + 1, child_pos, hight_map);
+            full &= child.is_full();
+            
             if child.pop_mask() != 0 {
                 child_mask |= 1u64 << i;
                 children.push(child);
             }
         }
         let child_ptr = nodes.len();
-        nodes.extend(children);
-        CompressedNode::new_internal(child_ptr as u32, child_mask)
+        if full {
+            CompressedNode::new_leaf(child_ptr as u32, child_mask, true)
+        }else {
+            nodes.extend(children);
+            CompressedNode::new_internal(child_ptr as u32, child_mask, false)
+        }
     }
 
-    nodes[0] = build(&mut nodes, 0, IVec3::splat(0), &chunk_data);
+    nodes[0] = build(&mut nodes, 0, IVec3::splat(0), &hight_map);
     nodes
 }
 
 fn init_voxel_world(mut cmd: Commands) {
-    let nodes = generate_random_tree();
+    let file = fs::File::open("./core/minecraft/world.wrld");
+
+    let nodes = if let Ok(file) = file {
+        let buf_reader = BufReader::new(file);
+        bincode::decode_from_reader(buf_reader, CONFIG).unwrap()
+    } else {
+        let nodes = generate_random_tree();
+        let encoded = bincode::encode_to_vec(&nodes, CONFIG).unwrap();
+        fs::File::create_new("./core/minecraft/world.wrld").unwrap().write_all(&encoded).unwrap();
+        nodes
+    };
+
     log::info!("Generated {} Nodes", nodes.len());
     let mut voxel_world = VoxelWorld {
         buffer: DynamicBuffer::new(
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             MemoryLocation::GpuOnly,
-            1 << 24,
+            1 << 31,
             None,
         )
         .unwrap(),
@@ -371,7 +230,7 @@ fn init_voxel_world(mut cmd: Commands) {
     let staging_buffer = Buffer::new(
         BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::TRANSFER_DST,
         MemoryLocation::CpuToGpu,
-        1 << 20,
+        1 << 28,
     )
     .unwrap();
 
