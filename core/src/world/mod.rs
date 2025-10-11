@@ -9,7 +9,7 @@ use std::{
 use anyhow::Result;
 use ash::vk::{self, BufferCopy, BufferUsageFlags, Packed24_8};
 use bevy_app::prelude::*;
-use bevy_asset::{AssetEvent, Assets, Handle};
+use bevy_asset::{AssetEvent, AssetServer, Assets, Handle};
 use bevy_ecs::{
     component::{ComponentId, HookContext},
     entity::EntityHashMap,
@@ -18,24 +18,17 @@ use bevy_ecs::{
 };
 use bevy_log::info_span;
 use glam::{Mat4, Quat, Vec3, Vec4};
-#[cfg(not(feature = "no_raytracing"))]
 use gpu_allocator::MemoryLocation;
 use lava::vkobjects::buffer::{Buffer, DynamicBuffer};
-#[cfg(not(feature = "no_raytracing"))]
 use lava::{state::Ctx, vkobjects::acceleration_structure::AccelerationStructure};
 
 use crate::{
-    assets::{Material, Mesh},
+    assets::{material::Material, Cluster, Mesh, Meshlet, MeshletBoundingSpheres, SavedMat4, Vertex},
     components::transform::Transform,
 };
 
-const INSTANCE_BUFFER_CAPACITY: u64 = 1048576; //TODO
-const VERTEX_BUFFER_CAPACITY: u64 = 1048576; //TODO
-const ACCELERATION_STRUCTURE_SCRATCH_MEMORY: u64 = 1048576; //TODO
-pub const STAGING_BUFFER_SIZE: u64 = 2 ^ 24; //TODO
-const MESHLET_BUFFER_CAPACITY: u64 = 1048576;
-const INDEX_BUFFER_CAPACITY: u64 = 1048576;
-const INSTANCE_INDEX_BUFFER_CAPACITY: u64 = 1048576;
+pub const STAGING_BUFFER_SIZE: u64 = 16777216;
+
 
 #[derive(Clone, Copy, bincode::Encode, bincode::Decode, Debug)]
 #[repr(C)]
@@ -53,7 +46,7 @@ pub struct Instance {
 
 #[derive(Component, Clone)]
 pub struct UploadedInstance {
-    instance_offset: usize,
+    cluster_transforms_offset: usize,
 }
 
 pub fn add_instance(
@@ -61,10 +54,10 @@ pub fn add_instance(
     mut world: ResMut<RenderWorld>,
 ) {
     for (entity, instance, transform) in query {
-        world.loading.push((
-            instance.clone(),
-            transform.unwrap_or(&Transform::IDENTITY).clone(),
+        world.upload_queue.push((
             entity,
+            instance.model.clone(),
+            transform.map(|t| t.as_matrix()).unwrap_or(Mat4::IDENTITY).clone(),
         ));
     }
 }
@@ -75,17 +68,17 @@ pub fn transform_parent_changed(
     query: Query<(&Transform, &UploadedInstance, &Children), (Changed<Transform>, With<Instance>)>,
     q_children: Query<&Transform>,
 ) {
-    for (transform, UploadedInstance { instance_offset }, children) in query {
+    for (transform, UploadedInstance { cluster_transforms_offset }, children) in query {
         let mut transforms = Vec::with_capacity(children.len());
         for &c in children {
             let child_transform = q_children.get(c).unwrap();
             transforms.push(transform.as_matrix() * child_transform.as_matrix());
         }
         staging_buffer.0.copy_data_to_buffer(&transforms).unwrap();
-        world.instances.copy_from(
+        world.instance_transforms.copy_from(
             &staging_buffer.0,
-            (*instance_offset * size_of::<DrawTask>()) as u64,
-            (children.len() * size_of::<DrawTask>()) as u64,
+            (*cluster_transforms_offset * size_of::<Mat4>()) as u64,
+            (transforms.len() * size_of::<Mat4>()) as u64,
         );
     }
 }
@@ -99,17 +92,17 @@ pub fn transform_child_changed(
     >,
     p_query: Query<&Transform, With<Instance>>,
 ) {
-    for (parent, transform, UploadedInstance { instance_offset }) in query {
+    for (parent, transform, UploadedInstance { cluster_transforms_offset }) in query {
         let parent_transform = p_query.get(parent.parent()).unwrap();
 
         staging_buffer
             .0
             .copy_data_to_buffer(&[parent_transform.as_matrix() * transform.as_matrix()])
             .unwrap();
-        world.instances.copy_from(
+        world.instance_transforms.copy_from(
             &staging_buffer.0,
-            (*instance_offset * size_of::<DrawTask>()) as u64,
-            (1 * size_of::<DrawTask>()) as u64,
+            (*cluster_transforms_offset * size_of::<Mat4>()) as u64,
+            (1 * size_of::<Mat4>()) as u64,
         );
     }
 }
@@ -120,77 +113,69 @@ pub fn load_assets(
     staging_buffer: Res<StagingBuffer>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    if world.loading.is_empty() {
+    if world.upload_queue.is_empty() {
         return;
     }
-    let loading = world.loading.clone();
-    world.loading.clear();
-    let mut instances = Vec::new();
-    let mut draw_tasks = Vec::new();
-    for l in loading {
-        if let Some(mesh) = meshes.get_mut(&l.0.model) {
+    let loading = world.upload_queue.clone();
+    world.upload_queue.clear();
+    let mut transforms = Vec::new();
+    let mut clusters = Vec::new();
+    for (entity, mesh, transform) in loading {
+        if let Some(mesh) = meshes.get_mut(&mesh) {
             if !mesh.uploaded {
-                let num_blocks = world.dgf_blocks.size as usize / 128;
-                world
-                    .dgf_blocks
-                    .push(&staging_buffer.0, &mesh.mesh.dgf_blocks);
-                let num_materials = world.materials.size as usize / size_of::<Material>();
-                world
-                    .materials
-                    .push(&staging_buffer.0, &mesh.mesh.materials);
-                mesh.mesh.draw_tasks.iter_mut().for_each(|i| {
-                    i.block_id += num_blocks as u32;
-                    i.geometry_id += world.num_geometries;
-                    i.material_id += num_materials as u32;
+                world.vertices.push(&staging_buffer.0, &mesh.vertices);
+                world.indecies.push(&staging_buffer.0, &mesh.indicies);
+                world.materials.push(&staging_buffer.0, &mesh.materials);
+
+                let num_meshlets = world.meshlets.size as usize / size_of::<Meshlet>();
+                world.meshlets.push(&staging_buffer.0, &mesh.meshlets);
+                mesh.clusters.iter_mut().for_each(|cluster| {
+                    cluster.meshlet += num_meshlets as u32;
                 });
                 mesh.uploaded = true;
-                world.num_geometries += mesh.mesh.num_geometries;
                 log::debug!("Uploaded");
+                // log::debug!("{:#?}", mesh);
             }
 
-            let instance_offset = world.num_instances;
-            instances.extend(mesh.mesh.instances.iter().map(|i| {
-                let mat = glam::Mat4::from_cols_array(i);
-                (mat * l.1.as_matrix()).to_cols_array()
+            let cluster_offset = world.num_instances;
+            transforms.extend(mesh.cluster_transforms.iter().map(|t| {
+                SavedMat4(t.0 * transform)
             }));
-            world.num_instances += mesh.mesh.instances.len();
+            world.num_instances += mesh.cluster_transforms.len();
 
             let children = mesh
-                .mesh
-                .instances
+                .cluster_transforms
                 .iter()
                 .enumerate()
                 .map(|(i, mat)| {
                     cmd.spawn((
                         UploadedInstance {
-                            instance_offset: instance_offset + i,
+                            cluster_transforms_offset: cluster_offset + i,
                         },
-                        Transform::from_matrix(Mat4::from_cols_array(mat)),
+                        Transform::from_matrix(mat.0),
                     ))
                     .id()
                 })
                 .collect::<Vec<_>>();
-            cmd.entity(l.2)
+            cmd.entity(entity)
                 .add_children(&children)
-                .insert(UploadedInstance { instance_offset });
+                .insert(UploadedInstance { cluster_transforms_offset: cluster_offset });
 
-            draw_tasks.extend(mesh.mesh.draw_tasks.iter().map(|i| DrawTask {
-                block_id: i.block_id,
-                geometry_id: i.geometry_id,
-                instance_id: i.instance_id + instance_offset as u32,
-                material_id: i.material_id,
+            clusters.extend(mesh.clusters.iter().map(|c| Cluster {
+                transform: c.transform + cluster_offset as u32,
+                meshlet: c.meshlet,
             }));
 
-            world.num_instance_indices += mesh.mesh.draw_tasks.len();
+            world.num_clusters += mesh.clusters.len();
         } else {
-            world.loading.push(l.clone());
+            world.upload_queue.push((entity, mesh, transform));
         }
     }
-    if !draw_tasks.is_empty() {
-        world.draw_tasks.push(&staging_buffer.0, &draw_tasks);
+    if !clusters.is_empty() {
+        world.clusters.push(&staging_buffer.0, &clusters);
     }
-    if !instances.is_empty() {
-        world.instances.push(&staging_buffer.0, &instances);
+    if !transforms.is_empty() {
+        world.instance_transforms.push(&staging_buffer.0, &transforms);
     }
 }
 
@@ -199,16 +184,20 @@ pub struct StagingBuffer(pub Buffer);
 
 #[derive(Resource)]
 pub struct RenderWorld {
-    loading: Vec<(Instance, Transform, Entity)>,
-    dgf_blocks: DynamicBuffer,
-    materials: DynamicBuffer,
-    instances: DynamicBuffer,
-    draw_tasks: DynamicBuffer,
-    acceleration_structure_scratch_memory: Option<DynamicBuffer>,
-    acceleration_structure_memory: Option<DynamicBuffer>,
+    pub vertices: DynamicBuffer<Vertex>,
+    pub indecies: DynamicBuffer<u8>,
+    pub meshlets: DynamicBuffer<Meshlet>,
+    pub bounding_spheres: DynamicBuffer<MeshletBoundingSpheres>,
+    pub materials: DynamicBuffer<Material>,
+    pub instance_transforms: DynamicBuffer<SavedMat4>,
+    pub clusters: DynamicBuffer<Cluster>,
+
+    upload_queue: Vec<(Entity, Handle<Mesh>, Mat4)>,
+
+    acceleration_structure_scratch_memory: Option<DynamicBuffer<u8>>,
+    acceleration_structure_memory: Option<DynamicBuffer<u8>>,
     tlas: Option<AccelerationStructure>,
-    pub num_geometries: u32,
-    pub num_instance_indices: usize,
+    pub num_clusters: usize,
     pub num_instances: usize,
 }
 
@@ -219,7 +208,6 @@ pub(super) fn init_world(mut cmd: Commands) {
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                     | vk::BufferUsageFlags::STORAGE_BUFFER,
                 MemoryLocation::GpuOnly,
-                ACCELERATION_STRUCTURE_SCRATCH_MEMORY,
                 None,
             )
             .unwrap(),
@@ -228,13 +216,12 @@ pub(super) fn init_world(mut cmd: Commands) {
         None
     };
 
-    let acceleration_structure_memory = if Ctx::features().raytracing {
+    let mut acceleration_structure_memory = if Ctx::features().raytracing {
         Some(
             DynamicBuffer::new(
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                     | vk::BufferUsageFlags::STORAGE_BUFFER,
                 MemoryLocation::GpuOnly,
-                ACCELERATION_STRUCTURE_SCRATCH_MEMORY,
                 None,
             )
             .unwrap(),
@@ -252,7 +239,7 @@ pub(super) fn init_world(mut cmd: Commands) {
                         &[],
                         &[],
                         &[],
-                        acceleration_structure_memory.as_ref().unwrap(),
+                        acceleration_structure_memory.as_mut().unwrap(),
                         0,
                         acceleration_structure_scratch_memory.as_mut().unwrap(),
                         &cmd,
@@ -266,42 +253,20 @@ pub(super) fn init_world(mut cmd: Commands) {
     };
 
     let render_world = RenderWorld {
-        loading: Vec::new(),
-        instances: DynamicBuffer::new(
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            MemoryLocation::GpuOnly,
-            INSTANCE_BUFFER_CAPACITY,
-            None,
-        )
-        .unwrap(),
-        draw_tasks: DynamicBuffer::new(
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            MemoryLocation::GpuOnly,
-            INSTANCE_INDEX_BUFFER_CAPACITY,
-            None,
-        )
-        .unwrap(),
-        dgf_blocks: DynamicBuffer::new(
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            MemoryLocation::GpuOnly,
-            MESHLET_BUFFER_CAPACITY,
-            None,
-        )
-        .unwrap(),
-        materials: DynamicBuffer::new(
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            MemoryLocation::GpuOnly,
-            1028,
-            None,
-        )
-        .unwrap(),
-
+        instance_transforms: DynamicBuffer::new_storage().unwrap(),
+        bounding_spheres: DynamicBuffer::new_storage().unwrap(),
+        clusters: DynamicBuffer::new_storage().unwrap(),
+        indecies: DynamicBuffer::new_storage().unwrap(),
+        materials: DynamicBuffer::new_storage().unwrap(),
+        meshlets: DynamicBuffer::new_storage().unwrap(),
+        vertices: DynamicBuffer::new_storage().unwrap(),
+        
+        upload_queue: Vec::new(),
         acceleration_structure_scratch_memory,
         acceleration_structure_memory,
-        num_instance_indices: 0,
+        num_clusters: 0,
         tlas,
         num_instances: 0,
-        num_geometries: 0,
     };
     cmd.insert_resource(StagingBuffer(
         Buffer::new(

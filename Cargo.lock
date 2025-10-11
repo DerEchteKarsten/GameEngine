@@ -1070,6 +1070,7 @@ dependencies = [
  "image 0.25.8",
  "lava",
  "log",
+ "meshopt",
  "noise",
  "serde",
  "smallvec",
@@ -1473,6 +1474,15 @@ checksum = "4a3d7db9596fecd151c5f638c0ee5d5bd487b6e0ea232e5dc96d5250f6f94b1d"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "float-cmp"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -2117,6 +2127,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843a98750cd611cc2965a8213b53b43e715f13c37a9e096c6408e69990961db7"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "meshopt"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6b1d53102223e9c56ae8d768d2b4b6d8e9cd61637e8e060f9341e3c9775ab12"
+dependencies = [
+ "bitflags 2.9.4",
+ "cc",
+ "float-cmp",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
