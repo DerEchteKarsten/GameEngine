@@ -1,27 +1,24 @@
 use core::slice;
 use std::{
-    collections::HashMap, f16, fmt::Debug, future::IntoFuture, mem::offset_of,
-    sync::atomic::AtomicU32,
+    collections::HashMap, f16, fmt::Debug, future::IntoFuture, io::Write, mem::offset_of, sync::atomic::AtomicU32
 };
 
 use anyhow::{Ok, Result};
 use ash::{Instance, vk::QCOM_FILTER_CUBIC_CLAMP_NAME};
 use bevy_app::Plugin;
 use bevy_asset::{
-    AssetApp, AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext,
-    processor::LoadTransformAndSave,
-    saver::AssetSaver,
-    transformer::{AssetTransformer, TransformedAsset},
+    io::Reader, processor::LoadTransformAndSave, saver::AssetSaver, transformer::{AssetTransformer, TransformedAsset}, AssetApp, AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext
 };
 use bevy_reflect::TypePath;
-use bincode::{config::Configuration, de::read::Reader, enc::write::Writer};
+use bytemuck::{NoUninit, Pod, Zeroable};
 use dgfsdk_rs::wrappers::bake_default;
 use glam::{vec3, Mat4, Vec3};
 use meshopt::VertexDataAdapter;
 
-use crate::assets::material::Material;
+use crate::assets::{material::Material, mesh::{Aabb, MeshletMesh, Vertex}};
 
 pub mod material;
+pub mod mesh;
 
 pub struct MeshAssets;
 impl Plugin for MeshAssets {
@@ -38,115 +35,14 @@ impl Plugin for MeshAssets {
     }
 }
 
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct SavedMat4(pub glam::Mat4);
-
-impl bincode::Encode for SavedMat4 {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> std::result::Result<(), bincode::error::EncodeError> {
-        bincode::Encode::encode(&self.0.to_cols_array(), encoder)?;
-        std::result::Result::Ok(())
-    }
-}
-
-
-impl<Context> bincode::Decode<Context> for SavedMat4 {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> std::result::Result<Self, bincode::error::DecodeError> {
-        let array = bincode::Decode::decode(decoder)?;
-        std::result::Result::Ok(Self(glam::Mat4::from_cols_array(&array)))
-    }
-}
-
-impl<'a, Context> bincode::BorrowDecode<'a, Context> for SavedMat4 {
-    fn borrow_decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> std::result::Result<Self, bincode::error::DecodeError> {
-        let array = bincode::Decode::decode(decoder)?;
-        std::result::Result::Ok(Self(glam::Mat4::from_cols_array(&array)))
-    }
-}
-
-#[derive(Copy, Clone, bincode::Encode, bincode::Decode)]
-#[repr(C)]
-pub struct Vertex {
-    position: [f32; 3],
-    pad: f32,
-}
-
-#[derive(Copy, Clone, bincode::Encode, bincode::Decode)]
-#[repr(C)]
-pub struct MeshletBoundingSpheres {
-    pub self_culling: MeshletBoundingSphere,
-    pub self_lod: MeshletBoundingSphere,
-    pub parent_lod: MeshletBoundingSphere,
-}
-
-#[derive(Copy, Clone, bincode::Encode, bincode::Decode)]
-#[repr(C)]
-pub struct MeshletBoundingSphere {
-    pub center: [f32; 3],
-    pub radius: f32,
-}
-
-#[derive(Copy, Clone, bincode::Encode, bincode::Decode)]
-#[repr(C)]
-pub struct Meshlet {
-    vertex_count: u32,
-    vertex_index: u32,
-    triangle_count: u32,
-    triangle_index: u32,
-}
-
-#[derive(bincode::Encode, bincode::Decode, Clone, bevy_asset::Asset, TypePath)]
+#[derive(bevy_asset::Asset, TypePath)]
 pub struct Mesh {
     pub uploaded: bool,
-    pub vertices: Vec<Vertex>,
-    pub indicies: Vec<u8>,
-    pub meshlets: Vec<Meshlet>,
+    pub meshes: Vec<MeshletMesh>,
+    pub instance_transforms: Vec<Mat4>,
     pub materials: Vec<Material>,
-
-    pub cull_data: Vec<MeshletBoundingSpheres>,
-    pub aabb: Aabb,
-    pub bvh_depth
-}
-
-#[derive(bincode::Encode, bincode::Decode, Clone)]
-struct InstanceRange {
-    meshlet_index: u32,
-    meshlet_count: u32,
-}
-
-pub const CONFIG: Configuration<bincode::config::BigEndian> = bincode::config::standard()
-    .with_variable_int_encoding()
-    .with_big_endian()
-    .with_no_limit();
-
-pub struct MeshLoader;
-impl AssetLoader for MeshLoader {
-    type Asset = Mesh;
-    type Error = anyhow::Error;
-    type Settings = ();
-    async fn load(
-        &self,
-        reader: &mut dyn bevy_asset::io::Reader,
-        settings: &Self::Settings,
-        load_context: &mut LoadContext<'_>,
-    ) -> std::result::Result<Self::Asset, Self::Error> {
-        let mut buff = vec![];
-        reader.read_to_end(&mut buff).await.unwrap();
-        let (mut mesh, size) : (Mesh, usize) = bincode::decode_from_slice(&buff, CONFIG).unwrap();
-        mesh.uploaded = false;
-        Ok(mesh)
-    }
-    fn extensions(&self) -> &[&str] {
-        &["mesh"]
-    }
+    pub instance_materials: Vec<u32>,
+    pub instance_mesh: Vec<u32>,
 }
 
 #[derive(bevy_asset::Asset, TypePath)]
@@ -189,8 +85,6 @@ pub fn typed_to_bytes<T: Sized>(typed: &[T]) -> &[u8] {
 }
 
 
-fn mes
-
 struct MeshTransformer;
 impl AssetTransformer for MeshTransformer {
     type AssetInput = GltfMesh;
@@ -205,16 +99,11 @@ impl AssetTransformer for MeshTransformer {
         bevy_asset::transformer::TransformedAsset<Self::AssetOutput>,
         Self::Error,
     > {
-        let mut vertices = vec![];
-        let mut indicies = vec![];
-        let mut materials = vec![];
-        let mut meshlets = vec![];
-
         let mut remap = HashMap::new();
+        let mut meshes = Vec::new();
         for mesh in asset.document.meshes() {
             for primitive in mesh.primitives() {
                 let index = (mesh.index(), primitive.index());
-
                 if remap.get(&index).is_some() {
                     continue;
                 }
@@ -224,74 +113,56 @@ impl AssetTransformer for MeshTransformer {
                 let normals = reader
                     .read_normals()
                     .unwrap()
+                    .flatten()
                     .collect::<Vec<_>>();
 
                 let uvs = reader
                     .read_tex_coords(0)
-                    .map(|reader| reader.into_f32().collect::<Vec<_>>());
-                let mut pverticies = vec![];
-                reader.read_positions().unwrap().enumerate().for_each(|(index, p)| {
-                    let n = normals[index];    
-                    let t = uvs.as_ref().map_or([0.0, 0.0], |uvs| uvs[index]);
-
-                    pverticies.push(Vertex { position: p, pad: 0.0 });
-                });
-
-                let mut pindicies = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
-                let material = materials.len();
-                let pmaterial = primitive.material();
-                let pbr = pmaterial.pbr_metallic_roughness();
-                materials.push(Material {
-                    color: [pbr.base_color_factor()[0] as f16, pbr.base_color_factor()[1] as f16, pbr.base_color_factor()[2] as f16],
-                    metalic_factor: pbr.metallic_factor() as f16,
-                    roughness_factor: pbr.roughness_factor() as f16,
-                    texture_offset: pbr.base_color_texture().map(|v| { v.texture().index() as u16 }).unwrap_or(!0u16),
-                });
-
-                let vertex_reader = VertexDataAdapter::new(
-                    typed_to_bytes(&pverticies),
-                    std::mem::size_of::<Vertex>(),
-                    offset_of!(Vertex, position),
-                ).unwrap();
-                let mut pmeshlets = meshopt::build_meshlets(&pindicies, &vertex_reader, 64, 124, 0.0);
-                remap.insert(index, InstanceRange {
-                    meshlet_index: meshlets.len() as u32,
-                    meshlet_count: pmeshlets.len() as u32
-                });
-                meshlets.extend(pmeshlets.meshlets.iter().map(|m| Meshlet {
-                    triangle_count: m.triangle_count,
-                    triangle_index: m.triangle_offset + indicies.len() as u32,
-                    vertex_count: m.vertex_count,
-                    vertex_index: m.vertex_offset + vertices.len() as u32,
-                }));
-                let mut meshlet_vertecies = pmeshlets.vertices.iter().map(|i| {pverticies[*i as usize].clone()}).collect::<Vec<Vertex>>(); 
+                    .unwrap()
+                    .into_f32()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                let verticies = reader.read_positions().unwrap().map(|e| Vec3::from(e)).collect::<Vec<_>>();
+                let indicies = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
                 
-                indicies.append(&mut pmeshlets.triangles);
-                vertices.append(&mut meshlet_vertecies);
+                remap.insert(index, meshes.len() as u32);
+
+                meshes.push(MeshletMesh::new(&indicies, &verticies, &normals, &uvs));
             }         
         }
         
         let mut instance_transforms = vec![];
-        let mut instance_ranges = vec![];
+        let mut materials = vec![];
+        let mut instance_materials = vec![];
+        let mut instance_mesh = vec![];
         for node in asset.document.nodes().filter(|n| n.mesh().is_some()) {
             let transform = node.transform().matrix();
             let gltf_mesh = node.mesh().unwrap();
 
             for primitive in gltf_mesh.primitives() {
-                let index = (gltf_mesh.index(), primitive.index());
-                instance_ranges.push(remap.get(&index).unwrap().clone());
-                instance_transforms.push(SavedMat4(Mat4::from_cols_array_2d(&transform)));
+                let material = materials.len();
+                let pmaterial = primitive.material();
+                let pbr = pmaterial.pbr_metallic_roughness();
+                materials.push(Material {
+                    color: [pbr.base_color_factor()[0], pbr.base_color_factor()[1], pbr.base_color_factor()[2]],
+                    metalic_factor: pbr.metallic_factor(),
+                    roughness_factor: pbr.roughness_factor(),
+                    texture_offset: pbr.base_color_texture().map(|v| { v.texture().index() as u32 }).unwrap_or(!0u32),
+                });
+
+                let mesh = remap.get(&(gltf_mesh.index(), primitive.index())).unwrap().clone();
+                instance_materials.push(material as u32);
+                instance_mesh.push(mesh);
+                instance_transforms.push(Mat4::from_cols_array_2d(&transform));
             }
         }
 
         let mesh = Mesh {
-            indicies,
-            materials,
-            meshlets,
-            vertices,
-            instance_ranges,
             instance_transforms,
-            cull_data: vec![],
+            instance_materials,
+            instance_mesh,
+            materials,
+            meshes,
             uploaded: false,
         };
         
@@ -299,6 +170,30 @@ impl AssetTransformer for MeshTransformer {
         let asset = asset.replace_asset(mesh);
         return Ok(asset);
     }
+}
+
+
+async fn write_slice<T: Pod>(
+    field: &[T],
+    writer: &mut bevy_asset::io::Writer,
+) -> Result<()> {
+    writer.write_all(&(field.len() as u64).to_le_bytes()).await?;
+    writer.write_all(bytemuck::cast_slice(field)).await?;
+    Ok(())
+}
+async fn read_u64(reader: &mut dyn bevy_asset::io::Reader) -> Result<u64> {
+    let mut bytes = [0u8; 8];
+    reader.read_exact(&mut bytes).await?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+async fn read_slice<T: Pod>(reader: &mut dyn bevy_asset::io::Reader) -> Result<Vec<T>> {
+    let len = read_u64(reader).await? as usize;
+
+    let mut data = core::iter::repeat_with(T::zeroed).take(len).collect::<Vec<T>>();
+    reader.read_exact(bytemuck::cast_slice_mut(&mut data)).await?;
+
+    Ok(data)
 }
 
 struct MeshSaver;
@@ -314,9 +209,77 @@ impl AssetSaver for MeshSaver {
         settings: &Self::Settings,
     ) -> std::result::Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
         let mesh = asset.get();
-        let bytes = bincode::encode_to_vec(mesh, CONFIG)?;
+        
+        write_slice(&mesh.instance_transforms, writer);
+        write_slice(&mesh.materials, writer);
+        write_slice(&mesh.instance_mesh, writer);
+        write_slice(&mesh.instance_materials, writer);
 
-        writer.write_all(&bytes).await?;
+        writer.write_all(&(mesh.meshes.len() as u64).to_le_bytes()).await?;
+
+        for mesh in &mesh.meshes {
+            writer.write_all(&(mesh.bvh_depth.to_le_bytes())).await?;
+            writer.write_all(&bytemuck::cast_slice(&[mesh.aabb])).await?;
+
+            write_slice(&mesh.vertices, writer);
+            write_slice(&mesh.indices, writer);
+            write_slice(&mesh.meshlets, writer);
+            write_slice(&mesh.cull_data, writer);
+            write_slice(&mesh.bvh, writer);
+        }
+
         return Ok(());
+    }
+}
+
+pub struct MeshLoader;
+impl AssetLoader for MeshLoader {
+    type Asset = Mesh;
+    type Error = anyhow::Error;
+    type Settings = ();
+    async fn load(
+        &self,
+        reader: &mut dyn bevy_asset::io::Reader,
+        settings: &Self::Settings,
+        load_context: &mut LoadContext<'_>,
+    ) -> std::result::Result<Self::Asset, Self::Error> {
+
+        let instance_transforms = read_slice(reader).await?;
+        let materials = read_slice(reader).await?;
+        let instance_materials = read_slice(reader).await?;
+        let instance_meshlet_offsets = read_slice(reader).await?;
+        let num_meshes = read_u64(reader).await?;
+
+        let mut meshes = Vec::new();
+        for i in 0..num_meshes {
+            let mut buffer = [0u8; size_of::<Aabb>()]; 
+            reader.read(&mut buffer);
+            let aabb = bytemuck::cast_slice(&buffer)[0];
+            reader.read(&mut buffer[0..4]);
+            let bvh_depth = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
+
+            meshes.push(MeshletMesh {
+                bvh_root_node_index: !0u32,
+                aabb,
+                bvh_depth,
+                vertices: read_slice(reader).await.unwrap(),
+                indices: read_slice(reader).await.unwrap(),
+                meshlets: read_slice(reader).await.unwrap(),
+                cull_data: read_slice(reader).await.unwrap(),
+                bvh: read_slice(reader).await.unwrap(),
+            })
+        }
+
+        Ok(Mesh {
+            instance_transforms,
+            instance_materials,
+            instance_mesh: instance_meshlet_offsets,
+            materials,
+            uploaded: false,
+            meshes,
+        })
+    }
+    fn extensions(&self) -> &[&str] {
+        &["mesh"]
     }
 }

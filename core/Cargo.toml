@@ -5,7 +5,7 @@ edition = "2024"
 build="build.rs"
 
 [dependencies]
-glam = "0.30.5"
+glam = { version = "0.30.5", features = ["bytemuck"] }
 bevy_a11y = "0.16.0"
 bevy_app = "0.16.0"
 bevy_asset = { version = "0.16.1", features = ["asset_processor", "file_watcher", "multi_threaded"] }
@@ -20,7 +20,6 @@ bevy_winit = {version = "0.16.0", features = ["wayland"]}
 lava = { version = "0.1.0", path = "../lava" }
 dgfsdk-rs = { version = "0.1.0", path = "../dgfsdk-rs" }
 ash = "0.38.0"
-bincode = "2.0.1"
 log = "0.4.28"
 gpu-allocator = "0.27.0"
 anyhow = "1.0.99"
@@ -33,3 +32,9 @@ image = "0.25.8"
 tiff = "0.10.3"
 smallvec = "1.15.1"
 meshopt = "0.6.1"
+bytemuck = { version = "1.24.0", features = ["derive"] }
+bytemuck_derive = "1.10.2"
+bevy_tasks = "0.17.2"
+itertools = "0.14.0"
+metis = "0.2.2"
+bevy_math = "0.17.2"

@@ -35,7 +35,7 @@ use noise::{MultiFractal, NoiseFn, Perlin};
 use smallvec::SmallVec;
 
 use crate::{
-    assets::{MeshAssets, CONFIG},
+    assets::{MeshAssets},
     components::camera::{Camera, CameraPlugin},
     world::{
         add_instance, init_world, load_assets, transform_child_changed, transform_parent_changed, RenderWorld, StagingBuffer, STAGING_BUFFER_SIZE
@@ -62,37 +62,13 @@ pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
     }
 }
 
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Constants {
-    proj: Mat4,
-    view: Mat4,
-    window_size: Vec2,
-    cluster_dispatch: u32,
-    num_clusters: u32,
-    camera_position: Vec4,
-}
-
 struct RenderResources {
     depth_attachment: Image,
     color_attachment: Image,
 }
 
 fn render(query: Query<&Camera>, world: Res<RenderWorld>, mut resources: Local<Option<RenderResources>>) {
-    let n = (world.num_clusters as f64).powf(1.0/3.0).ceil() as u32;
     let camera = query.single().unwrap();
-    let constants = Constants {
-        proj: camera.projection_matrix(),
-        camera_position: camera.position.xyzx(),
-        view: camera.view_matrix(),
-        window_size: Vec2::new(
-            Ctx::window_width().unwrap() as f32,
-            Ctx::window_height().unwrap() as f32,
-        ),
-        cluster_dispatch: n,
-        num_clusters: world.num_clusters as u32,
-    };
 
     let resources = resources.get_or_insert_with(|| {RenderResources {
         depth_attachment: Image::new_2d(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED, MemoryLocation::GpuOnly, Format::D32_SFLOAT, ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)).unwrap(),
@@ -100,43 +76,16 @@ fn render(query: Query<&Camera>, world: Res<RenderWorld>, mut resources: Local<O
     }});
 
     Ctx::next_frame(&mut |cmd, swapchain_image| {
-        
-
-        // cmd.compute()
-        //     .shader_path("gbuffer")
-        //     .constant(&constants)
-        //     .read(&world.buffer)
-        //     .write(&swapchain_image)
-        //     .dispatch_fractional_fullscreen(8, 4);
-
-        // log::info!("num clusters: {}, n: {}", world.num_clusters, n);
-        cmd.raster()
-            .mesh("gbuffer", "mesh")
-            .fragment("gbuffer", "fragment")
-            .task("gbuffer", "amp")
-            .constant(&constants)
-            .read(&world.vertices)
-            .read(&world.indecies)
-            .read(&world.meshlets)
-            .read(&world.clusters)
-            .read(&world.instance_transforms)
-            .read(&world.bounding_spheres)
-            .color_attachment(&resources.color_attachment, Some([0.2, 0.3, 0.4, 0.0]))
-            .depth_attachment(&resources.depth_attachment)
-            .draw_fullscreen(n, n, n);
-
         cmd.compute()
-            .shader_path("post")
-            .constant(&(
-                constants.proj.inverse(),
-                constants.view.inverse(),
-                Vec4::new(Ctx::window_width().unwrap() as f32,
-                Ctx::window_height().unwrap() as f32, 0.0, 0.0)
-            ))
-            .read(&resources.depth_attachment)
-            .read(&resources.color_attachment)
-            .write(&swapchain_image)
-            .dispatch_fullscreen();
+            .shader_path("instance_cull")
+            .read(world.instance_transforms)
+            .read(world.instance_aabbs)
+            .read(world.instance_bvh_root_nodes)
+            .read(world.bvh_nodes)
+            .read(world.cull_data)
+            .read(world.)
+            .dispatch(1, 1, 1);
+        
 
         cmd.present(swapchain_image);
         Ok(())
