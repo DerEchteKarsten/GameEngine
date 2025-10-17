@@ -25,11 +25,9 @@ use glam::{IVec3, Mat4, Vec2, Vec3, Vec3Swizzles, Vec4};
 use gpu_allocator::MemoryLocation;
 use image::{DynamicImage, ImageBuffer, Rgb};
 use lava::{
-    state::Ctx,
-    vkobjects::{
-        buffer::{Buffer, DynamicBuffer},
-        image::{Image, ImageSize},
-    },
+    pipelines::{RasterDispatch, Vertex}, state::Ctx, vkobjects::{
+        buffer::Buffer, image::{Image, ImageSize}
+    }
 };
 use noise::{MultiFractal, NoiseFn, Perlin};
 use smallvec::SmallVec;
@@ -65,28 +63,59 @@ pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
 struct RenderResources {
     depth_attachment: Image,
     color_attachment: Image,
+    cluster_buffer: Buffer<u32>,
+    vertex_buffer: Buffer<Vertex>,
+    index_buffer: Buffer<u32>,
+    attomics: Buffer<u8>,
+    indirect_draw: Buffer<vk::DrawIndexedIndirectCommand>,
+    instance_buffer: Buffer<u32>,
 }
 
-fn render(query: Query<&Camera>, world: Res<RenderWorld>, mut resources: Local<Option<RenderResources>>) {
+fn render(query: Query<&Camera>, world: Res<RenderWorld>, mut resources: Local<Option<RenderResources>>, mut staging_buffer: ResMut<StagingBuffer>) {
     let camera = query.single().unwrap();
 
     let resources = resources.get_or_insert_with(|| {RenderResources {
-        depth_attachment: Image::new_2d(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED, MemoryLocation::GpuOnly, Format::D32_SFLOAT, ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)).unwrap(),
-        color_attachment: Image::new_2d(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED, MemoryLocation::GpuOnly, Format::R32G32B32A32_SFLOAT, ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)).unwrap(),
+        depth_attachment: Image::new_2d(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED, Format::D32_SFLOAT, ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)).unwrap(),
+        color_attachment: Image::new_2d(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED, Format::R32G32B32A32_SFLOAT, ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)).unwrap(),
+        cluster_buffer: Buffer::with_size(vk::BufferUsageFlags::STORAGE_BUFFER, 100000).unwrap(),
+        vertex_buffer: Buffer::with_size(vk::BufferUsageFlags::VERTEX_BUFFER, 3).unwrap(),
+        index_buffer: Buffer::with_size(vk::BufferUsageFlags::INDEX_BUFFER, 100000).unwrap(),
+        attomics: Buffer::with_size(vk::BufferUsageFlags::STORAGE_BUFFER, 20).unwrap(),
+        indirect_draw: Buffer::with_size(vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER, 1).unwrap(),
+        instance_buffer: Buffer::with_size(vk::BufferUsageFlags::STORAGE_BUFFER, 10000).unwrap(),
     }});
 
+    
     Ctx::next_frame(&mut |cmd, swapchain_image| {
         cmd.compute()
             .shader_path("instance_cull")
-            .read(world.instance_transforms)
-            .read(world.instance_aabbs)
-            .read(world.instance_bvh_root_nodes)
-            .read(world.bvh_nodes)
-            .read(world.cull_data)
-            .read(world.)
+            // .constant(&(
+            //     camera.projection_matrix(),
+            //     camera.view_matrix(),
+            //     camera.position,
+            //     0.0,
+            //     camera.direction,
+            //     0.0,
+            // ))
+            // .read(&world.instance_transforms)
+            // .read(&world.instance_aabbs)
+            // .read(&world.instance_bvh_root_nodes)
+            // .read(&world.bvh_nodes)
+            // .read(&world.meshlets)
+            // .readwrite(&resources.attomics)
+            // .readwrite(&resources.cluster_buffer)
+            .write(&resources.vertex_buffer)
+            .write(&resources.index_buffer)
+            .write(&resources.indirect_draw)
             .dispatch(1, 1, 1);
-        
-
+        cmd.raster()
+            .vertex("raster", "vertex")
+            .fragment("raster", "fragment")
+            .vertex_buffer(&resources.vertex_buffer)
+            .index_buffer(&resources.index_buffer)
+            .color_attachment(&swapchain_image, Some([0.0, 1.0, 0.0, 1.0]))
+            .depth_attachment(&resources.depth_attachment)
+            .draw_fullscreen(RasterDispatch::indexed_indirect(&resources.indirect_draw, 0, 1));    
         cmd.present(swapchain_image);
         Ok(())
     })
@@ -119,25 +148,25 @@ pub fn CorePlugin(app: &mut App) {
                     ..Default::default()
                 }),
             },
-            AssetPlugin {
-                mode: bevy_asset::AssetMode::Processed,
-                ..Default::default()
-            },
+            // AssetPlugin {
+            //     mode: bevy_asset::AssetMode::Processed,
+            //     ..Default::default()
+            // },
             WinitPlugin::<bevy_winit::WakeUp>::default(),
             TimePlugin,
             CameraPlugin,
             TaskPoolPlugin::default(),
-            MeshAssets,
+            // MeshAssets,
         ))
         .add_systems(PreUpdate, on_resize)
-        .add_systems(
-            Update,
-            (
-                add_instance,
-                load_assets.after(add_instance),
-                transform_child_changed,
-                transform_parent_changed,
-            ),
-        )
+        // .add_systems(
+        //     Update,
+        //     (
+        //         add_instance,
+        //         load_assets.after(add_instance),
+        //         transform_child_changed,
+        //         transform_parent_changed,
+        //     ),
+        // )
         .add_systems(PostUpdate, render);
 }

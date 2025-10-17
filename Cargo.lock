@@ -2129,6 +2129,7 @@ dependencies = [
  "anyhow",
  "ash",
  "ash-window",
+ "bytemuck",
  "derivative",
  "glam 0.30.8",
  "gpu-allocator",

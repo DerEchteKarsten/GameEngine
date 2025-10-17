@@ -19,11 +19,11 @@ use bevy_ecs::{
 use bevy_log::info_span;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
-use lava::vkobjects::buffer::{Buffer, DynamicBuffer};
+use lava::{pipelines::Vertex, vkobjects::buffer::{Buffer, CpuBuffer}};
 use lava::{state::Ctx, vkobjects::acceleration_structure::AccelerationStructure};
 
 use crate::{
-    assets::{Mesh, material::Material, mesh::{Aabb, BvhNode, CullData, Meshlet, Vertex}},
+    assets::{Mesh, material::Material, mesh::{Aabb, BvhNode, CullData, Meshlet}},
     components::transform::Transform,
 };
 
@@ -55,7 +55,7 @@ pub fn add_instance(
 
 pub fn transform_parent_changed(
     mut world: ResMut<RenderWorld>,
-    staging_buffer: Res<StagingBuffer>,
+    mut staging_buffer: ResMut<StagingBuffer>,
     query: Query<(&Transform, &UploadedInstance, &Children), (Changed<Transform>, With<Instance>)>,
     q_children: Query<&Transform>,
 ) {
@@ -65,7 +65,7 @@ pub fn transform_parent_changed(
             let child_transform = q_children.get(c).unwrap();
             transforms.push(transform.as_matrix() * child_transform.as_matrix());
         }
-        staging_buffer.0.copy_data_to_buffer(&transforms).unwrap();
+        staging_buffer.0.copy_from_slice(&transforms).unwrap();
         world.instance_transforms.copy_from(
             &staging_buffer.0,
             (*instance_offset * size_of::<Mat4>()) as u64,
@@ -76,7 +76,7 @@ pub fn transform_parent_changed(
 
 pub fn transform_child_changed(
     mut world: ResMut<RenderWorld>,
-    staging_buffer: Res<StagingBuffer>,
+    mut staging_buffer: ResMut<StagingBuffer>,
     query: Query<
         (&ChildOf, &Transform, &UploadedInstance),
         (Changed<Transform>, Without<Instance>),
@@ -88,7 +88,7 @@ pub fn transform_child_changed(
 
         staging_buffer
             .0
-            .copy_data_to_buffer(&[parent_transform.as_matrix() * transform.as_matrix()])
+            .copy_from_slice(&[parent_transform.as_matrix() * transform.as_matrix()])
             .unwrap();
         world.instance_transforms.copy_from(
             &staging_buffer.0,
@@ -101,7 +101,7 @@ pub fn transform_child_changed(
 pub fn load_assets(
     mut cmd: Commands,
     mut world: ResMut<RenderWorld>,
-    staging_buffer: Res<StagingBuffer>,
+    mut staging_buffer: ResMut<StagingBuffer>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     if world.upload_queue.is_empty() {
@@ -170,40 +170,40 @@ pub fn load_assets(
             world.upload_queue.push((entity, mesh, transform));
         }
     }
-    world.instance_bvh_root_nodes.push(&staging_buffer.0, &bvh_root_nodes);
-    world.instance_transforms.push(&staging_buffer.0, &transforms);
-    world.instance_materials.push(&staging_buffer.0, &material_ids);
-    world.materials.push(&staging_buffer.0, &materials);
-    world.instance_aabbs.push(&staging_buffer.0, &aabbs);
+    world.instance_bvh_root_nodes.push(&mut staging_buffer.0, &bvh_root_nodes);
+    world.instance_transforms.push(&mut staging_buffer.0, &transforms);
+    world.instance_materials.push(&mut staging_buffer.0, &material_ids);
+    world.materials.push(&mut staging_buffer.0, &materials);
+    world.instance_aabbs.push(&mut staging_buffer.0, &aabbs);
 
-    world.vertices.push(&staging_buffer.0, &vertices);
-    world.indecies.push(&staging_buffer.0, &indices);
-    world.meshlets.push(&staging_buffer.0, &meshlets);
-    world.cull_data.push(&staging_buffer.0, &cull_data);
-    world.bvh_nodes.push(&staging_buffer.0, &bvh);
+    world.vertices.push(&mut staging_buffer.0, &vertices);
+    world.indecies.push(&mut staging_buffer.0, &indices);
+    world.meshlets.push(&mut staging_buffer.0, &meshlets);
+    world.cull_data.push(&mut staging_buffer.0, &cull_data);
+    world.bvh_nodes.push(&mut staging_buffer.0, &bvh);
 }
 
 #[derive(Resource)]
-pub struct StagingBuffer(pub Buffer);
+pub struct StagingBuffer(pub Buffer<u8, CpuBuffer>);
 
 #[derive(Resource, Default)]
 pub struct RenderWorld {
-    pub vertices: DynamicBuffer<Vertex>,
-    pub indecies: DynamicBuffer<u8>,
-    pub meshlets: DynamicBuffer<Meshlet>,
-    pub cull_data: DynamicBuffer<CullData>,
-    pub bvh_nodes: DynamicBuffer<BvhNode>,
-    pub materials: DynamicBuffer<Material>,
+    pub vertices: Buffer<Vertex>,
+    pub indecies: Buffer<u8>,
+    pub meshlets: Buffer<Meshlet>,
+    pub cull_data: Buffer<CullData>,
+    pub bvh_nodes: Buffer<BvhNode>,
+    pub materials: Buffer<Material>,
     
-    pub instance_transforms: DynamicBuffer<Mat4>,
-    pub instance_materials: DynamicBuffer<u32>,
-    pub instance_bvh_root_nodes: DynamicBuffer<u32>,
-    pub instance_aabbs: DynamicBuffer<Aabb>,
+    pub instance_transforms: Buffer<Mat4>,
+    pub instance_materials: Buffer<u32>,
+    pub instance_bvh_root_nodes: Buffer<u32>,
+    pub instance_aabbs: Buffer<Aabb>,
 
     upload_queue: Vec<(Entity, Handle<Mesh>, Mat4)>,
 
-    acceleration_structure_scratch_memory: Option<DynamicBuffer<u8>>,
-    acceleration_structure_memory: Option<DynamicBuffer<u8>>,
+    acceleration_structure_scratch_memory: Option<Buffer<u8>>,
+    acceleration_structure_memory: Option<Buffer<u8>>,
     tlas: Option<AccelerationStructure>,
     pub max_bvh_depth: u32,
 }
@@ -211,9 +211,8 @@ pub struct RenderWorld {
 pub(super) fn init_world(mut cmd: Commands) {
     let render_world = RenderWorld::default();
     cmd.insert_resource(StagingBuffer(
-        Buffer::new(
+        Buffer::with_size(
             BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::TRANSFER_DST,
-            MemoryLocation::CpuToGpu,
             STAGING_BUFFER_SIZE,
         )
         .unwrap(),

@@ -15,7 +15,7 @@ use dgfsdk_rs::wrappers::bake_default;
 use glam::{vec3, Mat4, Vec3};
 use meshopt::VertexDataAdapter;
 
-use crate::assets::{material::Material, mesh::{Aabb, MeshletMesh, Vertex}};
+use crate::assets::{material::Material, mesh::{Aabb, MeshletMesh}};
 
 pub mod material;
 pub mod mesh;
