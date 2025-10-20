@@ -3,6 +3,12 @@
 #define TAU 6.28318530717958647692528676655900576
 #define FRAC_1_PI 0.318309886183790671537767526745028724
 
+float4 NormalizePlane(float4 p)
+{
+    float len = length(p.xyz);
+    return p / len;
+}
+
 float2 direction_to_equirect_uv(float3 normalizedDirection)
 {
     float u = (0.5 + atan2(normalizedDirection.z, normalizedDirection.x)/(2*float.getPi()));

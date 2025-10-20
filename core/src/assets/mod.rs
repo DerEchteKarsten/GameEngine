@@ -1,21 +1,29 @@
 use core::slice;
 use std::{
-    collections::HashMap, f16, fmt::Debug, future::IntoFuture, io::Write, mem::offset_of, sync::atomic::AtomicU32
+    collections::HashMap, f16, fmt::Debug, future::IntoFuture, io::Write, mem::offset_of,
+    sync::atomic::AtomicU32,
 };
 
 use anyhow::{Ok, Result};
 use ash::{Instance, vk::QCOM_FILTER_CUBIC_CLAMP_NAME};
 use bevy_app::Plugin;
 use bevy_asset::{
-    io::Reader, processor::LoadTransformAndSave, saver::AssetSaver, transformer::{AssetTransformer, TransformedAsset}, AssetApp, AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext
+    AssetApp, AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext,
+    io::Reader,
+    processor::LoadTransformAndSave,
+    saver::AssetSaver,
+    transformer::{AssetTransformer, TransformedAsset},
 };
 use bevy_reflect::TypePath;
 use bytemuck::{NoUninit, Pod, Zeroable};
 use dgfsdk_rs::wrappers::bake_default;
-use glam::{vec3, Mat4, Vec3};
+use glam::{Mat4, Vec3, vec3};
 use meshopt::VertexDataAdapter;
 
-use crate::assets::{material::Material, mesh::{Aabb, MeshletMesh}};
+use crate::assets::{
+    material::Material,
+    mesh::{Aabb, MeshletMesh},
+};
 
 pub mod material;
 pub mod mesh;
@@ -84,7 +92,6 @@ pub fn typed_to_bytes<T: Sized>(typed: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(typed.as_ptr().cast(), std::mem::size_of_val(typed)) }
 }
 
-
 struct MeshTransformer;
 impl AssetTransformer for MeshTransformer {
     type AssetInput = GltfMesh;
@@ -110,27 +117,29 @@ impl AssetTransformer for MeshTransformer {
 
                 let reader = primitive.reader(|buffer| Some(&asset.buffers[buffer.index()]));
 
-                let normals = reader
-                    .read_normals()
+                let normals = reader.read_normals().unwrap().flatten().collect::<Vec<_>>();
+                let verticies = reader
+                    .read_positions()
                     .unwrap()
-                    .flatten()
+                    .map(|e| Vec3::from(e))
                     .collect::<Vec<_>>();
 
                 let uvs = reader
                     .read_tex_coords(0)
+                    .map(|e| e.into_f32().flatten().collect::<Vec<_>>());
+                let uvs = uvs.unwrap_or(vec![0.0; verticies.len() * 2]);
+                let indicies = reader
+                    .read_indices()
                     .unwrap()
-                    .into_f32()
-                    .flatten()
+                    .into_u32()
                     .collect::<Vec<_>>();
-                let verticies = reader.read_positions().unwrap().map(|e| Vec3::from(e)).collect::<Vec<_>>();
-                let indicies = reader.read_indices().unwrap().into_u32().collect::<Vec<_>>();
-                
+
                 remap.insert(index, meshes.len() as u32);
 
                 meshes.push(MeshletMesh::new(&indicies, &verticies, &normals, &uvs));
-            }         
+            }
         }
-        
+
         let mut instance_transforms = vec![];
         let mut materials = vec![];
         let mut instance_materials = vec![];
@@ -144,13 +153,23 @@ impl AssetTransformer for MeshTransformer {
                 let pmaterial = primitive.material();
                 let pbr = pmaterial.pbr_metallic_roughness();
                 materials.push(Material {
-                    color: [pbr.base_color_factor()[0], pbr.base_color_factor()[1], pbr.base_color_factor()[2]],
+                    color: [
+                        pbr.base_color_factor()[0],
+                        pbr.base_color_factor()[1],
+                        pbr.base_color_factor()[2],
+                    ],
                     metalic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
-                    texture_offset: pbr.base_color_texture().map(|v| { v.texture().index() as u32 }).unwrap_or(!0u32),
+                    texture_offset: pbr
+                        .base_color_texture()
+                        .map(|v| v.texture().index() as u32)
+                        .unwrap_or(!0u32),
                 });
 
-                let mesh = remap.get(&(gltf_mesh.index(), primitive.index())).unwrap().clone();
+                let mesh = remap
+                    .get(&(gltf_mesh.index(), primitive.index()))
+                    .unwrap()
+                    .clone();
                 instance_materials.push(material as u32);
                 instance_mesh.push(mesh);
                 instance_transforms.push(Mat4::from_cols_array_2d(&transform));
@@ -165,19 +184,16 @@ impl AssetTransformer for MeshTransformer {
             meshes,
             uploaded: false,
         };
-        
 
         let asset = asset.replace_asset(mesh);
         return Ok(asset);
     }
 }
 
-
-async fn write_slice<T: Pod>(
-    field: &[T],
-    writer: &mut bevy_asset::io::Writer,
-) -> Result<()> {
-    writer.write_all(&(field.len() as u64).to_le_bytes()).await?;
+async fn write_slice<T: Pod>(field: &[T], writer: &mut bevy_asset::io::Writer) -> Result<()> {
+    writer
+        .write_all(&(field.len() as u64).to_le_bytes())
+        .await?;
     writer.write_all(bytemuck::cast_slice(field)).await?;
     Ok(())
 }
@@ -190,8 +206,12 @@ async fn read_u64(reader: &mut dyn bevy_asset::io::Reader) -> Result<u64> {
 async fn read_slice<T: Pod>(reader: &mut dyn bevy_asset::io::Reader) -> Result<Vec<T>> {
     let len = read_u64(reader).await? as usize;
 
-    let mut data = core::iter::repeat_with(T::zeroed).take(len).collect::<Vec<T>>();
-    reader.read_exact(bytemuck::cast_slice_mut(&mut data)).await?;
+    let mut data = core::iter::repeat_with(T::zeroed)
+        .take(len)
+        .collect::<Vec<T>>();
+    reader
+        .read_exact(bytemuck::cast_slice_mut(&mut data))
+        .await?;
 
     Ok(data)
 }
@@ -209,23 +229,27 @@ impl AssetSaver for MeshSaver {
         settings: &Self::Settings,
     ) -> std::result::Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
         let mesh = asset.get();
-        
-        write_slice(&mesh.instance_transforms, writer);
-        write_slice(&mesh.materials, writer);
-        write_slice(&mesh.instance_mesh, writer);
-        write_slice(&mesh.instance_materials, writer);
 
-        writer.write_all(&(mesh.meshes.len() as u64).to_le_bytes()).await?;
+        write_slice(&mesh.instance_transforms, writer).await?;
+        write_slice(&mesh.materials, writer).await?;
+        write_slice(&mesh.instance_mesh, writer).await?;
+        write_slice(&mesh.instance_materials, writer).await?;
+
+        writer
+            .write_all(&(mesh.meshes.len() as u64).to_le_bytes())
+            .await?;
 
         for mesh in &mesh.meshes {
             writer.write_all(&(mesh.bvh_depth.to_le_bytes())).await?;
-            writer.write_all(&bytemuck::cast_slice(&[mesh.aabb])).await?;
+            writer
+                .write_all(&bytemuck::cast_slice(&[mesh.aabb]))
+                .await?;
 
-            write_slice(&mesh.vertices, writer);
-            write_slice(&mesh.indices, writer);
-            write_slice(&mesh.meshlets, writer);
-            write_slice(&mesh.cull_data, writer);
-            write_slice(&mesh.bvh, writer);
+            write_slice(&mesh.vertices, writer).await?;
+            write_slice(&mesh.indices, writer).await?;
+            write_slice(&mesh.meshlets, writer).await?;
+            write_slice(&mesh.cull_data, writer).await?;
+            write_slice(&mesh.bvh, writer).await?;
         }
 
         return Ok(());
@@ -243,7 +267,6 @@ impl AssetLoader for MeshLoader {
         settings: &Self::Settings,
         load_context: &mut LoadContext<'_>,
     ) -> std::result::Result<Self::Asset, Self::Error> {
-
         let instance_transforms = read_slice(reader).await?;
         let materials = read_slice(reader).await?;
         let instance_materials = read_slice(reader).await?;
@@ -252,10 +275,10 @@ impl AssetLoader for MeshLoader {
 
         let mut meshes = Vec::new();
         for i in 0..num_meshes {
-            let mut buffer = [0u8; size_of::<Aabb>()]; 
-            reader.read(&mut buffer);
+            let mut buffer = [0u8; size_of::<Aabb>()];
+            reader.read(&mut buffer).await?;
             let aabb = bytemuck::cast_slice(&buffer)[0];
-            reader.read(&mut buffer[0..4]);
+            reader.read(&mut buffer[0..4]).await?;
             let bvh_depth = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
 
             meshes.push(MeshletMesh {

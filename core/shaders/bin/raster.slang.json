@@ -1,0 +1,282 @@
+{
+    "parameters": [
+        {
+            "name": "b",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "Bindings",
+                    "fields": [
+                        {
+                            "name": "view",
+                            "type": {
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                        },
+                        {
+                            "name": "proj",
+                            "type": {
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                        },
+                        {
+                            "name": "verticies",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "Vertex"
+                            },
+                            "binding": {"kind": "uniform", "offset": 128, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "indicies",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "uint8_t"
+                            },
+                            "binding": {"kind": "uniform", "offset": 136, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "meshlets",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "Meshlet"
+                            },
+                            "binding": {"kind": "uniform", "offset": 144, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "clusters",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "Cluster"
+                            },
+                            "binding": {"kind": "uniform", "offset": 152, "size": 8, "elementStride": 0}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "Bindings",
+                        "fields": [
+                            {
+                                "name": "view",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "proj",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "verticies",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "Vertex"
+                                },
+                                "binding": {"kind": "uniform", "offset": 128, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "indicies",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "uint8_t"
+                                },
+                                "binding": {"kind": "uniform", "offset": 136, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "meshlets",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "Meshlet"
+                                },
+                                "binding": {"kind": "uniform", "offset": 144, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "clusters",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "Cluster"
+                                },
+                                "binding": {"kind": "uniform", "offset": 152, "size": 8, "elementStride": 0}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 160, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "vertex",
+            "stage": "vertex",
+            "parameters": [
+                {
+                    "name": "instance_index",
+                    "semanticName": "SV_INSTANCEID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "vertex_index",
+                    "semanticName": "SV_VERTEXID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                }
+            ],
+            "result": {
+                "stage": "vertex",
+                "binding": {"kind": "varyingOutput", "index": 0},
+                "type": {
+                    "kind": "struct",
+                    "name": "VSOutput",
+                    "fields": [
+                        {
+                            "name": "position",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "semanticName": "SV_POSITION"
+                        },
+                        {
+                            "name": "color",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 3,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 0}
+                        }
+                    ]
+                }
+            },
+            "bindings": [
+                {
+                    "name": "b",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        },
+        {
+            "name": "fragment",
+            "stage": "fragment",
+            "parameters": [
+                {
+                    "name": "input",
+                    "stage": "fragment",
+                    "binding": {"kind": "varyingInput", "index": 0},
+                    "type": {
+                        "kind": "struct",
+                        "name": "VSOutput",
+                        "fields": [
+                            {
+                                "name": "position",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "semanticName": "SV_POSITION"
+                            },
+                            {
+                                "name": "color",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 3,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 0}
+                            }
+                        ]
+                    }
+                }
+            ],
+            "result": {
+                "stage": "fragment",
+                "binding": {"kind": "varyingOutput", "index": 0},
+                "type": {
+                    "kind": "struct",
+                    "name": "PSOutput",
+                    "fields": [
+                        {
+                            "name": "color",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "fragment",
+                            "binding": {"kind": "varyingOutput", "index": 0},
+                            "semanticName": "SV_TARGET"
+                        }
+                    ]
+                }
+            },
+            "bindings": [
+                {
+                    "name": "b",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ]
+}

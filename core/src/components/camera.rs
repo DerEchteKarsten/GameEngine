@@ -14,7 +14,7 @@ use glam::{Mat3, Mat4, Quat, Vec3, vec3};
 use bevy_ecs::prelude::*;
 use lava::state::Ctx;
 
-const MOVE_SPEED: f32 = 10.0;
+const MOVE_SPEED: f32 = 1.0;
 const SENSITIVITY: f32 = 0.5;
 
 const UP: Vec3 = vec3(0.0, 1.0, 0.0);

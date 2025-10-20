@@ -1,0 +1,290 @@
+{
+    "parameters": [
+        {
+            "name": "TextureHeap",
+            "binding": {"kind": "descriptorTableSlot", "index": 1},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "DynamicResource"
+                }
+            }
+        },
+        {
+            "name": "RWTextureHeap",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "DynamicResource"
+                }
+            }
+        },
+        {
+            "name": "bindings",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "Bindings",
+                    "fields": [
+                        {
+                            "name": "const",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Constants",
+                                "fields": [
+                                    {
+                                        "name": "inverse_proj",
+                                        "type": {
+                                            "kind": "matrix",
+                                            "rowCount": 4,
+                                            "columnCount": 4,
+                                            "elementType": {
+                                                "kind": "scalar",
+                                                "scalarType": "float32"
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                                    },
+                                    {
+                                        "name": "inverse_view",
+                                        "type": {
+                                            "kind": "matrix",
+                                            "rowCount": 4,
+                                            "columnCount": 4,
+                                            "elementType": {
+                                                "kind": "scalar",
+                                                "scalarType": "float32"
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                                    },
+                                    {
+                                        "name": "window_size",
+                                        "type": {
+                                            "kind": "vector",
+                                            "elementCount": 4,
+                                            "elementType": {
+                                                "kind": "scalar",
+                                                "scalarType": "float32"
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 128, "size": 16, "elementStride": 4}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 144, "elementStride": 0}
+                        },
+                        {
+                            "name": "depth",
+                            "type": {
+                                "kind": "struct",
+                                "name": "TextureHandle",
+                                "fields": [
+                                    {
+                                        "name": "DescriptorIndex",
+                                        "type": {
+                                            "kind": "scalar",
+                                            "scalarType": "uint64"
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 144, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "color",
+                            "type": {
+                                "kind": "struct",
+                                "name": "TextureHandle",
+                                "fields": [
+                                    {
+                                        "name": "DescriptorIndex",
+                                        "type": {
+                                            "kind": "scalar",
+                                            "scalarType": "uint64"
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 152, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "out",
+                            "type": {
+                                "kind": "struct",
+                                "name": "ImageHandle",
+                                "fields": [
+                                    {
+                                        "name": "DescriptorIndex",
+                                        "type": {
+                                            "kind": "scalar",
+                                            "scalarType": "uint64"
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 160, "size": 8, "elementStride": 0}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "Bindings",
+                        "fields": [
+                            {
+                                "name": "const",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Constants",
+                                    "fields": [
+                                        {
+                                            "name": "inverse_proj",
+                                            "type": {
+                                                "kind": "matrix",
+                                                "rowCount": 4,
+                                                "columnCount": 4,
+                                                "elementType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "float32"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                                        },
+                                        {
+                                            "name": "inverse_view",
+                                            "type": {
+                                                "kind": "matrix",
+                                                "rowCount": 4,
+                                                "columnCount": 4,
+                                                "elementType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "float32"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                                        },
+                                        {
+                                            "name": "window_size",
+                                            "type": {
+                                                "kind": "vector",
+                                                "elementCount": 4,
+                                                "elementType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "float32"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 128, "size": 16, "elementStride": 4}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 144, "elementStride": 0}
+                            },
+                            {
+                                "name": "depth",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "TextureHandle",
+                                    "fields": [
+                                        {
+                                            "name": "DescriptorIndex",
+                                            "type": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint64"
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 144, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "color",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "TextureHandle",
+                                    "fields": [
+                                        {
+                                            "name": "DescriptorIndex",
+                                            "type": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint64"
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 152, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "out",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "ImageHandle",
+                                    "fields": [
+                                        {
+                                            "name": "DescriptorIndex",
+                                            "type": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint64"
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 160, "size": 8, "elementStride": 0}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 168, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "main",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "dtid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 2,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                }
+            ],
+            "threadGroupSize": [8, 8, 1],
+            "bindings": [
+                {
+                    "name": "TextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "RWTextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "bindings",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ]
+}

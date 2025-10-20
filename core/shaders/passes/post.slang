@@ -28,7 +28,7 @@ float3 view_dir(uint2 pixelCoord) {
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main(uint2 dtid: SV_DispatchThreadID) {
-    float4 color = bindings.color.Instance[dtid];
+    float4 color = bindings.color.Load(dtid);
     float depth = bindings.depth.Instance[dtid];
 
     if (depth == 0.0) {

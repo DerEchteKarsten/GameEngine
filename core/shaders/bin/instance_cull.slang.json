@@ -1,0 +1,148 @@
+{
+    "parameters": [
+        {
+            "name": "b",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "Bindings",
+                    "fields": [
+                        {
+                            "name": "aabbs",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "Aabb"
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "instance_bvh_root_nodes",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "uint"
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "instance_transforms",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "matrix"
+                            },
+                            "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "cluster_buffer",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "Cluster"
+                            },
+                            "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "indirect_draw",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "DrawIndirectCommand"
+                            },
+                            "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "Bindings",
+                        "fields": [
+                            {
+                                "name": "aabbs",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "Aabb"
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "instance_bvh_root_nodes",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "uint"
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "instance_transforms",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "matrix"
+                                },
+                                "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "cluster_buffer",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "Cluster"
+                                },
+                                "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "indirect_draw",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "DrawIndirectCommand"
+                                },
+                                "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 40, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "main",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "gid",
+                    "semanticName": "SV_GROUPID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "dtid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "gtid",
+                    "semanticName": "SV_GROUPTHREADID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                }
+            ],
+            "threadGroupSize": [64, 1, 1],
+            "bindings": [
+                {
+                    "name": "b",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ]
+}

@@ -19,16 +19,22 @@ use bevy_ecs::{
 use bevy_log::info_span;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
-use lava::{pipelines::Vertex, vkobjects::buffer::{Buffer, CpuBuffer}};
+use lava::{
+    pipelines::Vertex,
+    vkobjects::buffer::{Buffer, CpuBuffer},
+};
 use lava::{state::Ctx, vkobjects::acceleration_structure::AccelerationStructure};
 
 use crate::{
-    assets::{Mesh, material::Material, mesh::{Aabb, BvhNode, CullData, Meshlet}},
+    assets::{
+        Mesh,
+        material::Material,
+        mesh::{Aabb, BvhNode, CullData, Meshlet},
+    },
     components::transform::Transform,
 };
 
 pub const STAGING_BUFFER_SIZE: u64 = 16777216;
-
 
 #[derive(Component, Clone)]
 pub struct Instance {
@@ -48,7 +54,10 @@ pub fn add_instance(
         world.upload_queue.push((
             entity,
             instance.model.clone(),
-            transform.map(|t| t.as_matrix()).unwrap_or(Mat4::IDENTITY).clone(),
+            transform
+                .map(|t| t.as_matrix())
+                .unwrap_or(Mat4::IDENTITY)
+                .clone(),
         ));
     }
 }
@@ -83,7 +92,14 @@ pub fn transform_child_changed(
     >,
     p_query: Query<&Transform, With<Instance>>,
 ) {
-    for (parent, transform, UploadedInstance { instance_offset: cluster_transforms_offset }) in query {
+    for (
+        parent,
+        transform,
+        UploadedInstance {
+            instance_offset: cluster_transforms_offset,
+        },
+    ) in query
+    {
         let parent_transform = p_query.get(parent.parent()).unwrap();
 
         staging_buffer
@@ -129,7 +145,7 @@ pub fn load_assets(
                     indices.extend(m.indices.clone());
                     meshlets.extend(m.meshlets.clone());
                     cull_data.extend(m.cull_data.clone());
-                    
+
                     let bvh_root = world.bvh_nodes.len() + bvh.len();
                     m.bvh_root_node_index = bvh_root as u32;
                     bvh.extend(m.bvh.clone());
@@ -157,22 +173,34 @@ pub fn load_assets(
                 .collect::<Vec<_>>();
             cmd.entity(entity)
                 .add_children(&children)
-                .insert(UploadedInstance {
-                    instance_offset 
-                });
-            
+                .insert(UploadedInstance { instance_offset });
+
             transforms.extend(mesh.instance_transforms.clone());
-            bvh_root_nodes.extend(mesh.instance_mesh.iter().map(|m| mesh.meshes[(*m) as usize].bvh_root_node_index));
-            aabbs.extend(mesh.instance_mesh.iter().map(|m| mesh.meshes[(*m) as usize].aabb));
+            bvh_root_nodes.extend(
+                mesh.instance_mesh
+                    .iter()
+                    .map(|m| mesh.meshes[(*m) as usize].bvh_root_node_index),
+            );
+            aabbs.extend(
+                mesh.instance_mesh
+                    .iter()
+                    .map(|m| mesh.meshes[(*m) as usize].aabb),
+            );
             material_ids.extend(mesh.instance_materials.clone());
             materials.extend(mesh.materials.clone());
         } else {
             world.upload_queue.push((entity, mesh, transform));
         }
     }
-    world.instance_bvh_root_nodes.push(&mut staging_buffer.0, &bvh_root_nodes);
-    world.instance_transforms.push(&mut staging_buffer.0, &transforms);
-    world.instance_materials.push(&mut staging_buffer.0, &material_ids);
+    world
+        .instance_bvh_root_nodes
+        .push(&mut staging_buffer.0, &bvh_root_nodes);
+    world
+        .instance_transforms
+        .push(&mut staging_buffer.0, &transforms);
+    world
+        .instance_materials
+        .push(&mut staging_buffer.0, &material_ids);
     world.materials.push(&mut staging_buffer.0, &materials);
     world.instance_aabbs.push(&mut staging_buffer.0, &aabbs);
 
@@ -194,7 +222,7 @@ pub struct RenderWorld {
     pub cull_data: Buffer<CullData>,
     pub bvh_nodes: Buffer<BvhNode>,
     pub materials: Buffer<Material>,
-    
+
     pub instance_transforms: Buffer<Mat4>,
     pub instance_materials: Buffer<u32>,
     pub instance_bvh_root_nodes: Buffer<u32>,

@@ -8,7 +8,7 @@ build="build.rs"
 glam = { version = "0.30.5", features = ["bytemuck"] }
 bevy_a11y = "0.16.0"
 bevy_app = "0.16.0"
-bevy_asset = { version = "0.16.1", features = ["asset_processor", "file_watcher", "multi_threaded"] }
+bevy_asset = { version = "0.16.1", features = ["asset_processor", "embedded_watcher", "file_watcher", "multi_threaded"] }
 bevy_ecs = {version = "0.16.0", features = ["trace", "multi_threaded"]}
 bevy_input = "0.16.0"
 bevy_log = "0.16.0"
