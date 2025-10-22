@@ -10,7 +10,7 @@ use std::{
     random::random,
 };
 
-use ash::vk::{self, BufferUsageFlags, Format, VideoChromaSubsamplingFlagsKHR};
+use ash::vk::{self, Format, VideoChromaSubsamplingFlagsKHR};
 use bevy_a11y::AccessibilityPlugin;
 use bevy_app::{
     App, PostUpdate, PreStartup, PreUpdate, Startup, TaskPoolOptions, TaskPoolPlugin, Update,
@@ -40,7 +40,7 @@ use lava::{
     pipelines::{RasterDispatch, Vertex},
     state::Ctx,
     vkobjects::{
-        buffer::Buffer,
+        buffer::{Buffer, BufferUsageFlags, FirstUse, GpuBuffer, Sized, Static},
         image::{Image, ImageSize},
     },
 };
@@ -85,9 +85,9 @@ struct Cluster {
 struct RenderResources {
     depth_attachment: Image,
     color_attachment: Image,
-    cluster_buffer: Buffer<Cluster>,
-    indirect_draw: Buffer<vk::DrawIndirectCommand>,
-    instance_buffer: Buffer<u32>,
+    cluster_buffer: Buffer<Cluster, Static<100000>>,
+    indirect_draw: Buffer<vk::DrawIndirectCommand, Sized>,
+    instance_buffer: Buffer<u32, Static<10000>>,
 }
 
 fn render(
@@ -111,9 +111,9 @@ fn render(
             ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32),
         )
         .unwrap(),
-        cluster_buffer: Buffer::with_size(vk::BufferUsageFlags::STORAGE_BUFFER, 100000).unwrap(),
-        indirect_draw: Buffer::from_data(
-            vk::BufferUsageFlags::INDIRECT_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER,
+        cluster_buffer: Buffer::<Cluster, Static<100000>, GpuBuffer>::new(BufferUsageFlags::STORAGE).unwrap(),
+        indirect_draw: Buffer::<vk::DrawIndirectCommand, Sized, GpuBuffer>::from_data(
+            BufferUsageFlags::INDIRECT_COMMAND | BufferUsageFlags::STORAGE,
             &mut staging_buffer.0,
             &[vk::DrawIndirectCommand {
                 instance_count: 0,
@@ -123,7 +123,7 @@ fn render(
             }],
         )
         .unwrap(),
-        instance_buffer: Buffer::with_size(vk::BufferUsageFlags::STORAGE_BUFFER, 10000).unwrap(),
+        instance_buffer: Buffer::<u32, Static<10000>, GpuBuffer>::new(vk::BufferUsageFlags::STORAGE_BUFFER).unwrap(),
     });
 
     Ctx::next_frame(&mut |cmd, swapchain_image| {

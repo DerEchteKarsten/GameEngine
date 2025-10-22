@@ -21,7 +21,7 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 use lava::{
     pipelines::Vertex,
-    vkobjects::buffer::{Buffer, CpuBuffer},
+    vkobjects::buffer::{Buffer, CpuBuffer, Static},
 };
 use lava::{state::Ctx, vkobjects::acceleration_structure::AccelerationStructure};
 
@@ -34,7 +34,7 @@ use crate::{
     components::transform::Transform,
 };
 
-pub const STAGING_BUFFER_SIZE: u64 = 16777216;
+pub const STAGING_BUFFER_SIZE: usize = 16777216;
 
 #[derive(Component, Clone)]
 pub struct Instance {
@@ -76,7 +76,7 @@ pub fn transform_parent_changed(
         }
         staging_buffer.0.copy_from_slice(&transforms).unwrap();
         world.instance_transforms.copy_from(
-            &staging_buffer.0,
+            staging_buffer.0.cast_mut(),
             (*instance_offset * size_of::<Mat4>()) as u64,
             (transforms.len() * size_of::<Mat4>()) as u64,
         );
@@ -107,7 +107,7 @@ pub fn transform_child_changed(
             .copy_from_slice(&[parent_transform.as_matrix() * transform.as_matrix()])
             .unwrap();
         world.instance_transforms.copy_from(
-            &staging_buffer.0,
+            staging_buffer.0.cast_mut(),
             (*cluster_transforms_offset * size_of::<Mat4>()) as u64,
             (1 * size_of::<Mat4>()) as u64,
         );
@@ -211,8 +211,8 @@ pub fn load_assets(
     world.bvh_nodes.push(&mut staging_buffer.0, &bvh);
 }
 
-#[derive(Resource)]
-pub struct StagingBuffer(pub Buffer<u8, CpuBuffer>);
+#[derive(Resource, Default)]
+pub struct StagingBuffer(pub Buffer<u8, Static<STAGING_BUFFER_SIZE>, CpuBuffer>);
 
 #[derive(Resource, Default)]
 pub struct RenderWorld {
@@ -237,14 +237,6 @@ pub struct RenderWorld {
 }
 
 pub(super) fn init_world(mut cmd: Commands) {
-    let render_world = RenderWorld::default();
-    cmd.insert_resource(StagingBuffer(
-        Buffer::with_size(
-            BufferUsageFlags::TRANSFER_SRC | BufferUsageFlags::TRANSFER_DST,
-            STAGING_BUFFER_SIZE,
-        )
-        .unwrap(),
-    ));
-
-    cmd.insert_resource(render_world);
+    cmd.insert_resource(StagingBuffer::default());
+    cmd.insert_resource(RenderWorld::default());
 }
