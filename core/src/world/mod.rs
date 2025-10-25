@@ -1,13 +1,9 @@
 use std::{
-    fmt::Debug,
-    marker::PhantomData,
-    os::raw::c_void,
-    ptr::NonNull,
-    time::{Duration, Instant},
+    fmt::Debug, marker::PhantomData, ops::{Deref, DerefMut}, os::raw::c_void, ptr::NonNull, time::{Duration, Instant}
 };
 
 use anyhow::Result;
-use ash::vk::{self, BufferCopy, BufferUsageFlags, Packed24_8};
+use ash::vk::{self, BufferCopy, Packed24_8};
 use bevy_app::prelude::*;
 use bevy_asset::{AssetEvent, AssetServer, Assets, Handle};
 use bevy_ecs::{
@@ -21,7 +17,7 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 use lava::{
     pipelines::Vertex,
-    vkobjects::buffer::{Buffer, CpuBuffer, Static},
+    vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, StorageBuffer},
 };
 use lava::{state::Ctx, vkobjects::acceleration_structure::AccelerationStructure};
 
@@ -194,39 +190,52 @@ pub fn load_assets(
     }
     world
         .instance_bvh_root_nodes
-        .push(&mut staging_buffer.0, &bvh_root_nodes);
+        .push(&mut staging_buffer, &bvh_root_nodes);
     world
         .instance_transforms
-        .push(&mut staging_buffer.0, &transforms);
+        .push(&mut staging_buffer, &transforms);
     world
         .instance_materials
-        .push(&mut staging_buffer.0, &material_ids);
-    world.materials.push(&mut staging_buffer.0, &materials);
-    world.instance_aabbs.push(&mut staging_buffer.0, &aabbs);
+        .push(&mut staging_buffer, &material_ids);
+    world.materials.push(&mut staging_buffer, &materials);
+    world.instance_aabbs.push(&mut staging_buffer, &aabbs);
 
-    world.vertices.push(&mut staging_buffer.0, &vertices);
-    world.indecies.push(&mut staging_buffer.0, &indices);
-    world.meshlets.push(&mut staging_buffer.0, &meshlets);
-    world.cull_data.push(&mut staging_buffer.0, &cull_data);
-    world.bvh_nodes.push(&mut staging_buffer.0, &bvh);
+    world.vertices.push(&mut staging_buffer, &vertices);
+    world.indecies.push(&mut staging_buffer, &indices);
+    world.meshlets.push(&mut staging_buffer, &meshlets);
+    world.cull_data.push(&mut staging_buffer, &cull_data);
+    world.bvh_nodes.push(&mut staging_buffer, &bvh);
 }
 
-#[derive(Resource, Default)]
-pub struct StagingBuffer(pub Buffer<u8, Static<STAGING_BUFFER_SIZE>, CpuBuffer>);
+#[derive(Resource)]
+pub struct StagingBuffer(pub Buffer<u8, CpuBuffer>);
+
+impl Deref for StagingBuffer {
+    type Target = Buffer<u8, CpuBuffer>;
+    fn deref(&self) -> &Buffer<u8, CpuBuffer> {
+        &self.0
+    } 
+}
+impl DerefMut for StagingBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    } 
+}
+
 
 #[derive(Resource, Default)]
 pub struct RenderWorld {
-    pub vertices: Buffer<Vertex>,
-    pub indecies: Buffer<u8>,
-    pub meshlets: Buffer<Meshlet>,
-    pub cull_data: Buffer<CullData>,
-    pub bvh_nodes: Buffer<BvhNode>,
-    pub materials: Buffer<Material>,
+    pub vertices: StorageBuffer<Vertex>,
+    pub indecies: StorageBuffer<u8>,
+    pub meshlets: StorageBuffer<Meshlet>,
+    pub cull_data: StorageBuffer<CullData>,
+    pub bvh_nodes: StorageBuffer<BvhNode>,
+    pub materials: StorageBuffer<Material>,
 
-    pub instance_transforms: Buffer<Mat4>,
-    pub instance_materials: Buffer<u32>,
-    pub instance_bvh_root_nodes: Buffer<u32>,
-    pub instance_aabbs: Buffer<Aabb>,
+    pub instance_transforms: StorageBuffer<Mat4>,
+    pub instance_materials: StorageBuffer<u32>,
+    pub instance_bvh_root_nodes: StorageBuffer<u32>,
+    pub instance_aabbs: StorageBuffer<Aabb>,
 
     upload_queue: Vec<(Entity, Handle<Mesh>, Mat4)>,
 
@@ -237,6 +246,6 @@ pub struct RenderWorld {
 }
 
 pub(super) fn init_world(mut cmd: Commands) {
-    cmd.insert_resource(StagingBuffer::default());
+    cmd.insert_resource(StagingBuffer(Buffer::new(BufferUsageFlags::empty(), STAGING_BUFFER_SIZE).unwrap()));
     cmd.insert_resource(RenderWorld::default());
 }

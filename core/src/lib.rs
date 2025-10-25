@@ -40,7 +40,7 @@ use lava::{
     pipelines::{RasterDispatch, Vertex},
     state::Ctx,
     vkobjects::{
-        buffer::{Buffer, BufferUsageFlags, FirstUse, GpuBuffer, Sized, Static},
+        buffer::{Buffer, BufferUsageFlags, GpuBuffer},
         image::{Image, ImageSize},
     },
 };
@@ -85,9 +85,9 @@ struct Cluster {
 struct RenderResources {
     depth_attachment: Image,
     color_attachment: Image,
-    cluster_buffer: Buffer<Cluster, Static<100000>>,
-    indirect_draw: Buffer<vk::DrawIndirectCommand, Sized>,
-    instance_buffer: Buffer<u32, Static<10000>>,
+    cluster_buffer: Buffer<Cluster>,
+    indirect_draw: Buffer<vk::DrawIndirectCommand>,
+    instance_buffer: Buffer<u32>,
 }
 
 fn render(
@@ -111,8 +111,8 @@ fn render(
             ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32),
         )
         .unwrap(),
-        cluster_buffer: Buffer::<Cluster, Static<100000>, GpuBuffer>::new(BufferUsageFlags::STORAGE).unwrap(),
-        indirect_draw: Buffer::<vk::DrawIndirectCommand, Sized, GpuBuffer>::from_data(
+        cluster_buffer: Buffer::new(BufferUsageFlags::STORAGE, 10000).unwrap(),
+        indirect_draw: Buffer::<_, GpuBuffer>::from_data(
             BufferUsageFlags::INDIRECT_COMMAND | BufferUsageFlags::STORAGE,
             &mut staging_buffer.0,
             &[vk::DrawIndirectCommand {
@@ -123,7 +123,7 @@ fn render(
             }],
         )
         .unwrap(),
-        instance_buffer: Buffer::<u32, Static<10000>, GpuBuffer>::new(vk::BufferUsageFlags::STORAGE_BUFFER).unwrap(),
+        instance_buffer: Buffer::new(BufferUsageFlags::STORAGE, 10000).unwrap(),
     });
 
     Ctx::next_frame(&mut |cmd, swapchain_image| {
@@ -138,6 +138,8 @@ fn render(
             .readwrite(&resources.indirect_draw)
             .dispatch(world.meshlets.len() as u32, 1, 1);
 
+        // cmd.print_buffer(&resources.indirect_draw, &(**staging_buffer).cast(), 1);
+        
         cmd.raster()
             .vertex("raster", "vertex")
             .fragment("raster", "fragment")
