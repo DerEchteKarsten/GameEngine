@@ -66,6 +66,14 @@
                                 "valueType": "Cluster"
                             },
                             "binding": {"kind": "uniform", "offset": 152, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "instance_transforms",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "matrix"
+                            },
+                            "binding": {"kind": "uniform", "offset": 160, "size": 8, "elementStride": 0}
                         }
                     ]
                 },
@@ -134,10 +142,18 @@
                                     "valueType": "Cluster"
                                 },
                                 "binding": {"kind": "uniform", "offset": 152, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "instance_transforms",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "matrix"
+                                },
+                                "binding": {"kind": "uniform", "offset": 160, "size": 8, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 160, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 168, "elementStride": 0}
                 }
             }
         }

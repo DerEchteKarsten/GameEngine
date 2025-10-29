@@ -2,12 +2,7 @@
 #![feature(random)]
 
 use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    io::{BufReader, BufWriter, Read, Seek, Write},
-    ops::Deref,
-    path::PathBuf,
-    random::random,
+    collections::{HashMap, HashSet}, f32::consts::PI, fs, io::{BufReader, BufWriter, Read, Seek, Write}, ops::Deref, path::PathBuf, random::random
 };
 
 use ash::vk::{self, Format, VideoChromaSubsamplingFlagsKHR};
@@ -18,7 +13,7 @@ use bevy_app::{
 use bevy_asset::AssetPlugin;
 use bevy_ecs::{
     event::EventReader,
-    resource::Resource,
+    resource::{self, Resource},
     schedule::IntoScheduleConfigs,
     system::{Commands, Local, Query, Res, ResMut},
     world::World,
@@ -32,23 +27,22 @@ use bevy_window::{
     WindowScaleFactorChanged,
 };
 use bevy_winit::{WinitPlugin, WinitWindows};
+use bytemuck::{Pod, Zeroable};
 use fastnbt::{DeOpts, Value, from_bytes};
-use glam::{IVec3, Mat4, Vec2, Vec3, Vec3Swizzles, Vec4};
+use glam::{IVec3, Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
 use gpu_allocator::MemoryLocation;
 use image::{DynamicImage, ImageBuffer, Rgb};
 use lava::{
-    pipelines::{RasterDispatch, Vertex},
-    state::Ctx,
-    vkobjects::{
+    c, pipelines::{RasterDispatch, Vertex}, state::Ctx, vkobjects::{
         buffer::{Buffer, BufferUsageFlags, GpuBuffer},
         image::{Image, ImageSize},
-    },
+    }
 };
 use noise::{MultiFractal, NoiseFn, Perlin};
 use smallvec::SmallVec;
 
 use crate::{
-    assets::MeshAssets,
+    assets::{MeshAssets, mesh::BvhNode},
     components::camera::{Camera, CameraPlugin},
     world::{
         RenderWorld, STAGING_BUFFER_SIZE, StagingBuffer, add_instance, init_world, load_assets,
@@ -87,7 +81,8 @@ struct RenderResources {
     color_attachment: Image,
     cluster_buffer: Buffer<Cluster>,
     indirect_draw: Buffer<vk::DrawIndirectCommand>,
-    instance_buffer: Buffer<u32>,
+    bvh_node_stack: Buffer<i32>,
+    dispatch_indirect: Buffer<vk::DispatchIndirectCommand>,
 }
 
 fn render(
@@ -111,56 +106,72 @@ fn render(
             ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32),
         )
         .unwrap(),
-        cluster_buffer: Buffer::new(BufferUsageFlags::STORAGE, 10000).unwrap(),
+        cluster_buffer: Buffer::new(BufferUsageFlags::STORAGE, 100000).unwrap(),
         indirect_draw: Buffer::<_, GpuBuffer>::from_data(
             BufferUsageFlags::INDIRECT_COMMAND | BufferUsageFlags::STORAGE,
             &mut staging_buffer.0,
             &[vk::DrawIndirectCommand {
-                instance_count: 0,
                 vertex_count: 128 * 3,
+                instance_count: 0,
                 first_instance: 0,
                 first_vertex: 0,
             }],
         )
         .unwrap(),
-        instance_buffer: Buffer::new(BufferUsageFlags::STORAGE, 10000).unwrap(),
+        bvh_node_stack: Buffer::new(BufferUsageFlags::STORAGE, 10000).unwrap(),
+        dispatch_indirect: Buffer::<_, GpuBuffer>::from_data(BufferUsageFlags::STORAGE | BufferUsageFlags::INDIRECT_COMMAND, &mut staging_buffer.0, &[
+            vk::DispatchIndirectCommand {
+                x: 0,
+                y: 1,
+                z: 1,
+            }
+        ]).unwrap(),
     });
 
     Ctx::next_frame(&mut |cmd, swapchain_image| {
         cmd.fill_buffer(&resources.indirect_draw, 4, 0);
+        cmd.fill_buffer(&resources.dispatch_indirect, 4, 1);
 
         cmd.compute()
             .shader_path("instance_cull")
             .read(&world.instance_aabbs)
             .read(&world.instance_bvh_root_nodes)
             .read(&world.instance_transforms)
+            .readwrite(&resources.dispatch_indirect)
+            .readwrite(&resources.bvh_node_stack)
+            .dispatch(world.instance_bvh_root_nodes.len().div_ceil(64) as u32, 1, 1);
+
+        cmd.compute()
+            .shader_path("bvh_cull")
+            .read(&world.bvh_nodes)
+            .read(&world.instance_transforms)
+            .read(&world.cull_data)
             .write(&resources.cluster_buffer)
             .readwrite(&resources.indirect_draw)
-            .dispatch(world.meshlets.len() as u32, 1, 1);
+            .dispatch_indirect(&resources.dispatch_indirect);
 
-        // cmd.print_buffer(&resources.indirect_draw, &(**staging_buffer).cast(), 1);
-        
         cmd.raster()
             .vertex("raster", "vertex")
             .fragment("raster", "fragment")
-            .constant(&(camera.view_matrix(), camera.projection_matrix()))
+            .constants(c!(camera.view_matrix(), camera.projection_matrix()))
             .read(&world.vertices)
             .read(&world.indecies)
             .read(&world.meshlets)
             .read(&resources.cluster_buffer)
+            .read(&world.instance_transforms)
             .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
             .depth_attachment(&resources.depth_attachment)
             .backface_culling(false)
             .draw_fullscreen(RasterDispatch::indirect(&resources.indirect_draw, 0, 1));
 
-        // let num_meshlets = world.meshlets.len();
+
         // cmd.raster()
         //     .mesh("meshshader", "mesh")
         //     .fragment("meshshader", "fragment")
-        //     .constant(&(
+        //     .constants(c!(
         //         camera.projection_matrix(),
         //         camera.view_matrix(),
-        //         // num_meshlets as u32,
+        //         Mat4::from_scale_rotation_translation(Vec3::splat(2.0), Quat::from_euler(glam::EulerRot::XYZ, PI/2.0, 0.0, 0.0), Vec3::ZERO),
         //     ))
         //     .read(&world.vertices)
         //     .read(&world.indecies)
@@ -168,11 +179,11 @@ fn render(
         //     .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
         //     .depth_attachment(&resources.depth_attachment)
         //     .backface_culling(false)
-        //     .draw_fullscreen(RasterDispatch::launch_mesh(num_meshlets as u32, 1, 1));
-        //     // log::debug!("{}", world.vertices.ptr());
+        //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
+
         cmd.compute()
             .shader_path("post")
-            .constant(&(
+            .constants(c!(
                 camera.projection_matrix().inverse(),
                 camera.view_matrix().inverse(),
                 Vec4::new(

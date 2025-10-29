@@ -123,6 +123,7 @@ impl AssetTransformer for MeshTransformer {
                     .unwrap()
                     .map(|e| Vec3::from(e))
                     .collect::<Vec<_>>();
+            
 
                 let uvs = reader
                     .read_tex_coords(0)
@@ -136,7 +137,8 @@ impl AssetTransformer for MeshTransformer {
 
                 remap.insert(index, meshes.len() as u32);
 
-                meshes.push(MeshletMesh::new(&indicies, &verticies, &normals, &uvs));
+                let mesh = MeshletMesh::new(&indicies, &verticies, &normals, &uvs);
+                meshes.push(mesh);
             }
         }
 
@@ -280,8 +282,7 @@ impl AssetLoader for MeshLoader {
             let aabb = bytemuck::cast_slice(&buffer)[0];
             reader.read(&mut buffer[0..4]).await?;
             let bvh_depth = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
-
-            meshes.push(MeshletMesh {
+            let mesh = MeshletMesh {
                 bvh_root_node_index: !0u32,
                 aabb,
                 bvh_depth,
@@ -290,8 +291,10 @@ impl AssetLoader for MeshLoader {
                 meshlets: read_slice(reader).await.unwrap(),
                 cull_data: read_slice(reader).await.unwrap(),
                 bvh: read_slice(reader).await.unwrap(),
-            })
+            };
+            meshes.push(mesh);
         }
+
 
         Ok(Mesh {
             instance_transforms,

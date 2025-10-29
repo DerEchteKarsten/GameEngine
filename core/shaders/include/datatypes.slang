@@ -42,12 +42,6 @@ struct Meshlet {
     uint triangle_index;
 };
 
-struct Atomics {
-    uint vertex_stack;
-    uint index_stack;
-    uint cluster_stack;
-}
-
 struct Vertex {
     float3 position;
     float3 normal;
@@ -58,3 +52,21 @@ struct Cluster {
     uint instance;
     uint meshlet;
 }
+
+struct CullData {
+    AabbErrorOffset aabb;
+    BoundingSphere lod_group_sphere;
+}
+
+struct DrawIndirectCommand {
+    uint vertex_count;
+    uint instance_count;
+    uint first_vertex;
+    uint first_instance;
+};
+
+struct DispatchIndirectCommand {
+    uint x;
+    uint y;
+    uint z;
+};

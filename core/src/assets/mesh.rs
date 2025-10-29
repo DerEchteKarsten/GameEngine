@@ -49,13 +49,13 @@ pub struct BoundingSphere {
     pub radius: f32,
 }
 
-#[derive(Copy, Clone, Pod, Zeroable)]
+#[derive(Copy, Clone, Pod, Zeroable, Debug)]
 #[repr(C)]
 pub struct Meshlet {
-    vertex_count: u32,
-    vertex_index: u32,
-    triangle_count: u32,
-    triangle_index: u32,
+    pub vertex_count: u32,
+    pub vertex_index: u32,
+    pub triangle_count: u32,
+    pub triangle_index: u32,
 }
 
 #[derive(Copy, Clone, Default, Pod, Zeroable)]
@@ -113,127 +113,127 @@ impl MeshletMesh {
             None,
         );
 
-        // let mut vertex_locks = vec![false; vertices.len()];
+        let mut vertex_locks = vec![false; vertices.len()];
 
-        // // Build further LODs
-        // let mut bvh = BvhBuilder::default();
-        // let mut all_groups = Vec::new();
-        // let mut simplification_queue: Vec<_> = (0..meshlets.len() as u32).collect();
-        // let mut stuck = Vec::new();
-        // while !simplification_queue.is_empty() {
-        //     let s = debug_span!("simplify lod", meshlets = simplification_queue.len());
-        //     let _e = s.enter();
+        // Build further LODs
+        let mut bvh = BvhBuilder::default();
+        let mut all_groups = Vec::new();
+        let mut simplification_queue: Vec<_> = (0..meshlets.len() as u32).collect();
+        let mut stuck = Vec::new();
+        while !simplification_queue.is_empty() {
+            let s = debug_span!("simplify lod", meshlets = simplification_queue.len());
+            let _e = s.enter();
 
-        //     // For each meshlet build a list of connected meshlets (meshlets that share a vertex)
-        //     let connected_meshlets_per_meshlet = find_connected_meshlets(
-        //         &simplification_queue,
-        //         &meshlets,
-        //         &position_only_vertex_remap,
-        //         position_only_vertex_count,
-        //     );
+            // For each meshlet build a list of connected meshlets (meshlets that share a vertex)
+            let connected_meshlets_per_meshlet = find_connected_meshlets(
+                &simplification_queue,
+                &meshlets,
+                &position_only_vertex_remap,
+                position_only_vertex_count,
+            );
 
-        //     // Group meshlets into roughly groups of size TARGET_MESHLETS_PER_GROUP,
-        //     // grouping meshlets with a high number of shared vertices
-        //     let groups = group_meshlets(
-        //         &simplification_queue,
-        //         &cull_data,
-        //         &connected_meshlets_per_meshlet,
-        //     );
-        //     simplification_queue.clear();
+            // Group meshlets into roughly groups of size TARGET_MESHLETS_PER_GROUP,
+            // grouping meshlets with a high number of shared vertices
+            let groups = group_meshlets(
+                &simplification_queue,
+                &cull_data,
+                &connected_meshlets_per_meshlet,
+            );
+            simplification_queue.clear();
 
-        //     // Lock borders between groups to prevent cracks when simplifying
-        //     lock_group_borders(
-        //         &mut vertex_locks,
-        //         &groups,
-        //         &meshlets,
-        //         &position_only_vertex_remap,
-        //         position_only_vertex_count,
-        //     );
+            // Lock borders between groups to prevent cracks when simplifying
+            lock_group_borders(
+                &mut vertex_locks,
+                &groups,
+                &meshlets,
+                &position_only_vertex_remap,
+                position_only_vertex_count,
+            );
 
-        //     let simplified = groups.par_chunk_map(AsyncComputeTaskPool::get(), 1, |_, groups| {
-        //         let mut group = groups[0].clone();
+            let simplified = groups.par_chunk_map(AsyncComputeTaskPool::get(), 1, |_, groups| {
+                let mut group = groups[0].clone();
 
-        //         // If the group only has a single meshlet we can't simplify it
-        //         if group.meshlets.len() == 1 {
-        //             return Err(group);
-        //         }
+                // If the group only has a single meshlet we can't simplify it
+                if group.meshlets.len() == 1 {
+                    return Err(group);
+                }
 
-        //         let s = debug_span!("simplify group", meshlets = group.meshlets.len());
-        //         let _e = s.enter();
+                let s = debug_span!("simplify group", meshlets = group.meshlets.len());
+                let _e = s.enter();
 
-        //         // Simplify the group to ~50% triangle count
-        //         let Some((simplified_group_indices, mut group_error)) = simplify_meshlet_group(
-        //             &group,
-        //             &meshlets,
-        //             &vertex_adapter,
-        //             vertex_normals,
-        //             size_of::<Vertex>(),
-        //             &vertex_locks,
-        //         ) else {
-        //             // Couldn't simplify the group enough
-        //             return Err(group);
-        //         };
+                // Simplify the group to ~50% triangle count
+                let Some((simplified_group_indices, mut group_error)) = simplify_meshlet_group(
+                    &group,
+                    &meshlets,
+                    &vertex_adapter,
+                    vertex_normals,
+                    size_of::<Vertex>(),
+                    &vertex_locks,
+                ) else {
+                    // Couldn't simplify the group enough
+                    return Err(group);
+                };
 
-        //         // Force the group error to be atleast as large as all of its constituent meshlet's
-        //         // individual errors.
-        //         for &id in group.meshlets.iter() {
-        //             group_error = group_error.max(cull_data[id as usize].error);
-        //         }
-        //         group.parent_error = group_error;
+                // Force the group error to be atleast as large as all of its constituent meshlet's
+                // individual errors.
+                for &id in group.meshlets.iter() {
+                    group_error = group_error.max(cull_data[id as usize].error);
+                }
+                group.parent_error = group_error;
 
-        //         // Build new meshlets using the simplified group
-        //         let new_meshlets = compute_meshlets(
-        //             &simplified_group_indices,
-        //             &vertex_adapter,
-        //             &position_only_vertex_remap,
-        //             position_only_vertex_count,
-        //             Some((group.lod_bounds, group.parent_error)),
-        //         );
+                // Build new meshlets using the simplified group
+                let new_meshlets = compute_meshlets(
+                    &simplified_group_indices,
+                    &vertex_adapter,
+                    &position_only_vertex_remap,
+                    position_only_vertex_count,
+                    Some((group.lod_bounds, group.parent_error)),
+                );
 
-        //         Ok((group, new_meshlets))
-        //     });
+                Ok((group, new_meshlets))
+            });
 
-        //     let first_group = all_groups.len() as u32;
-        //     let mut passed_tris = 0;
-        //     let mut stuck_tris = 0;
-        //     for group in simplified {
-        //         match group {
-        //             Ok((group, (new_meshlets, new_cull_data))) => {
-        //                 let start = meshlets.len();
-        //                 merge_meshlets(&mut meshlets, new_meshlets);
-        //                 cull_data.extend(new_cull_data);
-        //                 let end = meshlets.len();
-        //                 let new_meshlet_ids = start as u32..end as u32;
+            let first_group = all_groups.len() as u32;
+            let mut passed_tris = 0;
+            let mut stuck_tris = 0;
+            for group in simplified {
+                match group {
+                    Ok((group, (new_meshlets, new_cull_data))) => {
+                        let start = meshlets.len();
+                        merge_meshlets(&mut meshlets, new_meshlets);
+                        cull_data.extend(new_cull_data);
+                        let end = meshlets.len();
+                        let new_meshlet_ids = start as u32..end as u32;
 
-        //                 passed_tris += triangles_in_meshlets(&meshlets, new_meshlet_ids.clone());
-        //                 simplification_queue.extend(new_meshlet_ids);
-        //                 all_groups.push(group);
-        //             }
-        //             Err(group) => {
-        //                 stuck_tris +=
-        //                     triangles_in_meshlets(&meshlets, group.meshlets.iter().copied());
-        //                 stuck.push(group);
-        //             }
-        //         }
-        //     }
+                        passed_tris += triangles_in_meshlets(&meshlets, new_meshlet_ids.clone());
+                        simplification_queue.extend(new_meshlet_ids);
+                        all_groups.push(group);
+                    }
+                    Err(group) => {
+                        stuck_tris +=
+                            triangles_in_meshlets(&meshlets, group.meshlets.iter().copied());
+                        stuck.push(group);
+                    }
+                }
+            }
 
-        //     // If we have enough triangles that passed, we can retry simplifying the stuck
-        //     // meshlets.
-        //     if passed_tris > stuck_tris / 3 {
-        //         simplification_queue.extend(stuck.drain(..).flat_map(|group| group.meshlets));
-        //     }
+            // If we have enough triangles that passed, we can retry simplifying the stuck
+            // meshlets.
+            if passed_tris > stuck_tris / 3 {
+                simplification_queue.extend(stuck.drain(..).flat_map(|group| group.meshlets));
+            }
 
-        //     bvh.add_lod(first_group, &all_groups);
-        // }
+            bvh.add_lod(first_group, &all_groups);
+        }
 
-        // // If there's any stuck meshlets left, add another LOD level with only them
-        // if !stuck.is_empty() {
-        //     let first_group = all_groups.len() as u32;
-        //     all_groups.extend(stuck);
-        //     bvh.add_lod(first_group, &all_groups);
-        // }
+        // If there's any stuck meshlets left, add another LOD level with only them
+        if !stuck.is_empty() {
+            let first_group = all_groups.len() as u32;
+            all_groups.extend(stuck);
+            bvh.add_lod(first_group, &all_groups);
+        }
 
-        // let (bvh, aabb, depth) = bvh.build(&mut meshlets, all_groups, &mut cull_data);
+        let (bvh, aabb, depth) = bvh.build(&mut meshlets, all_groups, &mut cull_data);
 
         let mut mmeshlets = Vec::with_capacity(meshlets.len());
         for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
@@ -245,8 +245,7 @@ impl MeshletMesh {
             });
         }
 
-        Self {
-            vertices: vertices
+        let verticies = vertices
                 .iter()
                 .enumerate()
                 .map(|(i, v)| Vertex {
@@ -258,9 +257,19 @@ impl MeshletMesh {
                     ),
                     uv: Vec2::new(vertex_uvs[i * 2 + 0], vertex_uvs[i * 2 + 1]),
                 })
-                .collect(),
+                .collect::<Vec<Vertex>>();
+        
+        let duped_verticies = meshlets.vertices
+            .iter()
+            .map(|v| {
+                verticies[(*v) as usize]
+            })
+            .collect::<Vec<_>>();
+
+        Self {
+            vertices: duped_verticies,
             indices: meshlets.triangles.into(),
-            bvh: Vec::new(),
+            bvh,
             meshlets: mmeshlets.into(),
             cull_data: cull_data
                 .into_iter()
@@ -269,8 +278,8 @@ impl MeshletMesh {
                     lod_group_sphere: cull_data.lod_group_sphere,
                 })
                 .collect(),
-            aabb: Aabb::zeroed(),
-            bvh_depth: 0,
+            aabb,
+            bvh_depth: depth,
             bvh_root_node_index: !0u32,
         }
     }

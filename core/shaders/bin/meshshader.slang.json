@@ -40,10 +40,23 @@
                                             }
                                         },
                                         "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                                    },
+                                    {
+                                        "name": "model",
+                                        "type": {
+                                            "kind": "matrix",
+                                            "rowCount": 4,
+                                            "columnCount": 4,
+                                            "elementType": {
+                                                "kind": "scalar",
+                                                "scalarType": "float32"
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 128, "size": 64, "elementStride": 0}
                                     }
                                 ]
                             },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 128, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 0, "size": 192, "elementStride": 0}
                         },
                         {
                             "name": "vertices",
@@ -51,7 +64,7 @@
                                 "kind": "pointer",
                                 "valueType": "Vertex"
                             },
-                            "binding": {"kind": "uniform", "offset": 128, "size": 8, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 192, "size": 8, "elementStride": 0}
                         },
                         {
                             "name": "indecies",
@@ -59,7 +72,7 @@
                                 "kind": "pointer",
                                 "valueType": "uint8_t"
                             },
-                            "binding": {"kind": "uniform", "offset": 136, "size": 8, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 200, "size": 8, "elementStride": 0}
                         },
                         {
                             "name": "meshlets",
@@ -67,7 +80,7 @@
                                 "kind": "pointer",
                                 "valueType": "Meshlet"
                             },
-                            "binding": {"kind": "uniform", "offset": 144, "size": 8, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 208, "size": 8, "elementStride": 0}
                         }
                     ]
                 },
@@ -110,10 +123,23 @@
                                                 }
                                             },
                                             "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                                        },
+                                        {
+                                            "name": "model",
+                                            "type": {
+                                                "kind": "matrix",
+                                                "rowCount": 4,
+                                                "columnCount": 4,
+                                                "elementType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "float32"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 128, "size": 64, "elementStride": 0}
                                         }
                                     ]
                                 },
-                                "binding": {"kind": "uniform", "offset": 0, "size": 128, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 0, "size": 192, "elementStride": 0}
                             },
                             {
                                 "name": "vertices",
@@ -121,7 +147,7 @@
                                     "kind": "pointer",
                                     "valueType": "Vertex"
                                 },
-                                "binding": {"kind": "uniform", "offset": 128, "size": 8, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 192, "size": 8, "elementStride": 0}
                             },
                             {
                                 "name": "indecies",
@@ -129,7 +155,7 @@
                                     "kind": "pointer",
                                     "valueType": "uint8_t"
                                 },
-                                "binding": {"kind": "uniform", "offset": 136, "size": 8, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 200, "size": 8, "elementStride": 0}
                             },
                             {
                                 "name": "meshlets",
@@ -137,11 +163,11 @@
                                     "kind": "pointer",
                                     "valueType": "Meshlet"
                                 },
-                                "binding": {"kind": "uniform", "offset": 144, "size": 8, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 208, "size": 8, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 152, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 216, "elementStride": 0}
                 }
             }
         }

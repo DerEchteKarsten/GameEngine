@@ -28,8 +28,8 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
         ..Default::default()
     };
 
-    let camera = Camera::new(vec3(0.0, 0.0, 0.0), 65.0_f32.to_radians(), 0.1, 1000.0);
-    let model: Handle<Mesh> = asset_server.load("stanford_dragon.glb");
+    let camera = Camera::new(vec3(0.0, 0.0, 0.0), 65.0_f32.to_radians(), 0.01, 100.0);
+    let model: Handle<Mesh> = asset_server.load("stanford_bunny.glb");
     cmd.insert_resource(controles);
     cmd.spawn(camera);
 
@@ -44,7 +44,7 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
                 Transform::new_euler(
                     Vec3::new(0.0, 0.0, 1.0),
                     Vec3::new(10.0, 10.0, 10.0),
-                    Vec3::new(PI, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 0.0),
                 ),
                 Model,
             ));

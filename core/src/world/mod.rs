@@ -137,9 +137,18 @@ pub fn load_assets(
         if let Some(mesh) = meshes.get_mut(&mesh) {
             if !mesh.uploaded {
                 for m in &mut mesh.meshes {
+                    let mmeshlets = m.meshlets
+                        .iter()
+                        .map(|m| Meshlet {
+                            triangle_count: m.triangle_count,
+                            vertex_count: m.vertex_count,
+                            triangle_index: m.triangle_index + world.indecies.len() as u32 + indices.len() as u32,
+                            vertex_index: m.vertex_index + world.vertices.len() as u32 + vertices.len() as u32,
+                        })
+                        .collect::<Vec<_>>();
                     vertices.extend(m.vertices.clone());
                     indices.extend(m.indices.clone());
-                    meshlets.extend(m.meshlets.clone());
+                    meshlets.extend(mmeshlets);
                     cull_data.extend(m.cull_data.clone());
 
                     let bvh_root = world.bvh_nodes.len() + bvh.len();

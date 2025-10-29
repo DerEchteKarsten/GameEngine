@@ -23,7 +23,7 @@ struct MeshOutput {
 struct Constants {
     column_major float4x4 proj;
     column_major float4x4 view;
-    // uint num_clusters;
+    column_major float4x4 model;
 }
 
 struct Bindings {
@@ -31,9 +31,6 @@ struct Bindings {
     Vertex *vertices;
     uint8_t* indecies;
     Meshlet *meshlets;
-    // Cluster *clusters;
-    // float4x4 *cluster_transforms;
-    // Bounds *bounds; 
 }
 
 struct Primitive {
@@ -45,7 +42,7 @@ struct Primitive {
 
 #define AS_GROUP_SIZE 64
 #define MAX_PRIMITIVES 128
-#define MAX_VERTICES 255
+#define MAX_VERTICES 256
 
 // struct MeshPayload {
 //     Cluster instances[AS_GROUP_SIZE];
@@ -102,7 +99,7 @@ void amp(uint dtid: SV_DispatchThreadID, uint gtid: SV_GroupThreadID) {
     // DispatchMesh(count, 1, 1, sPayload);
 }
 
-#define MESH_GROUP_SIZE MAX_VERTICES
+#define MESH_GROUP_SIZE MAX_PRIMITIVES
 
 // in payload MeshPayload p,
 
@@ -128,19 +125,20 @@ void mesh( out indices uint3 triangles[MAX_PRIMITIVES], out primitives Primitive
 
     if (gtid < meshlet.triangle_count)
     {
-        triangles[gtid] = int3(b.indecies[meshlet.triangle_index + uint32_t(gtid * 3 + 0)],
-                               b.indecies[meshlet.triangle_index + uint32_t(gtid * 3 + 1)],
-                               b.indecies[meshlet.triangle_index + uint32_t(gtid * 3 + 2)]);
+        triangles[gtid] = uint3((uint32_t)b.indecies[meshlet.triangle_index + uint32_t(gtid * 3 + 0)],
+                               (uint32_t)b.indecies[meshlet.triangle_index + uint32_t(gtid * 3 + 1)],
+                               (uint32_t)b.indecies[meshlet.triangle_index + uint32_t(gtid * 3 + 2)]);
         primitives[gtid] = Primitive(dtid_liniar, gid_liniar, float3(1.0));
     }
 
-    if (gtid < meshlet.vertex_count)
-    {
-        let position = b.vertices[meshlet.vertex_index + gtid].position;
-        // let world_space = mul(transform, float4(position, 1.0f));
-        let world_space = float4(position, 1.0f);
-        let view_space = mul(b.const.view, world_space);
-        let clip_space = mul(b.const.proj, view_space);
-        vertices[gtid].position = clip_space;
+    for (int i = 0; i < 2; i++) {
+        if (gtid*i < meshlet.vertex_count)
+        {
+            let position = b.vertices[meshlet.vertex_index + gtid * i].position;
+            let world_space = mul(b.const.model, float4(position, 1.0f));
+            let view_space = mul(b.const.view, world_space);
+            let clip_space = mul(b.const.proj, view_space);
+            vertices[gtid * i].position = clip_space;
+        }
     }
 }

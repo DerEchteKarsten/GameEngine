@@ -34,18 +34,18 @@
                             "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
                         },
                         {
-                            "name": "cluster_buffer",
+                            "name": "indirect",
                             "type": {
                                 "kind": "pointer",
-                                "valueType": "Cluster"
+                                "valueType": "DispatchIndirectCommand"
                             },
                             "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
                         },
                         {
-                            "name": "indirect_draw",
+                            "name": "bvh_node_stack",
                             "type": {
                                 "kind": "pointer",
-                                "valueType": "DrawIndirectCommand"
+                                "valueType": "int"
                             },
                             "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
                         }
@@ -84,18 +84,18 @@
                                 "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
                             },
                             {
-                                "name": "cluster_buffer",
+                                "name": "indirect",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "Cluster"
+                                    "valueType": "DispatchIndirectCommand"
                                 },
                                 "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
                             },
                             {
-                                "name": "indirect_draw",
+                                "name": "bvh_node_stack",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "DrawIndirectCommand"
+                                    "valueType": "int"
                                 },
                                 "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
                             }
