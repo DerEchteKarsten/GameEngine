@@ -137,6 +137,7 @@ pub fn load_assets(
         if let Some(mesh) = meshes.get_mut(&mesh) {
             if !mesh.uploaded {
                 for m in &mut mesh.meshes {
+                    let meshlet_index = world.meshlets.len() + meshlets.len();
                     let mmeshlets = m.meshlets
                         .iter()
                         .map(|m| Meshlet {
@@ -150,10 +151,23 @@ pub fn load_assets(
                     indices.extend(m.indices.clone());
                     meshlets.extend(mmeshlets);
                     cull_data.extend(m.cull_data.clone());
-
+                    
                     let bvh_root = world.bvh_nodes.len() + bvh.len();
                     m.bvh_root_node_index = bvh_root as u32;
-                    bvh.extend(m.bvh.clone());
+                    let mbvh = m.bvh.iter()
+                        .map(|n| {
+                            let mut n = n.clone();
+                            n.aabbs.iter_mut().enumerate().for_each(|(i, aabb)| {
+                                aabb.child_offset += if n.child_counts[i] == 255 {
+                                    bvh_root as u32
+                                } else {
+                                    meshlet_index as u32
+                                };
+                            });
+                            n
+                        })
+                        .collect::<Vec<_>>();
+                    bvh.extend(mbvh);
 
                     world.max_bvh_depth = world.max_bvh_depth.max(m.bvh_depth);
                 }

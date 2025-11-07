@@ -48,9 +48,9 @@ struct Vertex {
     float2 uv;
 };
 
-struct Cluster {
+struct InstancedOffset {
     uint instance;
-    uint meshlet;
+    int offset;
 }
 
 struct CullData {
@@ -70,3 +70,12 @@ struct DispatchIndirectCommand {
     uint y;
     uint z;
 };
+
+struct DispatchParams {
+    uint node_head;
+    uint node_tail;
+    uint done;
+    uint meshlet_count;
+    DrawIndirectCommand indirect_draw;
+    DispatchIndirectCommand indirect_dispatch;
+}

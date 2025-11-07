@@ -2,7 +2,7 @@
 #![feature(random)]
 
 use std::{
-    collections::{HashMap, HashSet}, f32::consts::PI, fs, io::{BufReader, BufWriter, Read, Seek, Write}, ops::Deref, path::PathBuf, random::random
+    collections::{HashMap, HashSet}, f32::consts::PI, fs, io::{BufReader, BufWriter, Read, Seek, Write}, mem::offset_of, ops::Deref, path::PathBuf, random::random
 };
 
 use ash::vk::{self, Format, VideoChromaSubsamplingFlagsKHR};
@@ -33,7 +33,7 @@ use glam::{IVec3, Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
 use gpu_allocator::MemoryLocation;
 use image::{DynamicImage, ImageBuffer, Rgb};
 use lava::{
-    c, pipelines::{RasterDispatch, Vertex}, state::Ctx, vkobjects::{
+    c, command_buffer::{DispatchIndirectCommand, DrawIndirectCommand}, pipelines::{RasterDispatch, Vertex}, state::Ctx, vkobjects::{
         buffer::{Buffer, BufferUsageFlags, GpuBuffer},
         image::{Image, ImageSize},
     }
@@ -70,19 +70,31 @@ pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Cluster {
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct InstancedOffset {
     instance: u32,
-    meshlet: u32,
+    offset: i32,
+}
+
+
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[repr(C)]
+struct DispatchParams {
+    node_head: u32,
+    node_tail: u32,
+    done: u32,
+    meshlet_count: u32,
+    indirect_draw: DrawIndirectCommand,
+    indirect_dispatch: DispatchIndirectCommand,
 }
 
 struct RenderResources {
     depth_attachment: Image,
     color_attachment: Image,
-    cluster_buffer: Buffer<Cluster>,
-    indirect_draw: Buffer<vk::DrawIndirectCommand>,
-    bvh_node_stack: Buffer<i32>,
-    dispatch_indirect: Buffer<vk::DispatchIndirectCommand>,
+    cluster_buffer: Buffer<InstancedOffset>,
+    dispatch_params: Buffer<DispatchParams>,
+    bvh_node_stack: Buffer<InstancedOffset>,
 }
 
 fn render(
@@ -106,80 +118,109 @@ fn render(
             ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32),
         )
         .unwrap(),
-        cluster_buffer: Buffer::new(BufferUsageFlags::STORAGE, 100000).unwrap(),
-        indirect_draw: Buffer::<_, GpuBuffer>::from_data(
+        cluster_buffer: Buffer::new(BufferUsageFlags::STORAGE, 1 << 14).unwrap(),
+        dispatch_params: Buffer::<_, GpuBuffer>::from_data(
             BufferUsageFlags::INDIRECT_COMMAND | BufferUsageFlags::STORAGE,
             &mut staging_buffer.0,
-            &[vk::DrawIndirectCommand {
-                vertex_count: 128 * 3,
-                instance_count: 0,
-                first_instance: 0,
-                first_vertex: 0,
+            &[DispatchParams {
+                node_head: 0,
+                node_tail: 0,
+                done: 0,
+                meshlet_count: 0,
+                indirect_draw: DrawIndirectCommand {
+                    vertex_count: 128 * 3,
+                    instance_count: 0,
+                    first_instance: 0,
+                    first_vertex: 0,
+                },
+                indirect_dispatch: DispatchIndirectCommand {
+                    x: 0,
+                    y: 1,
+                    z: 1,
+                },
             }],
         )
         .unwrap(),
         bvh_node_stack: Buffer::new(BufferUsageFlags::STORAGE, 10000).unwrap(),
-        dispatch_indirect: Buffer::<_, GpuBuffer>::from_data(BufferUsageFlags::STORAGE | BufferUsageFlags::INDIRECT_COMMAND, &mut staging_buffer.0, &[
-            vk::DispatchIndirectCommand {
-                x: 0,
-                y: 1,
-                z: 1,
-            }
-        ]).unwrap(),
     });
 
     Ctx::next_frame(&mut |cmd, swapchain_image| {
-        cmd.fill_buffer(&resources.indirect_draw, 4, 0);
-        cmd.fill_buffer(&resources.dispatch_indirect, 4, 1);
+        cmd.update_buffer_element(&resources.dispatch_params, 0, &DispatchParams {
+            node_head: 0,
+            node_tail: 0,
+            done: 0,
+            meshlet_count: 0,
+            indirect_draw: DrawIndirectCommand {
+                vertex_count: 128 * 3,
+                instance_count: 0,
+                first_instance: 0,
+                first_vertex: 0,
+            },
+            indirect_dispatch: DispatchIndirectCommand {
+                x: 0,
+                y: 1,
+                z: 1,
+            },
+        });
+    
+        cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
+        cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
+        if world.instance_bvh_root_nodes.len() > 0 {
+            cmd.compute()
+                .shader_path("instance_cull")
+                .constants(c!(world.instance_bvh_root_nodes.len() as u64))
+                .read(&world.instance_aabbs)
+                .read(&world.instance_bvh_root_nodes)
+                .read(&world.instance_transforms)
+                .readwrite(&resources.dispatch_params)
+                .readwrite(&resources.bvh_node_stack)
+                .dispatch(world.instance_bvh_root_nodes.len().div_ceil(64) as u32, 1, 1);
 
-        cmd.compute()
-            .shader_path("instance_cull")
-            .read(&world.instance_aabbs)
-            .read(&world.instance_bvh_root_nodes)
-            .read(&world.instance_transforms)
-            .readwrite(&resources.dispatch_indirect)
-            .readwrite(&resources.bvh_node_stack)
-            .dispatch(world.instance_bvh_root_nodes.len().div_ceil(64) as u32, 1, 1);
+            cmd.compute()
+                .shader_path("bvh_cull")
+                .read(&world.bvh_nodes)
+                .read(&world.instance_transforms)
+                .read(&world.cull_data)
+                .readwrite(&resources.bvh_node_stack)
+                .write(&resources.cluster_buffer)
+                .readwrite(&resources.dispatch_params)
+                .dispatch(4, 1, 1);
 
-        cmd.compute()
-            .shader_path("bvh_cull")
-            .read(&world.bvh_nodes)
-            .read(&world.instance_transforms)
-            .read(&world.cull_data)
-            .write(&resources.cluster_buffer)
-            .readwrite(&resources.indirect_draw)
-            .dispatch_indirect(&resources.dispatch_indirect);
+            let params = cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
 
-        cmd.raster()
-            .vertex("raster", "vertex")
-            .fragment("raster", "fragment")
-            .constants(c!(camera.view_matrix(), camera.projection_matrix()))
-            .read(&world.vertices)
-            .read(&world.indecies)
-            .read(&world.meshlets)
-            .read(&resources.cluster_buffer)
-            .read(&world.instance_transforms)
-            .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
-            .depth_attachment(&resources.depth_attachment)
-            .backface_culling(false)
-            .draw_fullscreen(RasterDispatch::indirect(&resources.indirect_draw, 0, 1));
+            log::debug!("{:#?}", params);
+
+            // cmd.raster()
+            //     .vertex("raster", "vertex")
+            //     .fragment("raster", "fragment")
+            //     .constants(c!(camera.view_matrix(), camera.projection_matrix()))
+            //     .read(&world.vertices)
+            //     .read(&world.indecies)
+            //     .read(&world.meshlets)
+            //     .read(&resources.cluster_buffer)
+            //     .read(&world.instance_transforms)
+            //     .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
+            //     .depth_attachment(&resources.depth_attachment)
+            //     .backface_culling(false)
+            //     .draw_fullscreen(RasterDispatch::indirect(&resources.dispatch_params, offset_of!(DispatchParams, indirect_dispatch) as u32, 1));
 
 
-        // cmd.raster()
-        //     .mesh("meshshader", "mesh")
-        //     .fragment("meshshader", "fragment")
-        //     .constants(c!(
-        //         camera.projection_matrix(),
-        //         camera.view_matrix(),
-        //         Mat4::from_scale_rotation_translation(Vec3::splat(2.0), Quat::from_euler(glam::EulerRot::XYZ, PI/2.0, 0.0, 0.0), Vec3::ZERO),
-        //     ))
-        //     .read(&world.vertices)
-        //     .read(&world.indecies)
-        //     .read(&world.meshlets)
-        //     .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
-        //     .depth_attachment(&resources.depth_attachment)
-        //     .backface_culling(false)
-        //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
+            // cmd.raster()
+            //     .mesh("meshshader", "mesh")
+            //     .fragment("meshshader", "fragment")
+            //     .constants(c!(
+            //         camera.projection_matrix(),
+            //         camera.view_matrix(),
+            //         Mat4::from_scale_rotation_translation(Vec3::splat(2.0), Quat::from_euler(glam::EulerRot::XYZ, PI/2.0, 0.0, 0.0), Vec3::ZERO),
+            //     ))
+            //     .read(&world.vertices)
+            //     .read(&world.indecies)
+            //     .read(&world.meshlets)
+            //     .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
+            //     .depth_attachment(&resources.depth_attachment)
+            //     .backface_culling(false)
+            //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
+        }
 
         cmd.compute()
             .shader_path("post")
@@ -232,8 +273,8 @@ pub fn CorePlugin(app: &mut App) {
             },
             AssetPlugin {
                 mode: bevy_asset::AssetMode::Processed,
-                file_path: "/home/karsten/Documents/code/GameEngine/game/assets".to_string(),
-                processed_file_path: "/home/karsten/Documents/code/GameEngine/game/imported_assets"
+                file_path: "/home/karsten/code/GameEngine/game/assets".to_string(),
+                processed_file_path: "/home/karsten/code/GameEngine/game/imported_assets"
                     .to_string(),
                 ..Default::default()
             },

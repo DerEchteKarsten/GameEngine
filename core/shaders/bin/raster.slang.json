@@ -60,10 +60,10 @@
                             "binding": {"kind": "uniform", "offset": 144, "size": 8, "elementStride": 0}
                         },
                         {
-                            "name": "clusters",
+                            "name": "instance_offsets",
                             "type": {
                                 "kind": "pointer",
-                                "valueType": "Cluster"
+                                "valueType": "InstancedOffset"
                             },
                             "binding": {"kind": "uniform", "offset": 152, "size": 8, "elementStride": 0}
                         },
@@ -136,10 +136,10 @@
                                 "binding": {"kind": "uniform", "offset": 144, "size": 8, "elementStride": 0}
                             },
                             {
-                                "name": "clusters",
+                                "name": "instance_offsets",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "Cluster"
+                                    "valueType": "InstancedOffset"
                                 },
                                 "binding": {"kind": "uniform", "offset": 152, "size": 8, "elementStride": 0}
                             },

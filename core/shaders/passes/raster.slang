@@ -12,7 +12,7 @@ struct Bindings {
     Vertex *verticies;
     uint8_t *indicies;
     Meshlet *meshlets;
-    Cluster *clusters;
+    InstancedOffset *instance_offsets;
     float4x4 *instance_transforms;
 }
 
@@ -21,8 +21,8 @@ struct Bindings {
 [shader("vertex")]
 VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
 {
-    let cluster = b.clusters[instance_index];
-    var meshlet = b.meshlets[cluster.meshlet];
+    let instance_offset = b.instance_offsets[instance_index];
+    var meshlet = b.meshlets[instance_offset.offset];
 
     if (vertex_index / 3u >= meshlet.triangle_count) { 
         return VSOutput(float4(0.0, 0.0, 0.0, 0.0), float3(0.0));
@@ -32,12 +32,12 @@ VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_Verte
     let vertex = b.verticies[meshlet.vertex_index + vertex_id];
 
     VSOutput output;
-    let transform = b.instance_transforms[cluster.instance];
+    let transform = b.instance_transforms[instance_offset.instance];
     let world_space = float4(vertex.position, 1.0);
     let view_space = mul(b.view, world_space);
     let clip_space = mul(b.proj, view_space);
     output.position = clip_space;
-    var rand = RandomSamplerState(uint2(0, 0), cluster.meshlet);
+    var rand = RandomSamplerState(uint2(0, 0), instance_offset.offset);
     output.color = float3(rand.uniform_float(), rand.uniform_float(), rand.uniform_float());
     return output;
 }

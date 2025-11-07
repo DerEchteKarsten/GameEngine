@@ -26,20 +26,36 @@
                             "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
                         },
                         {
-                            "name": "bvh_node_stack",
+                            "name": "cull_data",
                             "type": {
                                 "kind": "pointer",
-                                "valueType": "uint"
+                                "valueType": "CullData"
                             },
                             "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
                         },
                         {
-                            "name": "indirect",
+                            "name": "bvh_node_stack",
                             "type": {
                                 "kind": "pointer",
-                                "valueType": "DispatchIndirectCommand"
+                                "valueType": "InstancedOffset"
                             },
                             "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "clusters",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "InstancedOffset"
+                            },
+                            "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "dp",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "DispatchParams"
+                            },
+                            "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0}
                         }
                     ]
                 },
@@ -68,24 +84,40 @@
                                 "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
                             },
                             {
-                                "name": "bvh_node_stack",
+                                "name": "cull_data",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "uint"
+                                    "valueType": "CullData"
                                 },
                                 "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
                             },
                             {
-                                "name": "indirect",
+                                "name": "bvh_node_stack",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "DispatchIndirectCommand"
+                                    "valueType": "InstancedOffset"
                                 },
                                 "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "clusters",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "InstancedOffset"
+                                },
+                                "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "dp",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "DispatchParams"
+                                },
+                                "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 32, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 48, "elementStride": 0}
                 }
             }
         }
@@ -128,5 +160,9 @@
                 }
             ]
         }
-    ]
+    ],
+    "hashedStrings": {
+        "IDLE!!": 1334978036
+    }
+
 }
