@@ -1,40 +1,38 @@
 [package]
 name = "core"
 version = "0.1.0"
-edition = "2024"
 build="build.rs"
+edition = "2024"
 
 [dependencies]
 glam = { version = "0.30.5", features = ["bytemuck"] }
-bevy_a11y = "0.16.0"
-bevy_app = "0.16.0"
-bevy_asset = { version = "0.16.1", features = ["asset_processor", "embedded_watcher", "file_watcher", "multi_threaded"] }
-bevy_ecs = {version = "0.16.0", features = ["trace", "multi_threaded"]}
-bevy_input = "0.16.0"
-bevy_log = "0.16.0"
-bevy_reflect = "0.16.0"
-bevy_time = "0.16.0"
-bevy_window = "0.16.0"
-bevy_winit = {version = "0.16.0", features = ["wayland"]}
-#rg = { version = "0.1.0", path = "../rg" }
+bevy_a11y = "0.17.0"
+bevy_app = "0.17.0"
+bevy_asset = { version = "0.17.0", features = ["asset_processor", "embedded_watcher", "file_watcher", "multi_threaded"] }
+bevy_ecs = {version = "0.17.0", features = ["trace", "multi_threaded"]}
+bevy_input = "0.17.0"
+bevy_log = "0.17.0"
+bevy_reflect = "0.17.0"
+bevy_time = "0.17.0"
+bevy_window = "0.17.0"
+bevy_winit = {version = "0.17.0", features = ["wayland"]}
 lava = { version = "0.1.0", path = "../lava" }
-dgfsdk-rs = { version = "0.1.0", path = "../dgfsdk-rs" }
 ash = "0.38.0"
 log = "0.4.28"
 gpu-allocator = "0.27.0"
 anyhow = "1.0.99"
 gltf = "1.4.1"
-fastanvil = "0.32.0"
-fastnbt = "2.6.0"
 serde = "1.0.226"
-noise = "0.9.0"
-image = "0.25.8"
 tiff = "0.10.3"
 smallvec = "1.15.1"
 meshopt = "0.6.1"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 bytemuck_derive = "1.10.2"
-bevy_tasks = "0.17.2"
+bevy_tasks = "0.17.0"
 itertools = "0.14.0"
 metis = "0.2.2"
-bevy_math = "0.17.2"
+bevy_math = "0.17.0"
+
+
+[build-dependencies]
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu" }

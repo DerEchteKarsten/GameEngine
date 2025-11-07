@@ -16,7 +16,6 @@ use bevy_asset::{
 };
 use bevy_reflect::TypePath;
 use bytemuck::{NoUninit, Pod, Zeroable};
-use dgfsdk_rs::wrappers::bake_default;
 use glam::{Mat4, Vec3, vec3};
 use meshopt::VertexDataAdapter;
 

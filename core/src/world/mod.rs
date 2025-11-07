@@ -7,7 +7,7 @@ use ash::vk::{self, BufferCopy, Packed24_8};
 use bevy_app::prelude::*;
 use bevy_asset::{AssetEvent, AssetServer, Assets, Handle};
 use bevy_ecs::{
-    component::{ComponentId, HookContext},
+    component::{ComponentId},
     entity::EntityHashMap,
     prelude::*,
     world::DeferredWorld,

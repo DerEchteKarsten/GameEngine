@@ -1,21 +1,25 @@
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
+
+use spirv_builder::{MetadataPrintout, SpirvBuilder};
+
 
 fn main() {
-    // println!(r"cargo:rustc-link-search=./lib");
-    // println!("cargo::rustc-link-lib=DGFBaker");
-    println!("cargo::rerun-if-changed=shaders");
-    match Command::new("./compile.sh").output() {
-        Ok(out) => {
-            if out.status.success() {
-                println!("cargo::warning={:?}", String::from_utf8(out.stdout));
-            } else {
-                println!("cargo::error={:?}", String::from_utf8(out.stderr));
-            }
-        }
-        Err(err) => {
-            println!("cargo::error={:?}", err);
-        }
-    }
+    println!("cargo::rerun-if-changed=./../shaders");
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let crate_path = [manifest_dir, "..", "shaders"]
+        .iter()
+        .copied()
+        .collect::<PathBuf>();
+
+    _ = SpirvBuilder::new(crate_path, "spirv-unknown-vulkan1.4")
+        .print_metadata(MetadataPrintout::Full)
+        .shader_panic_strategy(spirv_builder::ShaderPanicStrategy::DebugPrintfThenExit {
+            print_inputs: true,
+            print_backtrace: true,
+        })
+        .build()
+        .unwrap();
 
     unsafe {
         std::env::set_var("VK_LAYER_PRINTF_ONLY_PRESET", "0");
