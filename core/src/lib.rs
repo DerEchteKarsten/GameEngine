@@ -1,49 +1,42 @@
 #![feature(f16)]
 #![feature(random)]
 
-use std::{
-    collections::{HashMap, HashSet}, f32::consts::PI, fs, io::{BufReader, BufWriter, Read, Seek, Write}, mem::offset_of, ops::Deref, path::PathBuf, random::random
-};
+use std::ops::Deref;
 
-use ash::vk::{self, Format, VideoChromaSubsamplingFlagsKHR};
+use ash::vk::{self, Format};
 use bevy_a11y::AccessibilityPlugin;
-use bevy_app::{
-    App, PostUpdate, PreStartup, PreUpdate, Startup, TaskPoolOptions, TaskPoolPlugin, Update,
-};
+use bevy_app::{App, PostUpdate, PreStartup, PreUpdate, Startup, TaskPoolPlugin, Update};
 use bevy_asset::AssetPlugin;
 use bevy_ecs::{
-    event::EventReader,
-    resource::{self, Resource},
+    message::MessageReader,
     schedule::IntoScheduleConfigs,
-    system::{Commands, Local, Query, Res, ResMut},
+    system::{Local, Query, Res, ResMut},
     world::World,
 };
 use bevy_input::InputPlugin;
 use bevy_log::LogPlugin;
 use bevy_tasks::{AsyncComputeTaskPool, TaskPoolBuilder};
 use bevy_time::TimePlugin;
-use bevy_window::{
-    ExitCondition, Window, WindowEvent, WindowPlugin, WindowResized, WindowResolution,
-    WindowScaleFactorChanged,
-};
+use bevy_window::{ExitCondition, Window, WindowPlugin, WindowResized, WindowResolution};
 use bevy_winit::{WinitPlugin, WinitWindows};
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec3, Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
-use gpu_allocator::MemoryLocation;
+use glam::{Vec2, Vec4};
 use lava::{
-    c, command_buffer::{DispatchIndirectCommand, DrawIndirectCommand}, pipelines::{RasterDispatch, Vertex}, state::Ctx, vkobjects::{
+    c,
+    command_buffer::{DispatchIndirectCommand, DrawIndirectCommand},
+    state::Ctx,
+    vkobjects::{
         buffer::{Buffer, BufferUsageFlags, GpuBuffer},
         image::{Image, ImageSize},
-    }
+    },
 };
-use smallvec::SmallVec;
 
 use crate::{
-    assets::{MeshAssets, mesh::BvhNode},
+    assets::MeshAssets,
     components::camera::{Camera, CameraPlugin},
     world::{
-        RenderWorld, STAGING_BUFFER_SIZE, StagingBuffer, add_instance, init_world, load_assets,
-        transform_child_changed, transform_parent_changed,
+        RenderWorld, StagingBuffer, add_instance, init_world, load_assets, transform_child_changed,
+        transform_parent_changed,
     },
 };
 
@@ -60,7 +53,7 @@ pub fn init(world: &mut World) {
     lava::init(Some(&window), true).unwrap();
 }
 
-pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
+pub fn on_resize(mut event_reader: MessageReader<WindowResized>) {
     for e in event_reader.read() {
         log::info!("test, {}, {}", e.width, e.height);
         Ctx::resize_swapchain(e.width as u32, e.height as u32);
@@ -73,7 +66,6 @@ struct InstancedOffset {
     instance: u32,
     offset: i32,
 }
-
 
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
@@ -130,11 +122,7 @@ fn render(
                     first_instance: 0,
                     first_vertex: 0,
                 },
-                indirect_dispatch: DispatchIndirectCommand {
-                    x: 0,
-                    y: 1,
-                    z: 1,
-                },
+                indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
             }],
         )
         .unwrap(),
@@ -142,24 +130,24 @@ fn render(
     });
 
     Ctx::next_frame(&mut |cmd, swapchain_image| {
-        cmd.update_buffer_element(&resources.dispatch_params, 0, &DispatchParams {
-            node_head: 0,
-            node_tail: 0,
-            done: 0,
-            meshlet_count: 0,
-            indirect_draw: DrawIndirectCommand {
-                vertex_count: 128 * 3,
-                instance_count: 0,
-                first_instance: 0,
-                first_vertex: 0,
+        cmd.update_buffer_element(
+            &resources.dispatch_params,
+            0,
+            &DispatchParams {
+                node_head: 0,
+                node_tail: 0,
+                done: 0,
+                meshlet_count: 0,
+                indirect_draw: DrawIndirectCommand {
+                    vertex_count: 128 * 3,
+                    instance_count: 0,
+                    first_instance: 0,
+                    first_vertex: 0,
+                },
+                indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
             },
-            indirect_dispatch: DispatchIndirectCommand {
-                x: 0,
-                y: 1,
-                z: 1,
-            },
-        });
-    
+        );
+
         cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
         cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
         if world.instance_bvh_root_nodes.len() > 0 {
@@ -171,7 +159,11 @@ fn render(
                 .read(&world.instance_transforms)
                 .readwrite(&resources.dispatch_params)
                 .readwrite(&resources.bvh_node_stack)
-                .dispatch(world.instance_bvh_root_nodes.len().div_ceil(64) as u32, 1, 1);
+                .dispatch(
+                    world.instance_bvh_root_nodes.len().div_ceil(64) as u32,
+                    1,
+                    1,
+                );
 
             cmd.compute()
                 .shader_path("bvh_cull")
@@ -183,7 +175,8 @@ fn render(
                 .readwrite(&resources.dispatch_params)
                 .dispatch(4, 1, 1);
 
-            let params = cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
+            let params =
+                cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
 
             log::debug!("{:#?}", params);
 
@@ -200,7 +193,6 @@ fn render(
             //     .depth_attachment(&resources.depth_attachment)
             //     .backface_culling(false)
             //     .draw_fullscreen(RasterDispatch::indirect(&resources.dispatch_params, offset_of!(DispatchParams, indirect_dispatch) as u32, 1));
-
 
             // cmd.raster()
             //     .mesh("meshshader", "mesh")
@@ -241,6 +233,7 @@ fn render(
     .unwrap();
 }
 
+#[allow(non_snake_case)]
 pub fn CorePlugin(app: &mut App) {
     AsyncComputeTaskPool::get_or_init(|| TaskPoolBuilder::default().num_threads(4).build());
     app.add_systems(PreStartup, init)

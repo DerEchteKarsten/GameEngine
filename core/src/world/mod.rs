@@ -1,25 +1,13 @@
-use std::{
-    fmt::Debug, marker::PhantomData, ops::{Deref, DerefMut}, os::raw::c_void, ptr::NonNull, time::{Duration, Instant}
-};
+use std::ops::{Deref, DerefMut};
 
-use anyhow::Result;
-use ash::vk::{self, BufferCopy, Packed24_8};
-use bevy_app::prelude::*;
-use bevy_asset::{AssetEvent, AssetServer, Assets, Handle};
-use bevy_ecs::{
-    component::{ComponentId},
-    entity::EntityHashMap,
-    prelude::*,
-    world::DeferredWorld,
-};
-use bevy_log::info_span;
-use glam::{Mat4, Quat, Vec3, Vec4};
-use gpu_allocator::MemoryLocation;
+use bevy_asset::{Assets, Handle};
+use bevy_ecs::prelude::*;
+use glam::Mat4;
+use lava::vkobjects::acceleration_structure::AccelerationStructure;
 use lava::{
     pipelines::Vertex,
     vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, StorageBuffer},
 };
-use lava::{state::Ctx, vkobjects::acceleration_structure::AccelerationStructure};
 
 use crate::{
     assets::{
@@ -138,23 +126,30 @@ pub fn load_assets(
             if !mesh.uploaded {
                 for m in &mut mesh.meshes {
                     let meshlet_index = world.meshlets.len() + meshlets.len();
-                    let mmeshlets = m.meshlets
+                    let mmeshlets = m
+                        .meshlets
                         .iter()
                         .map(|m| Meshlet {
                             triangle_count: m.triangle_count,
                             vertex_count: m.vertex_count,
-                            triangle_index: m.triangle_index + world.indecies.len() as u32 + indices.len() as u32,
-                            vertex_index: m.vertex_index + world.vertices.len() as u32 + vertices.len() as u32,
+                            triangle_index: m.triangle_index
+                                + world.indecies.len() as u32
+                                + indices.len() as u32,
+                            vertex_index: m.vertex_index
+                                + world.vertices.len() as u32
+                                + vertices.len() as u32,
                         })
                         .collect::<Vec<_>>();
                     vertices.extend(m.vertices.clone());
                     indices.extend(m.indices.clone());
                     meshlets.extend(mmeshlets);
                     cull_data.extend(m.cull_data.clone());
-                    
+
                     let bvh_root = world.bvh_nodes.len() + bvh.len();
                     m.bvh_root_node_index = bvh_root as u32;
-                    let mbvh = m.bvh.iter()
+                    let mbvh = m
+                        .bvh
+                        .iter()
                         .map(|n| {
                             let mut n = n.clone();
                             n.aabbs.iter_mut().enumerate().for_each(|(i, aabb)| {
@@ -237,14 +232,13 @@ impl Deref for StagingBuffer {
     type Target = Buffer<u8, CpuBuffer>;
     fn deref(&self) -> &Buffer<u8, CpuBuffer> {
         &self.0
-    } 
+    }
 }
 impl DerefMut for StagingBuffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
-    } 
+    }
 }
-
 
 #[derive(Resource, Default)]
 pub struct RenderWorld {
@@ -262,13 +256,15 @@ pub struct RenderWorld {
 
     upload_queue: Vec<(Entity, Handle<Mesh>, Mat4)>,
 
-    acceleration_structure_scratch_memory: Option<Buffer<u8>>,
-    acceleration_structure_memory: Option<Buffer<u8>>,
-    tlas: Option<AccelerationStructure>,
+    _acceleration_structure_scratch_memory: Option<Buffer<u8>>,
+    _acceleration_structure_memory: Option<Buffer<u8>>,
+    _tlas: Option<AccelerationStructure>,
     pub max_bvh_depth: u32,
 }
 
 pub(super) fn init_world(mut cmd: Commands) {
-    cmd.insert_resource(StagingBuffer(Buffer::new(BufferUsageFlags::empty(), STAGING_BUFFER_SIZE).unwrap()));
+    cmd.insert_resource(StagingBuffer(
+        Buffer::new(BufferUsageFlags::empty(), STAGING_BUFFER_SIZE).unwrap(),
+    ));
     cmd.insert_resource(RenderWorld::default());
 }

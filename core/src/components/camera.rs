@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, time::Duration};
+use std::f32::consts::PI;
 
 use bevy_app::{App, PreUpdate, Update};
 use bevy_ecs::resource::Resource;
@@ -8,8 +8,7 @@ use bevy_input::{
     mouse::{MouseButton, MouseButtonInput, MouseMotion},
 };
 use bevy_time::Time;
-use bevy_window::{CursorGrabMode, PrimaryWindow, Window};
-use glam::{Mat3, Mat4, Quat, Vec3, vec3};
+use glam::{Mat4, Vec3, vec3};
 
 use bevy_ecs::prelude::*;
 use lava::state::Ctx;
@@ -86,10 +85,8 @@ impl Default for Controls {
 
 pub fn update_mouse_buttons(
     mut controls: ResMut<Controls>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
     mut mousebtn_evr: MessageReader<MouseButtonInput>,
 ) {
-    let mut window = windows.single_mut().unwrap();
     for ev in mousebtn_evr.read() {
         if ev.button == MouseButton::Right && ev.state == ButtonState::Pressed {
             controls.look_around = true;
@@ -105,8 +102,7 @@ pub fn update_mouse_buttons(
 }
 pub fn update_mouse_move(
     mut controls: ResMut<Controls>,
-    mut evr_motion: EventReader<MouseMotion>,
-    time: Res<Time>,
+    mut evr_motion: MessageReader<MouseMotion>,
 ) {
     if !controls.look_around {
         return;
@@ -180,6 +176,7 @@ pub fn editor_camera(mut query: Query<&mut Camera>, controls: Res<Controls>, tim
 //     controls.cursor_delta = [0.0; 2];
 // }
 
+#[allow(non_snake_case)]
 pub fn CameraPlugin(app: &mut App) {
     app.init_resource::<Controls>()
         .add_systems(

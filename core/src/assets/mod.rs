@@ -1,23 +1,14 @@
-use core::slice;
-use std::{
-    collections::HashMap, f16, fmt::Debug, future::IntoFuture, io::Write, mem::offset_of,
-    sync::atomic::AtomicU32,
-};
+use std::collections::HashMap;
 
 use anyhow::{Ok, Result};
-use ash::{Instance, vk::QCOM_FILTER_CUBIC_CLAMP_NAME};
 use bevy_app::Plugin;
 use bevy_asset::{
     AssetApp, AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext,
-    io::Reader,
-    processor::LoadTransformAndSave,
-    saver::AssetSaver,
-    transformer::{AssetTransformer, TransformedAsset},
+    processor::LoadTransformAndSave, saver::AssetSaver, transformer::AssetTransformer,
 };
 use bevy_reflect::TypePath;
-use bytemuck::{NoUninit, Pod, Zeroable};
-use glam::{Mat4, Vec3, vec3};
-use meshopt::VertexDataAdapter;
+use bytemuck::Pod;
+use glam::{Mat4, Vec3};
 
 use crate::assets::{
     material::Material,
@@ -56,7 +47,7 @@ pub struct Mesh {
 pub struct GltfMesh {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
-    images: Vec<gltf::image::Data>,
+    _images: Vec<gltf::image::Data>,
 }
 
 pub struct GltfMeshLoader;
@@ -68,8 +59,8 @@ impl AssetLoader for GltfMeshLoader {
     async fn load(
         &self,
         reader: &mut dyn bevy_asset::io::Reader,
-        settings: &(),
-        load_context: &mut bevy_asset::LoadContext<'_>,
+        _settings: &(),
+        _load_context: &mut bevy_asset::LoadContext<'_>,
     ) -> gltf::Result<Self::Asset> {
         let mut file_buf = Vec::new();
         reader.read_to_end(&mut file_buf).await?;
@@ -77,7 +68,7 @@ impl AssetLoader for GltfMeshLoader {
         gltf::Result::Ok(GltfMesh {
             document,
             buffers,
-            images,
+            _images: images,
         })
     }
 
@@ -100,7 +91,7 @@ impl AssetTransformer for MeshTransformer {
     async fn transform<'a>(
         &'a self,
         asset: bevy_asset::transformer::TransformedAsset<Self::AssetInput>,
-        settings: &'a Self::Settings,
+        _settings: &'a Self::Settings,
     ) -> std::result::Result<
         bevy_asset::transformer::TransformedAsset<Self::AssetOutput>,
         Self::Error,
@@ -122,7 +113,6 @@ impl AssetTransformer for MeshTransformer {
                     .unwrap()
                     .map(|e| Vec3::from(e))
                     .collect::<Vec<_>>();
-            
 
                 let uvs = reader
                     .read_tex_coords(0)
@@ -227,7 +217,7 @@ impl AssetSaver for MeshSaver {
         &self,
         writer: &mut bevy_asset::io::Writer,
         asset: bevy_asset::saver::SavedAsset<'_, Self::Asset>,
-        settings: &Self::Settings,
+        _settings: &Self::Settings,
     ) -> std::result::Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
         let mesh = asset.get();
 
@@ -265,8 +255,8 @@ impl AssetLoader for MeshLoader {
     async fn load(
         &self,
         reader: &mut dyn bevy_asset::io::Reader,
-        settings: &Self::Settings,
-        load_context: &mut LoadContext<'_>,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
     ) -> std::result::Result<Self::Asset, Self::Error> {
         let instance_transforms = read_slice(reader).await?;
         let materials = read_slice(reader).await?;
@@ -275,7 +265,7 @@ impl AssetLoader for MeshLoader {
         let num_meshes = read_u64(reader).await?;
 
         let mut meshes = Vec::new();
-        for i in 0..num_meshes {
+        for _ in 0..num_meshes {
             let mut buffer = [0u8; size_of::<Aabb>()];
             reader.read(&mut buffer).await?;
             let aabb = bytemuck::cast_slice(&buffer)[0];
@@ -293,7 +283,6 @@ impl AssetLoader for MeshLoader {
             };
             meshes.push(mesh);
         }
-
 
         Ok(Mesh {
             instance_transforms,

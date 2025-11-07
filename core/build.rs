@@ -1,7 +1,6 @@
-use std::{path::PathBuf, process::Command};
+use std::path::PathBuf;
 
 use spirv_builder::{Capability, MetadataPrintout, SpirvBuilder};
-
 
 fn main() {
     println!("cargo::rerun-if-changed=./../shaders/src/*");

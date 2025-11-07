@@ -7,7 +7,7 @@ use bevy_math::{
 };
 use bevy_tasks::{AsyncComputeTaskPool, ParallelSlice};
 use bytemuck::{Pod, Zeroable};
-use glam::{Vec2, Vec3, Vec3A, Vec3Swizzles};
+use glam::{Vec2, Vec3, Vec3A};
 use itertools::Itertools;
 use lava::pipelines::Vertex;
 use meshopt::{
@@ -236,7 +236,7 @@ impl MeshletMesh {
         let (bvh, aabb, depth) = bvh.build(&mut meshlets, all_groups, &mut cull_data);
 
         let mut mmeshlets = Vec::with_capacity(meshlets.len());
-        for (i, meshlet) in meshlets.meshlets.iter().enumerate() {
+        for meshlet in meshlets.meshlets.iter() {
             mmeshlets.push(Meshlet {
                 triangle_count: meshlet.triangle_count,
                 triangle_index: meshlet.triangle_offset,
@@ -246,24 +246,23 @@ impl MeshletMesh {
         }
 
         let verticies = vertices
-                .iter()
-                .enumerate()
-                .map(|(i, v)| Vertex {
-                    position: *v,
-                    normal: Vec3::new(
-                        vertex_normals[i * 3 + 0],
-                        vertex_normals[i * 3 + 1],
-                        vertex_normals[i * 3 + 2],
-                    ),
-                    uv: Vec2::new(vertex_uvs[i * 2 + 0], vertex_uvs[i * 2 + 1]),
-                })
-                .collect::<Vec<Vertex>>();
-        
-        let duped_verticies = meshlets.vertices
             .iter()
-            .map(|v| {
-                verticies[(*v) as usize]
+            .enumerate()
+            .map(|(i, v)| Vertex {
+                position: *v,
+                normal: Vec3::new(
+                    vertex_normals[i * 3 + 0],
+                    vertex_normals[i * 3 + 1],
+                    vertex_normals[i * 3 + 2],
+                ),
+                uv: Vec2::new(vertex_uvs[i * 2 + 0], vertex_uvs[i * 2 + 1]),
             })
+            .collect::<Vec<Vertex>>();
+
+        let duped_verticies = meshlets
+            .vertices
+            .iter()
+            .map(|v| verticies[(*v) as usize])
             .collect::<Vec<_>>();
 
         Self {

@@ -1,5 +1,5 @@
 use core::{
-    CorePlugin, INITIAL_WINDOW_SIZE,
+    CorePlugin,
     assets::Mesh,
     components::{
         camera::{Camera, Controls},
@@ -7,7 +7,6 @@ use core::{
     },
     world::Instance,
 };
-use std::f32::consts::PI;
 
 use bevy_app::{App, Startup, Update};
 use bevy_asset::{AssetServer, Handle};
@@ -35,8 +34,8 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
 
     // // let model2: Handle<Mesh> = asset_server.load("mat.glb");
 
-    for x in 0..1 {
-        for y in 0..1 {
+    for _x in 0..1 {
+        for _y in 0..1 {
             cmd.spawn((
                 Instance {
                     model: model.clone(),
@@ -53,10 +52,10 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn update(
-    mut cmd: Commands,
-    mut model: Query<(&Transform, &Children), With<Model>>,
-    qchildren: Query<&Transform>,
-    time: Res<Time>,
+    _cmd: Commands,
+    _model: Query<(&Transform, &Children), With<Model>>,
+    _qchildren: Query<&Transform>,
+    _time: Res<Time>,
 ) {
     // if let Some((transform, children)) = model.iter().last() {
 
