@@ -28,17 +28,14 @@ use bevy_window::{
 };
 use bevy_winit::{WinitPlugin, WinitWindows};
 use bytemuck::{Pod, Zeroable};
-use fastnbt::{DeOpts, Value, from_bytes};
 use glam::{IVec3, Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
 use gpu_allocator::MemoryLocation;
-use image::{DynamicImage, ImageBuffer, Rgb};
 use lava::{
     c, command_buffer::{DispatchIndirectCommand, DrawIndirectCommand}, pipelines::{RasterDispatch, Vertex}, state::Ctx, vkobjects::{
         buffer::{Buffer, BufferUsageFlags, GpuBuffer},
         image::{Image, ImageSize},
     }
 };
-use noise::{MultiFractal, NoiseFn, Perlin};
 use smallvec::SmallVec;
 
 use crate::{
@@ -261,8 +258,8 @@ pub fn CorePlugin(app: &mut App) {
                 exit_condition: ExitCondition::OnPrimaryClosed,
                 primary_window: Some(Window {
                     resolution: WindowResolution::new(
-                        INITIAL_WINDOW_SIZE.x as f32,
-                        INITIAL_WINDOW_SIZE.y as f32,
+                        INITIAL_WINDOW_SIZE.x as u32,
+                        INITIAL_WINDOW_SIZE.y as u32,
                     ),
                     present_mode: bevy_window::PresentMode::AutoNoVsync,
                     title: "RayTracer".to_owned(),
@@ -270,6 +267,7 @@ pub fn CorePlugin(app: &mut App) {
 
                     ..Default::default()
                 }),
+                primary_cursor_options: None,
             },
             AssetPlugin {
                 mode: bevy_asset::AssetMode::Processed,

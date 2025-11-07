@@ -87,19 +87,19 @@ impl Default for Controls {
 pub fn update_mouse_buttons(
     mut controls: ResMut<Controls>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
-    mut mousebtn_evr: EventReader<MouseButtonInput>,
+    mut mousebtn_evr: MessageReader<MouseButtonInput>,
 ) {
     let mut window = windows.single_mut().unwrap();
     for ev in mousebtn_evr.read() {
         if ev.button == MouseButton::Right && ev.state == ButtonState::Pressed {
             controls.look_around = true;
-            window.cursor_options.grab_mode = CursorGrabMode::Confined;
-            window.cursor_options.visible = false;
+            // window.cursor_options.grab_mode = CursorGrabMode::Confined;
+            // window.cursor_options.visible = false;
         }
         if ev.button == MouseButton::Right && ev.state == ButtonState::Released {
             controls.look_around = false;
-            window.cursor_options.grab_mode = CursorGrabMode::None;
-            window.cursor_options.visible = true;
+            // window.cursor_options.grab_mode = CursorGrabMode::None;
+            // window.cursor_options.visible = true;
         }
     }
 }
