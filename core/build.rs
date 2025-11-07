@@ -1,10 +1,10 @@
 use std::{path::PathBuf, process::Command};
 
-use spirv_builder::{MetadataPrintout, SpirvBuilder};
+use spirv_builder::{Capability, MetadataPrintout, SpirvBuilder};
 
 
 fn main() {
-    println!("cargo::rerun-if-changed=./../shaders");
+    println!("cargo::rerun-if-changed=./../shaders/src/*");
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let crate_path = [manifest_dir, "..", "shaders"]
@@ -18,6 +18,7 @@ fn main() {
             print_inputs: true,
             print_backtrace: true,
         })
+        .capability(Capability::Linkage)
         .build()
         .unwrap();
 
