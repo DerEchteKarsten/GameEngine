@@ -151,34 +151,34 @@ fn render(
         cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
         cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
         if world.instance_bvh_root_nodes.len() > 0 {
-            cmd.compute()
-                .shader_path("instance_cull")
-                .constants(c!(world.instance_bvh_root_nodes.len() as u64))
-                .read(&world.instance_aabbs)
-                .read(&world.instance_bvh_root_nodes)
-                .read(&world.instance_transforms)
-                .readwrite(&resources.dispatch_params)
-                .readwrite(&resources.bvh_node_stack)
-                .dispatch(
-                    world.instance_bvh_root_nodes.len().div_ceil(64) as u32,
-                    1,
-                    1,
-                );
+            // cmd.compute()
+            //     .shader("instance_cull")
+            //     .constants(c!(world.instance_bvh_root_nodes.len() as u64))
+            //     .read(&world.instance_aabbs)
+            //     .read(&world.instance_bvh_root_nodes)
+            //     .read(&world.instance_transforms)
+            //     .readwrite(&resources.dispatch_params)
+            //     .readwrite(&resources.bvh_node_stack)
+            //     .dispatch(
+            //         world.instance_bvh_root_nodes.len().div_ceil(64) as u32,
+            //         1,
+            //         1,
+            //     );
 
-            cmd.compute()
-                .shader_path("bvh_cull")
-                .read(&world.bvh_nodes)
-                .read(&world.instance_transforms)
-                .read(&world.cull_data)
-                .readwrite(&resources.bvh_node_stack)
-                .write(&resources.cluster_buffer)
-                .readwrite(&resources.dispatch_params)
-                .dispatch(4, 1, 1);
+            // cmd.compute()
+            //     .shader("bvh_cull")
+            //     .read(&world.bvh_nodes)
+            //     .read(&world.instance_transforms)
+            //     .read(&world.cull_data)
+            //     .readwrite(&resources.bvh_node_stack)
+            //     .write(&resources.cluster_buffer)
+            //     .readwrite(&resources.dispatch_params)
+            //     .dispatch(4, 1, 1);
 
-            let params =
-                cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
+            // let params =
+            //     cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
 
-            log::debug!("{:#?}", params);
+            // log::debug!("{:#?}", params);
 
             // cmd.raster()
             //     .vertex("raster", "vertex")
@@ -211,8 +211,9 @@ fn render(
             //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
         }
 
+
         cmd.compute()
-            .shader_path("post")
+            .shader("post")
             .constants(c!(
                 camera.projection_matrix().inverse(),
                 camera.view_matrix().inverse(),
