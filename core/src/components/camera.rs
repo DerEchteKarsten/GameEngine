@@ -85,7 +85,7 @@ impl Default for Controls {
 
 pub fn update_mouse_buttons(
     mut controls: ResMut<Controls>,
-    mut mousebtn_evr: MessageReader<MouseButtonInput>,
+    mut mousebtn_evr: EventReader<MouseButtonInput>,
 ) {
     for ev in mousebtn_evr.read() {
         if ev.button == MouseButton::Right && ev.state == ButtonState::Pressed {
@@ -102,7 +102,7 @@ pub fn update_mouse_buttons(
 }
 pub fn update_mouse_move(
     mut controls: ResMut<Controls>,
-    mut evr_motion: MessageReader<MouseMotion>,
+    mut evr_motion: EventReader<MouseMotion>,
 ) {
     if !controls.look_around {
         return;

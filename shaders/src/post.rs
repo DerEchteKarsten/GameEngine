@@ -1,13 +1,27 @@
-use spirv_std::{glam::*, spirv};
+use spirv_std::{glam::*, image::Image2dArray, spirv, macros::*};
+use macros::*;
+use lava::command_buffer::Binding;
+
+struct TextureHandle<T> {
+    index: u64,
+    _marker: core::marker::PhantomData<T>,
+}
+
+struct ImageHandle<T> {
+    index: u64,
+    _marker: core::marker::PhantomData<T>,
+}
 
 #[repr(C)]
+#[derive(Binding)]
 struct PostBindings {
     inverse_proj: Mat4,
     inverse_view: Mat4,
     window_size: Vec4,
-    depth: TextureHandle2D<float>,
-    color: TextureHandle2D<float4>,
-    out: ImageHandle2D<float4>,
+    test: *mut u32,
+    depth: TextureHandle<f32>,
+    color: TextureHandle<Vec4>,
+    out: ImageHandle<Vec4>,
 }
 
 fn view_dir(bindings: &PostBindings, pixel_coord: UVec2) -> Vec3 {
@@ -20,16 +34,16 @@ fn view_dir(bindings: &PostBindings, pixel_coord: UVec2) -> Vec3 {
     return direction.xyz();
 }
 
-
-#[spirv("gl_compute")]
 #[spirv(compute(threads(8, 8, 1)))]
-fn main(#[spirv(global_invocation_id)] dtid: UVec2, #[spirv(push_constant)] bindings: &PostBindings) {
-    let color = bindings.color.Load(dtid);
-    let depth = bindings.depth.Instance[dtid];
+pub fn post(#[spirv(global_invocation_id)] dtid: UVec2, #[spirv(push_constant)] bindings: &PostBindings, 
+    #[spirv(descriptor_set = 0, binding = 1)] texture_heap: &Image2dArray,
+    #[spirv(descriptor_set = 1, binding = 0)] storage_heap: &Image2dArray) {
+    // let color = bindings.color.Load(dtid);
+    // let depth = bindings.depth.Instance[dtid];
 
-    if depth == 0.0 {
-        bindings.out.Store(dtid, view_dir(bindings, dtid).extend(1.0));
-    } else {
-        bindings.out.Store(dtid, color);
-    }
+    // if depth == 0.0 {
+    //     bindings.out.Store(dtid, view_dir(bindings, dtid).extend(1.0));
+    // } else {
+    //     bindings.out.Store(dtid, color);
+    // }
 }

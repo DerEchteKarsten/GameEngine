@@ -1,3 +1,4 @@
 [workspace]
 resolver = "3"
-members = [ "core","game", "lava", "shaders"]
+members = ["core", "game", "lava", "macros"]
+exclude = ["shaders"]

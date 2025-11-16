@@ -1,17 +1,14 @@
 #![feature(f16)]
 #![feature(random)]
 
-use std::ops::Deref;
+use std::{any::type_name, ops::Deref};
 
 use ash::vk::{self, Format};
 use bevy_a11y::AccessibilityPlugin;
 use bevy_app::{App, PostUpdate, PreStartup, PreUpdate, Startup, TaskPoolPlugin, Update};
 use bevy_asset::AssetPlugin;
 use bevy_ecs::{
-    message::MessageReader,
-    schedule::IntoScheduleConfigs,
-    system::{Local, Query, Res, ResMut},
-    world::World,
+    event::EventReader, schedule::IntoScheduleConfigs, system::{Local, Query, Res, ResMut}, world::World
 };
 use bevy_input::InputPlugin;
 use bevy_log::LogPlugin;
@@ -53,7 +50,7 @@ pub fn init(world: &mut World) {
     lava::init(Some(&window), true).unwrap();
 }
 
-pub fn on_resize(mut event_reader: MessageReader<WindowResized>) {
+pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
     for e in event_reader.read() {
         log::info!("test, {}, {}", e.width, e.height);
         Ctx::resize_swapchain(e.width as u32, e.height as u32);
@@ -228,6 +225,7 @@ fn render(
             .read(&resources.color_attachment)
             .write(&swapchain_image)
             .dispatch_fullscreen();
+
         cmd.present(swapchain_image);
         Ok(())
     })
@@ -252,8 +250,8 @@ pub fn CorePlugin(app: &mut App) {
                 exit_condition: ExitCondition::OnPrimaryClosed,
                 primary_window: Some(Window {
                     resolution: WindowResolution::new(
-                        INITIAL_WINDOW_SIZE.x as u32,
-                        INITIAL_WINDOW_SIZE.y as u32,
+                        INITIAL_WINDOW_SIZE.x as f32,
+                        INITIAL_WINDOW_SIZE.y as f32,
                     ),
                     present_mode: bevy_window::PresentMode::AutoNoVsync,
                     title: "RayTracer".to_owned(),
@@ -261,7 +259,6 @@ pub fn CorePlugin(app: &mut App) {
 
                     ..Default::default()
                 }),
-                primary_cursor_options: None,
             },
             AssetPlugin {
                 mode: bevy_asset::AssetMode::Processed,
