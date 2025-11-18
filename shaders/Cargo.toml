@@ -9,4 +9,5 @@ crate-type = ["dylib", "lib"]
 [dependencies]
 spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu" }
 macros = { version = "0.1.0", path = "../macros" }
-lava = {path = "../lava"}
+bytemuck = "1.24.0"
+bytemuck_derive = "1.10.2"

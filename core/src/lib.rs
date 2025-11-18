@@ -27,6 +27,7 @@ use lava::{
         image::{Image, ImageSize},
     },
 };
+use shaders::post::CPostBindings;
 
 use crate::{
     assets::MeshAssets,
@@ -210,21 +211,9 @@ fn render(
 
 
         cmd.compute()
-            .shader("post")
-            .constants(c!(
-                camera.projection_matrix().inverse(),
-                camera.view_matrix().inverse(),
-                Vec4::new(
-                    Ctx::window_width().unwrap() as f32,
-                    Ctx::window_height().unwrap() as f32,
-                    0.0,
-                    0.0,
-                ),
-            ))
-            .read(&resources.depth_attachment)
-            .read(&resources.color_attachment)
-            .write(&swapchain_image)
-            .dispatch_fullscreen();
+            .bind(CPostBindings {
+                
+            })
 
         cmd.present(swapchain_image);
         Ok(())

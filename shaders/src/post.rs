@@ -1,16 +1,7 @@
 use spirv_std::{glam::*, image::Image2dArray, spirv, macros::*};
 use macros::*;
-use lava::command_buffer::Binding;
 
-struct TextureHandle<T> {
-    index: u64,
-    _marker: core::marker::PhantomData<T>,
-}
-
-struct ImageHandle<T> {
-    index: u64,
-    _marker: core::marker::PhantomData<T>,
-}
+use crate::{ImageHandle, TextureHandle};
 
 #[repr(C)]
 #[derive(Binding)]
@@ -18,10 +9,10 @@ struct PostBindings {
     inverse_proj: Mat4,
     inverse_view: Mat4,
     window_size: Vec4,
-    test: *mut u32,
-    depth: TextureHandle<f32>,
-    color: TextureHandle<Vec4>,
-    out: ImageHandle<Vec4>,
+    asv: *mut u32,
+    depth: TextureHandle,
+    color: TextureHandle,
+    out: ImageHandle,
 }
 
 fn view_dir(bindings: &PostBindings, pixel_coord: UVec2) -> Vec3 {
@@ -34,6 +25,7 @@ fn view_dir(bindings: &PostBindings, pixel_coord: UVec2) -> Vec3 {
     return direction.xyz();
 }
 
+#[shader]
 #[spirv(compute(threads(8, 8, 1)))]
 pub fn post(#[spirv(global_invocation_id)] dtid: UVec2, #[spirv(push_constant)] bindings: &PostBindings, 
     #[spirv(descriptor_set = 0, binding = 1)] texture_heap: &Image2dArray,
@@ -46,4 +38,6 @@ pub fn post(#[spirv(global_invocation_id)] dtid: UVec2, #[spirv(push_constant)] 
     // } else {
     //     bindings.out.Store(dtid, color);
     // }
+
+    bindings.asv[0] = 10;
 }

@@ -1,6 +1,6 @@
-use ash::vk::{AccessFlags2, ImageAspectFlags, ImageLayout, PipelineStageFlags2};
+use std::{fs, path::PathBuf};
+
 use bytemuck::Pod;
-use lava::command_buffer::ResourceHandle;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Attribute, DeriveInput, Expr, Type, TypePtr, TypeTuple, parse_macro_input};
@@ -9,7 +9,9 @@ use syn::{Attribute, DeriveInput, Expr, Type, TypePtr, TypeTuple, parse_macro_in
 #[proc_macro_attribute]
 pub fn shader(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as syn::ItemFn);
-    
+    let f = func.clone();
+    let func_name = func.sig.ident;
+
     let stage = func.attrs
         .iter()
         .find(|e| e.path().is_ident("spirv"))
@@ -19,10 +21,10 @@ pub fn shader(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .to_string();
 
     let stage = match stage {
-        s if s.contains("compute") => quote!(PipelineStageFlags2::COMPUTE_SHADER),
-        s if s.contains("vertex") => quote!(PipelineStageFlags2::VERTEX_SHADER),
-        s if s.contains("fragment") => quote!(PipelineStageFlags2::FRAGMENT_SHADER),
-        s if s.contains("ray_generation") => quote!(PipelineStageFlags2::RAY_TRACING_SHADER_KHR),
+        s if s.contains("compute") => quote!(ash::vk::PipelineStageFlags2::COMPUTE_SHADER),
+        s if s.contains("vertex") => quote!(ash::vk::PipelineStageFlags2::VERTEX_SHADER),
+        s if s.contains("fragment") => quote!(ash::vk::PipelineStageFlags2::FRAGMENT_SHADER),
+        s if s.contains("ray_generation") => quote!(ash::vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR),
         _ => panic!("Shader Stage not suported (yet)")
     };
 
@@ -34,16 +36,41 @@ pub fn shader(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .find(|arg| {
             let Some(attrib) = arg.attrs.iter().find(|e| e.path().is_ident("spirv")) else { return false;  };
             attrib.parse_args::<proc_macro2::TokenStream>().unwrap().to_string().contains("push_constant")
-        }).map(|e| quote!(#e.ty.as_ref().clone()))
+        }).map(|e| {
+            let ty = e.ty.as_ref().clone();
+            if let Type::Reference(ty) = ty
+                && let Type::Path(ty) = ty.elem.as_ref().clone() {
+                let path = ty.path;
+                quote!(shaders::#path)
+            }else {
+                quote!(compile_error!("Push Constant Type needs to be a struct"))
+            }
+        })
         .unwrap_or(quote!(()));
 
+    let func_name_string = func_name.to_string();
     let expandet = quote! {
-        impl Shader for fn(#func) {
-            const STAGE: PipelineStageFlags2 = #stage;
+        struct #func_name;
+
+        impl Shader for #func_name {
+            const STAGE: ash::vk::PipelineStageFlags2 = #stage;
             type GpuBinding = #binding_type;
+            const ENTRY: &'static str = #func_name_string;
         }
     };
-    expandet.into()
+
+    let out_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let mut cpu_file = PathBuf::from(out_dir);
+    cpu_file.push("target");
+    cpu_file.push("bindings");
+    if !fs::exists(&cpu_file).unwrap() {
+        fs::create_dir(&cpu_file).unwrap();
+    }
+    cpu_file.push(format!("{}.cpu.rs", func_name_string));
+
+    fs::write(&cpu_file, expandet.to_string()).expect("Could not write CPU bindings");
+
+    quote!(#f).into()
 }
 
 
@@ -59,99 +86,165 @@ pub fn bindings(input: TokenStream) -> TokenStream {
     };
 
     let mut cpu_fields = Vec::new();
-    let mut binding_entries = Vec::new();
-    let mut handles = Vec::new();
-    let mut aspects = Vec::new();
-    let mut layout = Vec::new();
+    let mut field_constructors = Vec::new(); 
+    let mut states = Vec::new();
+    let mut checks = Vec::new();
     for field in fields {
         let name = field.ident.as_ref().unwrap();
-        let is_write_only = field.attrs.iter().any(|e| e.path().is_ident("write_only"));
-        let (access, cpu_type, handle, pc, aspect, layout) = match &field.ty {
+        let mut writeable = field.attrs.iter().any(|e| e.path().is_ident("write_only"));
+        let readable = !writeable;
+        let mut pc = false;
+        let (cpu_type, image) = match &field.ty {
             Type::Ptr(ty) => {
-                let el = ty.elem.as_ref().clone();
-                (if ty.mutability.is_some() {
-                    if is_write_only {
-                        quote!(ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
-                    }else {
-                        quote!(ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ)
-                    }
-                }else {
-                    if is_write_only {
-                        quote!(compile_error!("Texture can not be written to but still hast write_only tag"))
-                    } else {
-                        quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ)
-                    }
-                },
-                quote!(&'a lava::vkobjects::Buffer<#el>),
-                quote!(lava::command_buffer::ResourceHandle::Buffer(binding.#name.handle)),
-                false,
-                ash::vk::ImageAspectFlags::empty(),
-                ash::vk::ImageLayout::UNDEFINED,
-            )},
+                if ty.mutability.is_some() {
+                    writeable = true;
+                }
+                let el = ty.elem.clone();
+                (quote!(&'a lava::vkobjects::buffer::Buffer<#el>), false)
+            },
             Type::Path(ty) => {
                 let name = ty.path.segments.last().unwrap().ident.to_string();
-                let handle = quote!(lava::command_buffer::ResourceHandle::Image(binding.#name.view, binding.#name.image));
-                let aspect = quote!(binding.#name.get_aspects());
-                match name.as_str() {
-                    "ImageHandle" => {
-                        (if is_write_only {
-                            quote!(ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
-                        }else {
-                            quote!(ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ)
-                        }, 
-                        quote!(&'a lava::vkobjects::Image),
-                        handle,
-                        false,
-                        aspect,
-                        ash::vk::ImageLayout::GENERAL)
-                    }
-                    "TextureHandle" => {
-                        (if is_write_only {
-                            quote!(compile_error!("Texture can not be written to but still hast write_only tag"))
-                        } else {
-                            quote!(ash::vk::AccessFlags2::SHADER_SAMPLED_READ)
-                        }, 
-                        quote!(&'a lava::vkobjects::Image),
-                        handle,
-                        false)
-                    },
-                    _ => {
-                        (quote!(), quote!{#ty}, quote!(), true)
-                    }
-                }
+                let image = name.as_str() == "ImageHandle";
+                writeable = image;
+                (if name.as_str() == "TextureHandle" || image {
+                    quote!(&'a lava::vkobjects::image::Image)  
+                } else { 
+                    pc = true;
+                    quote!(#ty)
+                }, true)
             }
-            _ => (quote!(::None), quote!(compile_error!("Texture can not be written to but still hast write_only tag")))
+            _ => (quote!(compile_error!("Unsuported Type")), false)
         };
-
-        if !pc {
-            binding_entries.push(access);
-        }
-        if !pc {
-            handle.push(handle);
-        }
         cpu_fields.push(quote! {
             pub #name: #cpu_type
         });
+        if pc {
+            field_constructors.push(quote! {
+                #name: bindings.#name
+            });
+            continue;
+        }
+     
+
+        states.push(match &field.ty {
+            Type::Ptr(ty) => {
+                let el = ty.elem.clone();
+                let access = if readable && writeable {
+                    quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ | ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                }else if writeable {
+                    quote!(ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                }else {
+                    field_constructors.push(quote! {
+                        #name: bindings.#name.address as usize as *const #el
+                    });
+                    quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ)
+                };
+                if writeable {
+                    field_constructors.push(quote! {
+                        #name: bindings.#name.address as usize as *mut #el
+                    });
+                }
+                quote!(
+                    (
+                        lava::command_buffer::ResourceHandle::Buffer(bindings.#name.handle),
+                        lava::command_buffer::ResourceState {
+                            access: #access,
+                            stages,
+                            layout: ash::vk::ImageLayout::UNDEFINED,
+                            aspect: ash::vk::ImageAspectFlags::empty(),
+                        }
+                    )
+                )
+            },
+            Type::Path(ty) => {
+                let type_name = ty.path.segments.last().unwrap().ident.to_string();
+                let (layout, access, usage) = match type_name.as_str() {
+                    "TextureHandle" => {
+                        field_constructors.push(quote! {
+                            #name: lava::command_buffer::TextureHandle {index: bindings.#name.bindless_handle.unwrap() as u64}
+                        });
+                        (
+                            quote!(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                            quote!(ash::vk::AccessFlags2::SHADER_SAMPLED_READ),
+                            quote!(ash::vk::ImageUsageFlags::SAMPLED)
+                        )
+                    },
+                    "ImageHandle" => {
+                        field_constructors.push(quote! {
+                            #name: lava::command_buffer::ImageHandle {index: bindings.#name.bindless_handle.unwrap() as u64}
+                        });
+                        (
+                            quote!(ash::vk::ImageLayout::GENERAL),
+                            if readable && writeable {
+                                quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ | ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                            }else if writeable {
+                                quote!(ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
+                            }else {
+                                quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ)
+                            },
+                            quote!(ash::vk::ImageUsageFlags::STORAGE)
+                        )
+                    },
+                    _ => unreachable!()
+                };
+                checks.push(quote! {
+                    assert!(bindings.#name.usage.contains(#usage), "Field needs {:#?} usage flag", #usage);
+                });
+                quote!(
+                    (
+                        lava::command_buffer::ResourceHandle::Image((bindings.#name.view, bindings.#name.handle)),
+                        lava::command_buffer::ResourceState {
+                            access: #access,
+                            stages,
+                            layout: #layout,
+                            aspect: lava::vkobjects::image::get_aspects(bindings.#name.format),
+                        }
+                    )
+                )
+            },
+            _ => quote!(compile_error!("Unsupported Type"))
+        });
     }
 
-    let expandet = quote! {
-        struct #cpu_name <'a> {
+
+    let expandet = quote! {    
+        #input
+            
+        pub struct #cpu_name <'a> {
             #(#cpu_fields,)*
         }
 
+        unsafe impl bytemuck::Pod for #struct_name {}
+        unsafe impl bytemuck::Zeroable for #struct_name {}
+
         impl Binding for #struct_name {
-            type CpuBinding = #cpu_name;
-            fn from_cpu_binding(binding: &Self::CpuBinding, stage: ash::vk::PipelineStageFlags2) -> (Self, Vec<(ResourceHandle, ResourceState)>) {
+            type CpuBinding<'a> = #cpu_name<'a>;
+            fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
+                #(#checks)*
+                
+                Self {
+                    #(#field_constructors,)*
+                }
+            }
+            fn resources<'a>(bindings: &Self::CpuBinding<'a>, stages: ash::vk::PipelineStageFlags2) -> Vec<(lava::command_buffer::ResourceHandle, lava::command_buffer::ResourceState)> {
                 vec![
-                    #((#handles,ResourceState {
-                        access: #binding_entries,
-                        aspect: #aspects,
-                        stage,
-                    }),)*
-                ];
+                    #(#states,)*
+                ]
             }
         }
     };
 
-    TokenStream::from(expandet)
+    let out_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let mut cpu_file = PathBuf::from(out_dir);
+    cpu_file.push("target");
+    cpu_file.push("bindings");
+    if !fs::exists(&cpu_file).unwrap() {
+        fs::create_dir(&cpu_file).unwrap();
+    }
+    cpu_file.push(format!("{}.cpu.rs", struct_name));
+
+
+    fs::write(&cpu_file, expandet.to_string()).expect("Could not write CPU bindings");
+
+    TokenStream::new()
 }

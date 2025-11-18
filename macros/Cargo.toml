@@ -7,9 +7,7 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-ash = "0.38.0"
 bytemuck = "1.24.0"
-lava = { version = "0.1.0", path = "../lava" }
 proc-macro2 = "1.0.103"
 quote = "1"
 syn = { version = "2", features = ["full", "parsing"] }

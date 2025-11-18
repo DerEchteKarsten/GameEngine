@@ -1,11 +1,24 @@
-use std::path::PathBuf;
+use std::{
+    env,
+    fs::{self, File},
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
 
 use spirv_builder::{Capability, MetadataPrintout, SpirvBuilder, SpirvMetadata};
 
 fn main() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
 
-    println!("cargo::rerun-if-changed={}/../shaders/src/", manifest_dir);
+    let generated_dir = PathBuf::from(manifest_dir)
+        .join("..")
+        .join("shaders")
+        .join("target")
+        .join("bindings");
+
+    println!("cargo:rerun-if-changed={}", generated_dir.display());
+    println!("cargo:rerun-if-changed={}/../shaders/src/", manifest_dir);
+
     let crate_path = [manifest_dir, "..", "shaders"]
         .iter()
         .copied()
@@ -24,6 +37,25 @@ fn main() {
         .extension("SPV_KHR_non_semantic_info")
         .build()
         .unwrap();
+
+    let out_file = PathBuf::from(manifest_dir)
+        .join("bindings.rs");
+
+    let mut files: Vec<_> = fs::read_dir(&generated_dir).unwrap()
+        .map(|entry| {
+            entry.ok().unwrap().path()
+        })
+        .collect();
+
+    files.sort();
+
+    let mut out = File::create(&out_file).unwrap();
+    for file in files {
+        let contents = fs::read_to_string(&file).unwrap();
+        writeln!(out, "// ===== auto-included: {} =====", file.display()).unwrap();
+        writeln!(out, "{}", contents).unwrap();
+        writeln!(out).unwrap();
+    }
 
     unsafe {
         std::env::set_var("VK_LAYER_PRINTF_ONLY_PRESET", "0");
