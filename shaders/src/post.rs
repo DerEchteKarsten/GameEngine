@@ -1,18 +1,18 @@
 use spirv_std::{glam::*, image::Image2dArray, spirv, macros::*};
 use macros::*;
 
-use crate::{ImageHandle, TextureHandle};
+use crate::{MutImage, MutPtr, Image};
 
 #[repr(C)]
 #[derive(Binding)]
-struct PostBindings {
+pub struct PostBindings {
     inverse_proj: Mat4,
     inverse_view: Mat4,
     window_size: Vec4,
-    asv: *mut u32,
-    depth: TextureHandle,
-    color: TextureHandle,
-    out: ImageHandle,
+    asv: MutPtr<u32>,
+    depth: Image,
+    color: Image,
+    out: MutImage,
 }
 
 fn view_dir(bindings: &PostBindings, pixel_coord: UVec2) -> Vec3 {
@@ -25,11 +25,14 @@ fn view_dir(bindings: &PostBindings, pixel_coord: UVec2) -> Vec3 {
     return direction.xyz();
 }
 
+
+
 #[shader]
-#[spirv(compute(threads(8, 8, 1)))]
-pub fn post(#[spirv(global_invocation_id)] dtid: UVec2, #[spirv(push_constant)] bindings: &PostBindings, 
-    #[spirv(descriptor_set = 0, binding = 1)] texture_heap: &Image2dArray,
-    #[spirv(descriptor_set = 1, binding = 0)] storage_heap: &Image2dArray) {
+#[spirv(compute(threads(64, 1, 1)))]
+pub fn post(#[spirv(global_invocation_id)] dtid: UVec3, 
+            #[spirv(push_constant)] bindings: &PostBindings,
+            #[spirv(descriptor_set = 0, binding = 1)] texture_heap: &Image2dArray,
+            #[spirv(descriptor_set = 1, binding = 0)] storage_heap: &Image2dArray) {
     // let color = bindings.color.Load(dtid);
     // let depth = bindings.depth.Instance[dtid];
 
@@ -39,5 +42,27 @@ pub fn post(#[spirv(global_invocation_id)] dtid: UVec2, #[spirv(push_constant)] 
     //     bindings.out.Store(dtid, color);
     // }
 
-    bindings.asv[0] = 10;
+
+    unsafe { debug_printfln!("asdasdasd") };
+}
+
+
+#[repr(C)]
+#[derive(Binding)]
+pub struct FragBindings{
+    mesh_id: u32,
+    texture: Image,
+}
+
+#[shader]
+#[spirv(fragment)]
+pub fn test_frag(#[spirv(push_constant)] bindings: &FragBindings) {
+    
+}
+
+
+#[shader]
+#[spirv(vertex)]
+pub fn test_vertex(#[spirv(push_constant)] bindings: &FragBindings) {
+    
 }

@@ -24,21 +24,9 @@ fn main() {
         .copied()
         .collect::<PathBuf>();
 
-    let _ = SpirvBuilder::new(crate_path, "spirv-unknown-vulkan1.4")
-        .print_metadata(MetadataPrintout::Full)
-        .shader_panic_strategy(spirv_builder::ShaderPanicStrategy::DebugPrintfThenExit {
-            print_inputs: true,
-            print_backtrace: true,
-        })
-        .release(false)
-        .capability(Capability::Linkage)
-        .capability(Capability::Shader)
-        .spirv_metadata(SpirvMetadata::Full)
-        .extension("SPV_KHR_non_semantic_info")
-        .build()
-        .unwrap();
 
     let out_file = PathBuf::from(manifest_dir)
+        .join("src")
         .join("bindings.rs");
 
     let mut files: Vec<_> = fs::read_dir(&generated_dir).unwrap()
@@ -50,12 +38,33 @@ fn main() {
     files.sort();
 
     let mut out = File::create(&out_file).unwrap();
+    writeln!(out, "use glam::*;").unwrap();
     for file in files {
         let contents = fs::read_to_string(&file).unwrap();
         writeln!(out, "// ===== auto-included: {} =====", file.display()).unwrap();
         writeln!(out, "{}", contents).unwrap();
         writeln!(out).unwrap();
     }
+
+    let _ = SpirvBuilder::new(crate_path, "spirv-unknown-vulkan1.4")
+        .print_metadata(MetadataPrintout::Full)
+        .shader_panic_strategy(spirv_builder::ShaderPanicStrategy::DebugPrintfThenExit {
+            print_inputs: true,
+            print_backtrace: true,
+        })
+        .release(false)
+        .extension("SPV_KHR_non_semantic_info")
+        .extension("SPV_KHR_physical_storage_buffer")
+        .capability(Capability::Linkage)
+        .capability(Capability::Shader)
+        .capability(Capability::Int64)
+        .capability(Capability::VariablePointers)
+        .capability(Capability::VariablePointersStorageBuffer)
+        .capability(Capability::PhysicalStorageBufferAddresses)
+        // .capability(Capability::Addresses)
+        .spirv_metadata(SpirvMetadata::Full)
+        .build()
+        .unwrap();
 
     unsafe {
         std::env::set_var("VK_LAYER_PRINTF_ONLY_PRESET", "0");

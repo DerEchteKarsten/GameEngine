@@ -1,7 +1,7 @@
 #![feature(f16)]
 #![feature(random)]
 
-use std::{any::type_name, ops::Deref};
+use std::{any::type_name, ops::Deref, time::{Duration, Instant}};
 
 use ash::vk::{self, Format};
 use bevy_a11y::AccessibilityPlugin;
@@ -19,23 +19,21 @@ use bevy_winit::{WinitPlugin, WinitWindows};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
 use lava::{
-    c,
-    command_buffer::{DispatchIndirectCommand, DrawIndirectCommand},
-    state::Ctx,
-    vkobjects::{
+    command_buffer::{DispatchIndirectCommand, DrawIndirectCommand}, pipelines::RasterDispatch, state::Ctx, vkobjects::{
         buffer::{Buffer, BufferUsageFlags, GpuBuffer},
         image::{Image, ImageSize},
-    },
+    }
 };
-use shaders::post::CPostBindings;
+
+mod bindings;
+
+use bindings::PostBindings;
 
 use crate::{
-    assets::MeshAssets,
-    components::camera::{Camera, CameraPlugin},
-    world::{
+    assets::MeshAssets, bindings::{FragBindings, post, test_frag, test_vertex}, components::camera::{Camera, CameraPlugin}, world::{
         RenderWorld, StagingBuffer, add_instance, init_world, load_assets, transform_child_changed,
         transform_parent_changed,
-    },
+    }
 };
 
 pub mod assets;
@@ -209,11 +207,24 @@ fn render(
             //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
         }
 
+        cmd.compute::<post>()
+            .bind(PostBindings {
+                asv: &world.instance_bvh_root_nodes,
+                color: &resources.color_attachment,
+                depth: &resources.depth_attachment,
+                out: &swapchain_image,
+                inverse_proj: camera.projection_matrix().inverse(),
+                inverse_view: camera.view_matrix().inverse(),
+                window_size: Vec4::new(Ctx::window_width().unwrap() as f32, Ctx::window_height().unwrap() as f32, 0.0, 0.0),
+            }).dispatch_fullscreen();
 
-        cmd.compute()
-            .bind(CPostBindings {
-                
-            })
+        // cmd.raster_vertex::<test_frag, test_vertex>()
+        //     .color_attachment(&swapchain_image, None)
+        //     .bind(FragBindings {
+        //         mesh_id: 67,
+        //         texture: &resources.color_attachment,
+        //     })
+        //     .draw_fullscreen(RasterDispatch::Draw { vertex_count: 1, instance_count: 1 });
 
         cmd.present(swapchain_image);
         Ok(())

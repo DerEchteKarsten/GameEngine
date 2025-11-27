@@ -1,9 +1,11 @@
-use std::{fs, path::PathBuf};
+use std::{fs, io::Write, path::PathBuf};
 
 use bytemuck::Pod;
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::{format_ident, quote};
-use syn::{Attribute, DeriveInput, Expr, Type, TypePtr, TypeTuple, parse_macro_input};
+use syn::{Attribute, DeriveInput, Expr, PathArguments, Type, TypePtr, TypeTuple, parse_macro_input};
+
 
 
 #[proc_macro_attribute]
@@ -40,22 +42,38 @@ pub fn shader(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let ty = e.ty.as_ref().clone();
             if let Type::Reference(ty) = ty
                 && let Type::Path(ty) = ty.elem.as_ref().clone() {
-                let path = ty.path;
-                quote!(shaders::#path)
+                let path = format_ident!("C{}",ty.path.segments.last().unwrap().ident);
+                quote!(#path)
             }else {
                 quote!(compile_error!("Push Constant Type needs to be a struct"))
             }
         })
-        .unwrap_or(quote!(()));
+        .unwrap_or(quote!(compile_error!("")));
 
     let func_name_string = func_name.to_string();
+    let s = func_name.span().unwrap().file();
+    let path = s
+        .split("/")
+        .skip(1)
+        .map(|e| {
+            e.trim_end_matches(".rs")
+        })
+        .chain(std::iter::once(func_name_string.as_str()))
+        .fold("".to_string(), |acc, s| {
+            if acc == "" {
+                s.to_string()
+            }else {
+                format!("{}::{}", acc, s)
+            }
+        });
+        
     let expandet = quote! {
-        struct #func_name;
+        pub struct #func_name;
 
-        impl Shader for #func_name {
+        impl lava::command_buffer::Shader for #func_name {
             const STAGE: ash::vk::PipelineStageFlags2 = #stage;
             type GpuBinding = #binding_type;
-            const ENTRY: &'static str = #func_name_string;
+            const ENTRY: &'static str = #path;
         }
     };
 
@@ -78,7 +96,7 @@ pub fn shader(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn bindings(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
-    let cpu_name = format_ident!("C{}", struct_name.to_string());
+    let gpu_name = format_ident!("C{}", struct_name.to_string());
 
     let fields = match &input.data {
         syn::Data::Struct(str) => &str.fields,
@@ -86,37 +104,48 @@ pub fn bindings(input: TokenStream) -> TokenStream {
     };
 
     let mut cpu_fields = Vec::new();
+    let mut gpu_fields = Vec::new();
     let mut field_constructors = Vec::new(); 
     let mut states = Vec::new();
     let mut checks = Vec::new();
     for field in fields {
         let name = field.ident.as_ref().unwrap();
-        let mut writeable = field.attrs.iter().any(|e| e.path().is_ident("write_only"));
-        let readable = !writeable;
         let mut pc = false;
-        let (cpu_type, image) = match &field.ty {
-            Type::Ptr(ty) => {
-                if ty.mutability.is_some() {
-                    writeable = true;
-                }
-                let el = ty.elem.clone();
-                (quote!(&'a lava::vkobjects::buffer::Buffer<#el>), false)
-            },
-            Type::Path(ty) => {
-                let name = ty.path.segments.last().unwrap().ident.to_string();
-                let image = name.as_str() == "ImageHandle";
-                writeable = image;
-                (if name.as_str() == "TextureHandle" || image {
-                    quote!(&'a lava::vkobjects::image::Image)  
-                } else { 
+        let (cpu_type, gpu_type) = if let Type::Path(ty) =  &field.ty {
+            let name = ty.path.segments.last().unwrap().ident.to_string();
+            let generic = if let PathArguments::AngleBracketed(args) = &ty.path.segments.last().unwrap().arguments {
+                Some(args.args.first().unwrap())
+            }else {
+                None
+            };
+            match name.as_str() {
+                "Image" | "MutImage" => (
+                    quote!(&'a lava::vkobjects::image::Image),
+                    quote!(u64),
+                ),
+                "Ptr" | "MutPtr" => {
+                    let generic = generic.unwrap();
+                (
+                    quote!(&'a lava::vkobjects::buffer::Buffer<#generic>),
+                    quote!(u64),
+                )},
+                _ => { 
                     pc = true;
-                    quote!(#ty)
-                }, true)
+                    (
+                        quote!(#ty),
+                        quote!(#ty),
+                    )
+                }
             }
-            _ => (quote!(compile_error!("Unsuported Type")), false)
+        } else {
+            (quote!(compile_error!("Unsuported Type")),quote!())
         };
+
         cpu_fields.push(quote! {
             pub #name: #cpu_type
+        });
+        gpu_fields.push(quote! {
+            pub #name: #gpu_type
         });
         if pc {
             field_constructors.push(quote! {
@@ -124,101 +153,91 @@ pub fn bindings(input: TokenStream) -> TokenStream {
             });
             continue;
         }
-     
 
-        states.push(match &field.ty {
-            Type::Ptr(ty) => {
-                let el = ty.elem.clone();
-                let access = if readable && writeable {
-                    quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ | ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
-                }else if writeable {
-                    quote!(ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
-                }else {
-                    field_constructors.push(quote! {
-                        #name: bindings.#name.address as usize as *const #el
-                    });
-                    quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ)
-                };
-                if writeable {
-                    field_constructors.push(quote! {
-                        #name: bindings.#name.address as usize as *mut #el
-                    });
-                }
-                quote!(
+        states.push(if let Type::Path(ty) = &field.ty {
+            let type_name = ty.path.segments.last().unwrap().ident.to_string();
+            let (layout, access, usage, aspect, field_constructor, handle) = match type_name.as_str() {
+                "Image" => {
                     (
-                        lava::command_buffer::ResourceHandle::Buffer(bindings.#name.handle),
-                        lava::command_buffer::ResourceState {
-                            access: #access,
-                            stages,
-                            layout: ash::vk::ImageLayout::UNDEFINED,
-                            aspect: ash::vk::ImageAspectFlags::empty(),
-                        }
+                        quote!(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                        quote!(ash::vk::AccessFlags2::SHADER_SAMPLED_READ),
+                        Some(quote!(ash::vk::ImageUsageFlags::SAMPLED)),
+                        quote!(lava::vkobjects::image::get_aspects(bindings.#name.format)),
+                        quote!(#name: bindings.#name.bindless_handle.unwrap() as u64),
+                        quote!(lava::command_buffer::ResourceHandle::Image((bindings.#name.view, bindings.#name.handle))),
                     )
-                )
-            },
-            Type::Path(ty) => {
-                let type_name = ty.path.segments.last().unwrap().ident.to_string();
-                let (layout, access, usage) = match type_name.as_str() {
-                    "TextureHandle" => {
-                        field_constructors.push(quote! {
-                            #name: lava::command_buffer::TextureHandle {index: bindings.#name.bindless_handle.unwrap() as u64}
-                        });
-                        (
-                            quote!(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                            quote!(ash::vk::AccessFlags2::SHADER_SAMPLED_READ),
-                            quote!(ash::vk::ImageUsageFlags::SAMPLED)
-                        )
-                    },
-                    "ImageHandle" => {
-                        field_constructors.push(quote! {
-                            #name: lava::command_buffer::ImageHandle {index: bindings.#name.bindless_handle.unwrap() as u64}
-                        });
-                        (
-                            quote!(ash::vk::ImageLayout::GENERAL),
-                            if readable && writeable {
-                                quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ | ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
-                            }else if writeable {
-                                quote!(ash::vk::AccessFlags2::SHADER_STORAGE_WRITE)
-                            }else {
-                                quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ)
-                            },
-                            quote!(ash::vk::ImageUsageFlags::STORAGE)
-                        )
-                    },
-                    _ => unreachable!()
-                };
+                },
+                "MutImage" => {
+                    (
+                        quote!(ash::vk::ImageLayout::GENERAL),
+                        quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ | ash::vk::AccessFlags2::SHADER_STORAGE_WRITE),
+                        Some(quote!(ash::vk::ImageUsageFlags::STORAGE)),
+                        quote!(lava::vkobjects::image::get_aspects(bindings.#name.format)),
+                        quote!(#name: bindings.#name.bindless_handle.unwrap() as u64),
+                        quote!(lava::command_buffer::ResourceHandle::Image((bindings.#name.view, bindings.#name.handle)))
+                    )
+                },
+                "Ptr" => {
+                    (
+                        quote!(ash::vk::ImageLayout::UNDEFINED),
+                        quote!(ash::vk::AccessFlags2::SHADER_SAMPLED_READ),
+                        None,
+                        quote!(ash::vk::ImageAspectFlags::empty()),
+                        quote!(#name: bindings.#name.address),
+                        quote!(lava::command_buffer::ResourceHandle::Buffer(bindings.#name.handle))
+                    )
+                },
+                "MutPtr" => {
+                    (
+                        quote!(ash::vk::ImageLayout::UNDEFINED),
+                        quote!(ash::vk::AccessFlags2::SHADER_STORAGE_READ | ash::vk::AccessFlags2::SHADER_STORAGE_WRITE),
+                        None,
+                        quote!(ash::vk::ImageAspectFlags::empty()),
+                        quote!(#name: bindings.#name.address ),
+                        quote!(lava::command_buffer::ResourceHandle::Buffer(bindings.#name.handle))
+                    )
+                },
+                _ => unreachable!()
+            };
+            field_constructors.push(field_constructor);
+            let name_str = name.to_string();
+            if let Some(usage) = usage {
                 checks.push(quote! {
-                    assert!(bindings.#name.usage.contains(#usage), "Field needs {:#?} usage flag", #usage);
+                    assert!(bindings.#name.usage.contains(#usage), "Field {} needs {:#?} usage flag", #name_str, #usage);
                 });
-                quote!(
-                    (
-                        lava::command_buffer::ResourceHandle::Image((bindings.#name.view, bindings.#name.handle)),
-                        lava::command_buffer::ResourceState {
-                            access: #access,
-                            stages,
-                            layout: #layout,
-                            aspect: lava::vkobjects::image::get_aspects(bindings.#name.format),
-                        }
-                    )
+            }
+            quote!(
+                (
+                    #handle,
+                    lava::command_buffer::ResourceState {
+                        access: #access,
+                        stages,
+                        layout: #layout,
+                        aspect: #aspect,
+                    }
                 )
-            },
-            _ => quote!(compile_error!("Unsupported Type"))
+            )
+        }else {
+            quote!(compile_error!("Unsuported Type"))
         });
     }
 
 
-    let expandet = quote! {    
-        #input
-            
-        pub struct #cpu_name <'a> {
+    let expandet = quote! { 
+        #[derive(Clone, Copy)]   
+        pub struct #gpu_name {
+            #(#gpu_fields,)*
+        }
+        
+        pub struct #struct_name <'a> {
             #(#cpu_fields,)*
         }
 
-        unsafe impl bytemuck::Pod for #struct_name {}
-        unsafe impl bytemuck::Zeroable for #struct_name {}
+        unsafe impl bytemuck::Pod for #gpu_name {}
+        unsafe impl bytemuck::Zeroable for #gpu_name {}
 
-        impl Binding for #struct_name {
-            type CpuBinding<'a> = #cpu_name<'a>;
+        impl lava::command_buffer::Binding for #gpu_name {
+            type CpuBinding<'a> = #struct_name<'a>;
             fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
                 #(#checks)*
                 
@@ -238,13 +257,17 @@ pub fn bindings(input: TokenStream) -> TokenStream {
     let mut cpu_file = PathBuf::from(out_dir);
     cpu_file.push("target");
     cpu_file.push("bindings");
-    if !fs::exists(&cpu_file).unwrap() {
-        fs::create_dir(&cpu_file).unwrap();
-    }
     cpu_file.push(format!("{}.cpu.rs", struct_name));
 
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(false)
+        .write(true)
+        .truncate(true)
+        .open(cpu_file)
+        .unwrap();
 
-    fs::write(&cpu_file, expandet.to_string()).expect("Could not write CPU bindings");
+    file.write(expandet.to_string().as_bytes()).unwrap();
 
     TokenStream::new()
 }
