@@ -1,3 +1,6 @@
 [submodule "dgfsdk-rs"]
 	path = dgfsdk-rs
 	url = https://github.com/DerEchteKarsten/dgfsdk-rs
+[submodule "slang"]
+	path = slang
+	url = https://github.com/shader-slang/slang.git
