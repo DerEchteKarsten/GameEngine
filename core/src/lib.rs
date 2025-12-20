@@ -27,10 +27,8 @@ use lava::{
 
 mod bindings;
 
-use bindings::PostBindings;
-
 use crate::{
-    assets::MeshAssets, bindings::{FragBindings, post, test_frag, test_vertex}, components::camera::{Camera, CameraPlugin}, world::{
+    assets::MeshAssets, bindings::{RasterBindings, TestBindings}, components::camera::{Camera, CameraPlugin}, world::{
         RenderWorld, StagingBuffer, add_instance, init_world, load_assets, transform_child_changed,
         transform_parent_changed,
     }
@@ -207,24 +205,24 @@ fn render(
             //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
         }
 
-        cmd.compute::<post>()
-            .bind(PostBindings {
-                asv: &world.instance_bvh_root_nodes,
-                color: &resources.color_attachment,
-                depth: &resources.depth_attachment,
-                out: &swapchain_image,
-                inverse_proj: camera.projection_matrix().inverse(),
-                inverse_view: camera.view_matrix().inverse(),
-                window_size: Vec4::new(Ctx::window_width().unwrap() as f32, Ctx::window_height().unwrap() as f32, 0.0, 0.0),
-            }).dispatch_fullscreen();
+        // cmd.compute::<post>()
+        //     .bind(PostBindings {
+        //         asv: &world.instance_bvh_root_nodes,
+        //         color: &resources.color_attachment,
+        //         depth: &resources.depth_attachment,
+        //         out: &swapchain_image,
+        //         inverse_proj: camera.projection_matrix().inverse(),
+        //         inverse_view: camera.view_matrix().inverse(),
+        //         window_size: Vec4::new(Ctx::window_width().unwrap() as f32, Ctx::window_height().unwrap() as f32, 0.0, 0.0),
+        //     }).dispatch_fullscreen();
 
-        // cmd.raster_vertex::<test_frag, test_vertex>()
-        //     .color_attachment(&swapchain_image, None)
-        //     .bind(FragBindings {
-        //         mesh_id: 67,
-        //         texture: &resources.color_attachment,
-        //     })
-        //     .draw_fullscreen(RasterDispatch::Draw { vertex_count: 1, instance_count: 1 });
+        cmd.compute::<bindings::compute_test>()
+            .bind(TestBindings {
+                num: 757,
+                num2: 67,
+                test: &world.instance_bvh_root_nodes
+            })
+            .dispatch_fullscreen();
 
         cmd.present(swapchain_image);
         Ok(())

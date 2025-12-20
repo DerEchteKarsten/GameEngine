@@ -1,0 +1,150 @@
+{
+    "parameters": [
+        {
+            "name": "TextureHeap",
+            "binding": {"kind": "descriptorTableSlot", "index": 1},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "DynamicResource"
+                }
+            }
+        },
+        {
+            "name": "RWTextureHeap",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "DynamicResource"
+                }
+            }
+        },
+        {
+            "name": "b",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "TestBindings",
+                    "fields": [
+                        {
+                            "name": "num",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "num2",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "test",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "TestBindings",
+                        "fields": [
+                            {
+                                "name": "num",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "num2",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "test",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "uint32"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "compute_test",
+            "stage": "compute",
+            "threadGroupSize": [8, 8, 1],
+            "bindings": [
+                {
+                    "name": "TextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "RWTextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "b",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ],
+    "hashedStrings": {
+        "%u, %u, %u": 926587544
+    }
+
+}

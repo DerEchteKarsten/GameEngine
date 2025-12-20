@@ -1,0 +1,674 @@
+{
+    "parameters": [
+        {
+            "name": "TextureHeap",
+            "binding": {"kind": "descriptorTableSlot", "index": 1},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "DynamicResource"
+                }
+            }
+        },
+        {
+            "name": "RWTextureHeap",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "DynamicResource"
+                }
+            }
+        },
+        {
+            "name": "b",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "InstanceCullBindings",
+                    "fields": [
+                        {
+                            "name": "num_instances",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint64"
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "aabbs",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "struct",
+                                                "name": "Aabb",
+                                                "fields": [
+                                                    {
+                                                        "name": "center",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 3,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                    },
+                                                    {
+                                                        "name": "pad1",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "float32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "half_extend",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 3,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 12, "elementStride": 4}
+                                                    },
+                                                    {
+                                                        "name": "pad2",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "float32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "instance_bvh_root_nodes",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "instance_transforms",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "matrix",
+                                                "rowCount": 4,
+                                                "columnCount": 4,
+                                                "elementType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "float32"
+                                                }
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "dp",
+                            "type": {
+                                "kind": "struct",
+                                "name": "MutBuf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "struct",
+                                                "name": "DispatchParams",
+                                                "fields": [
+                                                    {
+                                                        "name": "node_head",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "node_tail",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "done",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "meshlet_count",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "indirect_draw",
+                                                        "type": {
+                                                            "kind": "struct",
+                                                            "name": "DrawIndirectCommand",
+                                                            "fields": [
+                                                                {
+                                                                    "name": "vertex_count",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                                },
+                                                                {
+                                                                    "name": "instance_count",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                                },
+                                                                {
+                                                                    "name": "first_vertex",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                                },
+                                                                {
+                                                                    "name": "first_instance",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                                }
+                                                            ]
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "indirect_dispatch",
+                                                        "type": {
+                                                            "kind": "struct",
+                                                            "name": "DispatchIndirectCommand",
+                                                            "fields": [
+                                                                {
+                                                                    "name": "x",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                                },
+                                                                {
+                                                                    "name": "y",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                                },
+                                                                {
+                                                                    "name": "z",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                                }
+                                                            ]
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 32, "size": 12, "elementStride": 0}
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "bvh_node_stack",
+                            "type": {
+                                "kind": "struct",
+                                "name": "MutBuf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "struct",
+                                                "name": "InstancedOffset",
+                                                "fields": [
+                                                    {
+                                                        "name": "instance",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "offset",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "int32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "InstanceCullBindings",
+                        "fields": [
+                            {
+                                "name": "num_instances",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint64"
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "aabbs",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "struct",
+                                                    "name": "Aabb",
+                                                    "fields": [
+                                                        {
+                                                            "name": "center",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 3,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                        },
+                                                        {
+                                                            "name": "pad1",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "half_extend",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 3,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 12, "elementStride": 4}
+                                                        },
+                                                        {
+                                                            "name": "pad2",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "instance_bvh_root_nodes",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "uint32"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "instance_transforms",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "matrix",
+                                                    "rowCount": 4,
+                                                    "columnCount": 4,
+                                                    "elementType": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "float32"
+                                                    }
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "dp",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "MutBuf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "struct",
+                                                    "name": "DispatchParams",
+                                                    "fields": [
+                                                        {
+                                                            "name": "node_head",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "node_tail",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "done",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "meshlet_count",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "indirect_draw",
+                                                            "type": {
+                                                                "kind": "struct",
+                                                                "name": "DrawIndirectCommand",
+                                                                "fields": [
+                                                                    {
+                                                                        "name": "vertex_count",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                                    },
+                                                                    {
+                                                                        "name": "instance_count",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                                    },
+                                                                    {
+                                                                        "name": "first_vertex",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                                    },
+                                                                    {
+                                                                        "name": "first_instance",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                                    }
+                                                                ]
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "indirect_dispatch",
+                                                            "type": {
+                                                                "kind": "struct",
+                                                                "name": "DispatchIndirectCommand",
+                                                                "fields": [
+                                                                    {
+                                                                        "name": "x",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                                    },
+                                                                    {
+                                                                        "name": "y",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                                    },
+                                                                    {
+                                                                        "name": "z",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                                    }
+                                                                ]
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 32, "size": 12, "elementStride": 0}
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "bvh_node_stack",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "MutBuf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "struct",
+                                                    "name": "InstancedOffset",
+                                                    "fields": [
+                                                        {
+                                                            "name": "instance",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "offset",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "int32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 48, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "instance_cull",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "gid",
+                    "semanticName": "SV_GROUPID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "dtid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "gtid",
+                    "semanticName": "SV_GROUPTHREADID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                }
+            ],
+            "threadGroupSize": [64, 1, 1],
+            "bindings": [
+                {
+                    "name": "TextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "RWTextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "b",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ]
+}
