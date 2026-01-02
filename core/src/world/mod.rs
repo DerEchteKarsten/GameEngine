@@ -5,10 +5,10 @@ use bevy_ecs::prelude::*;
 use glam::Mat4;
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
 use lava::{
-    pipelines::Vertex,
     vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, StorageBuffer},
 };
 
+use crate::bindings::Vertex;
 use crate::{
     assets::{
         Mesh,

@@ -19,7 +19,7 @@ use bevy_winit::{WinitPlugin, WinitWindows};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
 use lava::{
-    command_buffer::{DispatchIndirectCommand, DrawIndirectCommand}, pipelines::RasterDispatch, state::Ctx, vkobjects::{
+    command_buffer::{DispatchIndirectCommand, DrawIndirectCommand}, state::Ctx, vkobjects::{
         buffer::{Buffer, BufferUsageFlags, GpuBuffer},
         image::{Image, ImageSize},
     }
@@ -28,7 +28,7 @@ use lava::{
 mod bindings;
 
 use crate::{
-    assets::MeshAssets, bindings::{RasterBindings, TestBindings}, components::camera::{Camera, CameraPlugin}, world::{
+    assets::MeshAssets, bindings::{InstanceCullBindings, RasterBindings, TestBindings}, components::camera::{Camera, CameraPlugin}, world::{
         RenderWorld, StagingBuffer, add_instance, init_world, load_assets, transform_child_changed,
         transform_parent_changed,
     }
@@ -124,26 +124,26 @@ fn render(
     });
 
     Ctx::next_frame(&mut |cmd, swapchain_image| {
-        cmd.update_buffer_element(
-            &resources.dispatch_params,
-            0,
-            &DispatchParams {
-                node_head: 0,
-                node_tail: 0,
-                done: 0,
-                meshlet_count: 0,
-                indirect_draw: DrawIndirectCommand {
-                    vertex_count: 128 * 3,
-                    instance_count: 0,
-                    first_instance: 0,
-                    first_vertex: 0,
-                },
-                indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
-            },
-        );
+        // cmd.update_buffer_element(
+        //     &resources.dispatch_params,
+        //     0,
+        //     &DispatchParams {
+        //         node_head: 0,
+        //         node_tail: 0,
+        //         done: 0,
+        //         meshlet_count: 0,
+        //         indirect_draw: DrawIndirectCommand {
+        //             vertex_count: 128 * 3,
+        //             instance_count: 0,
+        //             first_instance: 0,
+        //             first_vertex: 0,
+        //         },
+        //         indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
+        //     },
+        // );
 
-        cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
-        cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
+        // cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
+        // cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
         if world.instance_bvh_root_nodes.len() > 0 {
             // cmd.compute()
             //     .shader("instance_cull")
@@ -216,13 +216,13 @@ fn render(
         //         window_size: Vec4::new(Ctx::window_width().unwrap() as f32, Ctx::window_height().unwrap() as f32, 0.0, 0.0),
         //     }).dispatch_fullscreen();
 
-        cmd.compute::<bindings::compute_test>()
-            .bind(TestBindings {
-                num: 757,
-                num2: 67,
-                test: &world.instance_bvh_root_nodes
-            })
-            .dispatch_fullscreen();
+        // cmd.compute::<bindings::ComputeTest>()
+        //     .bind(TestBindings {
+        //         num: 757,
+        //         num2: 67,
+        //         test: &world.instance_bvh_root_nodes
+        //     })
+        //     .dispatch_fullscreen();
 
         cmd.present(swapchain_image);
         Ok(())

@@ -9,13 +9,14 @@ use bevy_tasks::{AsyncComputeTaskPool, ParallelSlice};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3, Vec3A};
 use itertools::Itertools;
-use lava::pipelines::Vertex;
 use meshopt::{
     SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_vertex_remap_multi,
     simplify_with_attributes_and_locks,
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
+
+use crate::bindings::Vertex;
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 

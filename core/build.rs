@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, env, fmt::format, fs::{self, File}, io::{self, Write}, path::{Path, PathBuf}
+    collections::{HashMap, HashSet}, env, fmt::format, fs::{self, File}, io::{self, Write}, path::{Path, PathBuf}
 };
 
 
@@ -279,32 +279,10 @@ impl lava::command_buffer::Binding for {cname} {{
     )
 }
 
-pub fn shader_stage_to_vk(stage: &str) -> &'static str {
-    match stage {
-        "compute" => "ash::vk::PipelineStageFlags2::COMPUTE_SHADER",
-        "fragment" => "ash::vk::PipelineStageFlags2::FRAGMENT_SHADER",
-        "vertex" => "ash::vk::PipelineStageFlags2::VERTEX_SHADER",
-        _ => "ash::vk::PipelineStageFlags2::ALL_COMMANDS",
-    }
-}
+pub fn generate_from_json_str(file_path: &str, file_name: &str, json: &str, structs: &mut HashMap<String, String>) -> String {
+    let file_name = file_name.split(".").next().unwrap();
 
-pub fn generate_shader_impl(name: &str, stage: &str, pc_type: &str) -> String {
-    let vk = shader_stage_to_vk(stage);
-    format!(
-        r#"
-pub struct {name};
-
-impl lava::command_buffer::Shader for {name} {{
-    const STAGE: ash::vk::PipelineStageFlags2 = {vk};
-    type GpuBinding = C{pc_type};
-    const ENTRY: &'static str = "{name}";
-}}
-"#
-    )
-}
-
-pub fn generate_from_json_str(json: &str, structs: &mut HashMap<String, String>) -> String {
-    let root: Root = serde_json::from_str(json).expect("Invalid Slang JSON");
+    let root: Root = serde_json::from_str(json).expect(&format!("Invalid Slang JSON in file {}", file_name));
 
     let (pc_name, fields) = extract_push_constant(&root)
         .expect("No pushConstantBuffer found!");
@@ -312,18 +290,121 @@ pub fn generate_from_json_str(json: &str, structs: &mut HashMap<String, String>)
     let mut out = String::new();
     out.push_str(&generate_push_constant(&pc_name, &fields, structs));
 
-    for (name, stage) in extract_entry_points(&root) {
-        out.push_str(&generate_shader_impl(&name, &stage, &pc_name));
+    let entrys = extract_entry_points(&root);
+    let mut stages = entrys.iter().map(|e|e.1.as_str()).collect::<Vec<_>>();
+    stages.sort();
+
+    out.push_str(&format!("pub struct {file_name};\n"));
+
+    if stages.as_slice() == ["fragment", "vertex"] {
+        let fragment_entry = &entrys.iter().find(|(_,stage)| stage == "fragment").unwrap().0;
+        let vertex_entry = &entrys.iter().find(|(_,stage)| stage == "vertex").unwrap().0;
+        let vertex_type = "()";
+        out.push_str(&format!(r#"
+
+impl lava::command_buffer::RasterPass for {file_name} {{
+    type GpuBinding = C{pc_name};
+}}
+
+impl lava::command_buffer::RasterVertexShaderPass for {file_name} {{
+    const VERTEX: &'static str = "{vertex_entry}\0";
+    const FRAGMENT: &'static str = "{fragment_entry}\0";
+    const BYTES: &[u8] = include_bytes!("{file_path}");
+    type Vertex = {vertex_type};
+    fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {{
+        static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
+        &CACHE
+    }}
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> {{
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+        &CACHE
+    }}
+}}
+    "#));
+    } else if stages.as_slice() == ["fragment", "mesh"] || stages.as_slice() == [ "amplification", "fragment", "mesh"] {
+        let fragment_entry = &entrys.iter().find(|(_,stage)| stage == "fragment").unwrap().0;
+        let mesh_entry = &entrys.iter().find(|(_,stage)| stage == "mesh").unwrap().0;
+        let task_entry = if let Some(task) = &entrys.iter().find(|(_,stage)| stage == "amplification"){
+            let task = &task.0;
+            &format!("Some(\"{task}\\0\")")
+        }else {
+            "None"
+        };
+out.push_str(&format!(r#"impl lava::command_buffer::RasterPass for {file_name} {{
+    type GpuBinding = C{pc_name};
+}}
+
+impl lava::command_buffer::RasterMeshShaderPass for {file_name} {{
+    const MESH: &'static str = "{mesh_entry}\0";
+    const FRAGMENT: &'static str = "{fragment_entry}\0";
+    const BYTES: &[u8] = include_bytes!("{file_path}");
+    const TASK: Option<&'static str> = {task_entry};
+
+    fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {{
+        static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
+        &CACHE
+    }}
+
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> {{
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+        &CACHE
+    }}
+}}"#));
+    }else if stages.as_slice() == ["compute"] {
+        let entry = &entrys.iter().find(|(_,stage)| stage == "compute").unwrap().0;
+out.push_str(&format!(r#"
+
+impl lava::command_buffer::ComputePass for {file_name} {{
+    type GpuBinding = C{pc_name};
+
+    const ENTRY: &'static str = "{entry}\0";
+    const BYTES: &[u8] = include_bytes!("{file_path}");
+    fn cache() -> &'static OnceLock<ash::vk::Pipeline> {{
+        static CACHE: OnceLock<ash::vk::Pipeline> = OnceLock::new();
+        &CACHE
+    }}
+}}"#));
+    }else if stages.as_slice() == ["raygen", "closest_hit", "miss"] {
+        let raygen = &entrys.iter().find(|(_,stage)| stage == "raygen").unwrap().0;
+        let hit = &entrys.iter().find(|(_,stage)| stage == "closest_hit").unwrap().0;
+        let miss = &entrys.iter().find(|(_,stage)| stage == "miss").unwrap().0;
+out.push_str(&format!(r#"
+
+impl lava::command_buffer::RaytracingPass for {file_name} {{
+    type GpuBinding = C{pc_name};
+    const RAYGEN_HASH: &'static str = "{raygen}\0";
+    const HIT_HASH: &'static str = "{hit}\0";
+    const MISS_HASH: &'static str = "{miss}\0";
+    const BYTES: &[u8] = include_bytes!("{file_path}");
+
+    fn cache() -> &'static OnceLock<lava::vkobjects::rt_pipeline::RaytracingPipeline> {{
+        static CACHE: OnceLock<lava::vkobjects::rt_pipeline::RaytracingPipeline> = OnceLock::new();
+        &CACHE
+    }}
+}}
+"#));
+    }else {
+        panic!("Entrys in file {file_name} didnt match any pass pattern.")
     }
+
 
     out
 }
 
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
 
 fn main() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    println!("cargo:rerun-if-changed={manifest_dir}/../shaders/");
+    
     let out = PathBuf::from("src/bindings.rs");
-    println!("cargo:rerun-if-changed={}/../shaders/", manifest_dir);
 
     std::process::Command::new(format!("{}/../shaders/compile.sh", manifest_dir)).spawn().unwrap();
 
@@ -332,12 +413,15 @@ fn main() {
         .copied()
         .collect::<PathBuf>();
 
-    let mut bindings = "use glam::*;\nuse bytemuck::{Pod, Zeroable};\nuse lava::command_buffer::{ResourceHandle, ResourceState};\nuse lava::bindless::BindlessHandle;".to_string();
+    let mut bindings = "use std::collections::HashMap;\nuse std::sync::{OnceLock, Mutex}; use glam::*;\nuse bytemuck::{Pod, Zeroable};\nuse lava::command_buffer::{ResourceHandle, ResourceState, ShaderHash, RasterHash};\nuse lava::bindless::BindlessHandle;\nuse std::cell::{LazyCell};".to_string();
     let mut structs = HashMap::<String, String>::new();
     for entry in WalkDir::new(&shader_path).into_iter().filter_map(|e| e.ok()) {
         let p = entry.path();
         if let Some(extention) = p.extension() && extention == "json" && let Ok(json) = fs::read_to_string(p){
-            bindings.push_str(&generate_from_json_str(&json, &mut structs));
+            let file_path = p.to_str().unwrap().replace(".json", ".spv");
+            let file_name = entry.file_name().to_str().unwrap();
+            let file_name = file_name.split("_").map(capitalize_first).collect::<String>();
+            bindings.push_str(&generate_from_json_str(&file_path, &file_name, &json, &mut structs));
         }
     }
     for (name, fields) in &structs {
@@ -351,8 +435,6 @@ pub struct {name} {{
     fs::write(out, bindings.as_bytes()).unwrap();
 
     unsafe {
-        std::env::set_var("VK_LAYER_PRINTF_ONLY_PRESET", "0");
-        std::env::set_var("VK_LAYER_PRINTF_TO_STDOUT", "1");
         std::env::set_var("VK_LAYER_PRINTF_BUFFER_SIZE", "10000");
     }
 }
