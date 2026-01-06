@@ -33,7 +33,7 @@ VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_Verte
 
     VSOutput output;
     let transform = b.instance_transforms.val[instance_offset.instance];
-    let world_space = float4(vertex.position, 1.0);
+    let world_space = float4(vertex.position_and_uv1.xyz, 1.0);
     let view_space = mul(b.view, world_space);
     let clip_space = mul(b.proj, view_space);
     output.position = clip_space;

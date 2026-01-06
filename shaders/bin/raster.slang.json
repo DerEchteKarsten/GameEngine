@@ -72,40 +72,28 @@
                                                 "name": "Vertex",
                                                 "fields": [
                                                     {
-                                                        "name": "position",
+                                                        "name": "position_and_uv1",
                                                         "type": {
                                                             "kind": "vector",
-                                                            "elementCount": 3,
+                                                            "elementCount": 4,
                                                             "elementType": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "float32"
                                                             }
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                     },
                                                     {
-                                                        "name": "normal",
+                                                        "name": "normal_and_uv2",
                                                         "type": {
                                                             "kind": "vector",
-                                                            "elementCount": 3,
+                                                            "elementCount": 4,
                                                             "elementType": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "float32"
                                                             }
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 12, "size": 12, "elementStride": 4}
-                                                    },
-                                                    {
-                                                        "name": "uv",
-                                                        "type": {
-                                                            "kind": "vector",
-                                                            "elementCount": 2,
-                                                            "elementType": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "float32"
-                                                            }
-                                                        },
-                                                        "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 4}
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                     }
                                                 ]
                                             }
@@ -308,40 +296,28 @@
                                                     "name": "Vertex",
                                                     "fields": [
                                                         {
-                                                            "name": "position",
+                                                            "name": "position_and_uv1",
                                                             "type": {
                                                                 "kind": "vector",
-                                                                "elementCount": 3,
+                                                                "elementCount": 4,
                                                                 "elementType": {
                                                                     "kind": "scalar",
                                                                     "scalarType": "float32"
                                                                 }
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                         },
                                                         {
-                                                            "name": "normal",
+                                                            "name": "normal_and_uv2",
                                                             "type": {
                                                                 "kind": "vector",
-                                                                "elementCount": 3,
+                                                                "elementCount": 4,
                                                                 "elementType": {
                                                                     "kind": "scalar",
                                                                     "scalarType": "float32"
                                                                 }
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 12, "size": 12, "elementStride": 4}
-                                                        },
-                                                        {
-                                                            "name": "uv",
-                                                            "type": {
-                                                                "kind": "vector",
-                                                                "elementCount": 2,
-                                                                "elementType": {
-                                                                    "kind": "scalar",
-                                                                    "scalarType": "float32"
-                                                                }
-                                                            },
-                                                            "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 4}
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                         }
                                                     ]
                                                 }
@@ -495,7 +471,7 @@
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 168, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 176, "elementStride": 0}
                 }
             }
         }
@@ -652,5 +628,9 @@
                 }
             ]
         }
-    ]
+    ],
+    "hashedStrings": {
+        "Attempting to write to a readonly image!": 1258391195
+    }
+
 }

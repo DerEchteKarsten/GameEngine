@@ -8,12 +8,11 @@ use lava::{
     vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, StorageBuffer},
 };
 
-use crate::bindings::Vertex;
+use crate::bindings::{Aabb, BvhNode, CullData, Meshlet, Vertex};
 use crate::{
     assets::{
         Mesh,
         material::Material,
-        mesh::{Aabb, BvhNode, CullData, Meshlet},
     },
     components::transform::Transform,
 };
@@ -153,11 +152,12 @@ pub fn load_assets(
                         .map(|n| {
                             let mut n = n.clone();
                             n.aabbs.iter_mut().enumerate().for_each(|(i, aabb)| {
-                                aabb.child_offset += if n.child_counts[i] == 255 {
+                                let offset = aabb.offset();
+                                aabb.set_offset(offset + if ((n.child_counts >> (i * 8)) & 0xFF) as u8 == 255 {
                                     bvh_root as u32
                                 } else {
                                     meshlet_index as u32
-                                };
+                                });
                             });
                             n
                         })

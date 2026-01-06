@@ -60,20 +60,20 @@ void bvh_cull(uint gid: SV_GroupID, uint dtid: SV_DispatchThreadID, uint gtid: S
             continue;
         }
 
-        let bvh_node = b.bvh_nodes.val[node.offset];
+        let bvh_node = &b.bvh_nodes.val[node.offset];
         uint children[8];
         var child_count = 0;
-        for(int i = 0; i < 8; i++) {
-            let cluster_count = bvh_node.child_counts[i];
-            if(cluster_count == 255u) {
-                children[child_count] = bvh_node.aabbs[i].offset;
+        for (uint i = 0; i < 8; i++) {
+            let cluster_count = get_byte(i, bvh_node.child_counts);
+            if (cluster_count == 255u) {
+                children[child_count] = asuint(bvh_node->aabbs[i].half_extent_and_offset.w);
                 child_count += 1;
             }else {
                 var base = 0;
                 InterlockedAdd(b.dp.val.indirect_draw.instance_count, child_count, base);
-                var value = InstancedOffset(node.instance, bvh_node.aabbs[i].offset);
-                for (int i = 0; i < cluster_count; i++) {
-                    b.clusters.val[base + i] = value;
+                var value = InstancedOffset(node.instance, asuint(bvh_node->aabbs[i].half_extent_and_offset.w));
+                for (uint j = 0; j < cluster_count; j++) {
+                    b.clusters.val[base + j] = value;
                     value.offset += 1;
                 }
             }

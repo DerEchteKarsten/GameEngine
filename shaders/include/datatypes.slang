@@ -7,32 +7,23 @@ struct RayPayload {
     float2 uv;
     uint geometryIndex;
     uint primitiveId;
-};
-
-struct Aabb {
-    float3 center;
-    float pad1;
-    float3 half_extend;
-    float pad2;
 }
 
 struct AabbErrorOffset {
-    float3 center;
-    float error;
-    float3 half_extend;
-    uint offset;
+    float4 center_and_error;
+    float4 half_extent_and_offset;
 }
 
-struct BoundingSphere {
-    float3 center;
-    float radius;
-}
 
 struct BvhNode {
     AabbErrorOffset aabbs[8];
-    BoundingSphere lod_bounds[8];
-    uint8_t child_counts[8];
-    uint pad[2];
+    float4 lod_bounds[8];
+    uint64_t child_counts;
+    uint64_t pad;
+}
+
+uint8_t get_byte(uint i, uint64_t value) {
+    return uint8_t((value >> (8 * i)) & 0xFF);
 }
 
 struct Meshlet {
@@ -40,13 +31,17 @@ struct Meshlet {
     uint vertex_index;
     uint triangle_count;
     uint triangle_index;
-};
+}
+
+struct Aabb {
+    float4 center;
+    float4 half_extent;
+}
 
 struct Vertex {
-    float3 position;
-    float3 normal;
-    float2 uv;
-};
+    float4 position_and_uv1;
+    float4 normal_and_uv2;
+}
 
 struct InstancedOffset {
     uint instance;
@@ -55,7 +50,7 @@ struct InstancedOffset {
 
 struct CullData {
     AabbErrorOffset aabb;
-    BoundingSphere lod_group_sphere;
+    float4 lod_group_sphere;
 }
 
 struct DrawIndirectCommand {
@@ -63,13 +58,13 @@ struct DrawIndirectCommand {
     uint instance_count;
     uint first_vertex;
     uint first_instance;
-};
+}
 
 struct DispatchIndirectCommand {
     uint x;
     uint y;
     uint z;
-};
+}
 
 struct DispatchParams {
     uint node_head;

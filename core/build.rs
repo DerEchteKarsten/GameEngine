@@ -106,6 +106,8 @@ pub fn rust_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String 
             Some("uint32") => "u32".into(),
             Some("int32") => "i32".into(),
             Some("float32") => "f32".into(),
+            Some("uint8") => "u8".into(),
+            Some("uint64") => "u64".into(),
             _ => "u32".into(),
         },
         "vector" => format!("{}Vec{}", match t.element_type.as_ref().unwrap().scalarType.as_ref().unwrap().as_str() {
@@ -181,7 +183,7 @@ pub fn resource(field: &Field, name: &str) -> Option<String> {
     let access = if struct_name == "MutBuf" {
         "ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ".into()
     }else if struct_name == "Buf" {
-        "ash::vk::AccessFlags2::SHADER_STORAGE_WRITE".into()
+        "ash::vk::AccessFlags2::SHADER_STORAGE_READ".into()
     }else if struct_name == "MutImage" {
         format!("bindings.{field_name}.mut_access()")
     }else {
@@ -246,6 +248,7 @@ pub fn generate_push_constant(name: &str, fields: &[Field], structs: &mut HashMa
     format!(
         r#"
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub struct {cname} {{
 {gpu_fields}
 }}
@@ -426,7 +429,7 @@ fn main() {
     }
     for (name, fields) in &structs {
         bindings.push_str(format!(r#"
-#[derive(Pod, Copy, Clone, Zeroable)]
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
 pub struct {name} {{
 {fields}}}"#,).as_str());

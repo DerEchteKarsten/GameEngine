@@ -129,7 +129,7 @@ void mesh( out indices uint3 triangles[MAX_PRIMITIVES], out primitives Primitive
     for (int i = 0; i < 2; i++) {
         if (gtid*i < meshlet.vertex_count)
         {
-            let position = b.vertices.val[meshlet.vertex_index + gtid * i].position;
+            let position = b.vertices.val[meshlet.vertex_index + gtid * i].position_and_uv1.xyz;
             let world_space = mul(b.model, float4(position, 1.0f));
             let view_space = mul(b.view, world_space);
             let clip_space = mul(b.proj, view_space);

@@ -275,7 +275,7 @@
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 168, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 176, "elementStride": 0}
                 }
             }
         }
@@ -314,5 +314,9 @@
                 }
             ]
         }
-    ]
+    ],
+    "hashedStrings": {
+        "Attempting to write to a readonly image!": 1258391195
+    }
+
 }

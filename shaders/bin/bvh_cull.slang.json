@@ -55,44 +55,28 @@
                                                                 "name": "AabbErrorOffset",
                                                                 "fields": [
                                                                     {
-                                                                        "name": "center",
+                                                                        "name": "center_and_error",
                                                                         "type": {
                                                                             "kind": "vector",
-                                                                            "elementCount": 3,
+                                                                            "elementCount": 4,
                                                                             "elementType": {
                                                                                 "kind": "scalar",
                                                                                 "scalarType": "float32"
                                                                             }
                                                                         },
-                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                                     },
                                                                     {
-                                                                        "name": "error",
-                                                                        "type": {
-                                                                            "kind": "scalar",
-                                                                            "scalarType": "float32"
-                                                                        },
-                                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                                    },
-                                                                    {
-                                                                        "name": "half_extend",
+                                                                        "name": "half_extent_and_offset",
                                                                         "type": {
                                                                             "kind": "vector",
-                                                                            "elementCount": 3,
+                                                                            "elementCount": 4,
                                                                             "elementType": {
                                                                                 "kind": "scalar",
                                                                                 "scalarType": "float32"
                                                                             }
                                                                         },
-                                                                        "binding": {"kind": "uniform", "offset": 16, "size": 12, "elementStride": 4}
-                                                                    },
-                                                                    {
-                                                                        "name": "offset",
-                                                                        "type": {
-                                                                            "kind": "scalar",
-                                                                            "scalarType": "uint32"
-                                                                        },
-                                                                        "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                                     }
                                                                 ]
                                                             },
@@ -106,30 +90,12 @@
                                                             "kind": "array",
                                                             "elementCount": 8,
                                                             "elementType": {
-                                                                "kind": "struct",
-                                                                "name": "BoundingSphere",
-                                                                "fields": [
-                                                                    {
-                                                                        "name": "center",
-                                                                        "type": {
-                                                                            "kind": "vector",
-                                                                            "elementCount": 3,
-                                                                            "elementType": {
-                                                                                "kind": "scalar",
-                                                                                "scalarType": "float32"
-                                                                            }
-                                                                        },
-                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
-                                                                    },
-                                                                    {
-                                                                        "name": "radius",
-                                                                        "type": {
-                                                                            "kind": "scalar",
-                                                                            "scalarType": "float32"
-                                                                        },
-                                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                                    }
-                                                                ]
+                                                                "kind": "vector",
+                                                                "elementCount": 4,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
                                                             },
                                                             "uniformStride": 16
                                                         },
@@ -138,28 +104,18 @@
                                                     {
                                                         "name": "child_counts",
                                                         "type": {
-                                                            "kind": "array",
-                                                            "elementCount": 8,
-                                                            "elementType": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "uint8"
-                                                            },
-                                                            "uniformStride": 1
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint64"
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 384, "size": 8, "elementStride": 1}
+                                                        "binding": {"kind": "uniform", "offset": 384, "size": 8, "elementStride": 0}
                                                     },
                                                     {
                                                         "name": "pad",
                                                         "type": {
-                                                            "kind": "array",
-                                                            "elementCount": 2,
-                                                            "elementType": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "uint32"
-                                                            },
-                                                            "uniformStride": 4
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint64"
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 392, "size": 8, "elementStride": 4}
+                                                        "binding": {"kind": "uniform", "offset": 392, "size": 8, "elementStride": 0}
                                                     }
                                                 ]
                                             }
@@ -217,44 +173,28 @@
                                                             "name": "AabbErrorOffset",
                                                             "fields": [
                                                                 {
-                                                                    "name": "center",
+                                                                    "name": "center_and_error",
                                                                     "type": {
                                                                         "kind": "vector",
-                                                                        "elementCount": 3,
+                                                                        "elementCount": 4,
                                                                         "elementType": {
                                                                             "kind": "scalar",
                                                                             "scalarType": "float32"
                                                                         }
                                                                     },
-                                                                    "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                                    "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                                 },
                                                                 {
-                                                                    "name": "error",
-                                                                    "type": {
-                                                                        "kind": "scalar",
-                                                                        "scalarType": "float32"
-                                                                    },
-                                                                    "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                                },
-                                                                {
-                                                                    "name": "half_extend",
+                                                                    "name": "half_extent_and_offset",
                                                                     "type": {
                                                                         "kind": "vector",
-                                                                        "elementCount": 3,
+                                                                        "elementCount": 4,
                                                                         "elementType": {
                                                                             "kind": "scalar",
                                                                             "scalarType": "float32"
                                                                         }
                                                                     },
-                                                                    "binding": {"kind": "uniform", "offset": 16, "size": 12, "elementStride": 4}
-                                                                },
-                                                                {
-                                                                    "name": "offset",
-                                                                    "type": {
-                                                                        "kind": "scalar",
-                                                                        "scalarType": "uint32"
-                                                                    },
-                                                                    "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                                    "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                                 }
                                                             ]
                                                         },
@@ -263,32 +203,14 @@
                                                     {
                                                         "name": "lod_group_sphere",
                                                         "type": {
-                                                            "kind": "struct",
-                                                            "name": "BoundingSphere",
-                                                            "fields": [
-                                                                {
-                                                                    "name": "center",
-                                                                    "type": {
-                                                                        "kind": "vector",
-                                                                        "elementCount": 3,
-                                                                        "elementType": {
-                                                                            "kind": "scalar",
-                                                                            "scalarType": "float32"
-                                                                        }
-                                                                    },
-                                                                    "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
-                                                                },
-                                                                {
-                                                                    "name": "radius",
-                                                                    "type": {
-                                                                        "kind": "scalar",
-                                                                        "scalarType": "float32"
-                                                                    },
-                                                                    "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                                }
-                                                            ]
+                                                            "kind": "vector",
+                                                            "elementCount": 4,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 32, "size": 16, "elementStride": 0}
+                                                        "binding": {"kind": "uniform", "offset": 32, "size": 16, "elementStride": 4}
                                                     }
                                                 ]
                                             }
@@ -542,44 +464,28 @@
                                                                     "name": "AabbErrorOffset",
                                                                     "fields": [
                                                                         {
-                                                                            "name": "center",
+                                                                            "name": "center_and_error",
                                                                             "type": {
                                                                                 "kind": "vector",
-                                                                                "elementCount": 3,
+                                                                                "elementCount": 4,
                                                                                 "elementType": {
                                                                                     "kind": "scalar",
                                                                                     "scalarType": "float32"
                                                                                 }
                                                                             },
-                                                                            "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                                         },
                                                                         {
-                                                                            "name": "error",
-                                                                            "type": {
-                                                                                "kind": "scalar",
-                                                                                "scalarType": "float32"
-                                                                            },
-                                                                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                                        },
-                                                                        {
-                                                                            "name": "half_extend",
+                                                                            "name": "half_extent_and_offset",
                                                                             "type": {
                                                                                 "kind": "vector",
-                                                                                "elementCount": 3,
+                                                                                "elementCount": 4,
                                                                                 "elementType": {
                                                                                     "kind": "scalar",
                                                                                     "scalarType": "float32"
                                                                                 }
                                                                             },
-                                                                            "binding": {"kind": "uniform", "offset": 16, "size": 12, "elementStride": 4}
-                                                                        },
-                                                                        {
-                                                                            "name": "offset",
-                                                                            "type": {
-                                                                                "kind": "scalar",
-                                                                                "scalarType": "uint32"
-                                                                            },
-                                                                            "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                                         }
                                                                     ]
                                                                 },
@@ -593,30 +499,12 @@
                                                                 "kind": "array",
                                                                 "elementCount": 8,
                                                                 "elementType": {
-                                                                    "kind": "struct",
-                                                                    "name": "BoundingSphere",
-                                                                    "fields": [
-                                                                        {
-                                                                            "name": "center",
-                                                                            "type": {
-                                                                                "kind": "vector",
-                                                                                "elementCount": 3,
-                                                                                "elementType": {
-                                                                                    "kind": "scalar",
-                                                                                    "scalarType": "float32"
-                                                                                }
-                                                                            },
-                                                                            "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
-                                                                        },
-                                                                        {
-                                                                            "name": "radius",
-                                                                            "type": {
-                                                                                "kind": "scalar",
-                                                                                "scalarType": "float32"
-                                                                            },
-                                                                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                                        }
-                                                                    ]
+                                                                    "kind": "vector",
+                                                                    "elementCount": 4,
+                                                                    "elementType": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "float32"
+                                                                    }
                                                                 },
                                                                 "uniformStride": 16
                                                             },
@@ -625,28 +513,18 @@
                                                         {
                                                             "name": "child_counts",
                                                             "type": {
-                                                                "kind": "array",
-                                                                "elementCount": 8,
-                                                                "elementType": {
-                                                                    "kind": "scalar",
-                                                                    "scalarType": "uint8"
-                                                                },
-                                                                "uniformStride": 1
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint64"
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 384, "size": 8, "elementStride": 1}
+                                                            "binding": {"kind": "uniform", "offset": 384, "size": 8, "elementStride": 0}
                                                         },
                                                         {
                                                             "name": "pad",
                                                             "type": {
-                                                                "kind": "array",
-                                                                "elementCount": 2,
-                                                                "elementType": {
-                                                                    "kind": "scalar",
-                                                                    "scalarType": "uint32"
-                                                                },
-                                                                "uniformStride": 4
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint64"
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 392, "size": 8, "elementStride": 4}
+                                                            "binding": {"kind": "uniform", "offset": 392, "size": 8, "elementStride": 0}
                                                         }
                                                     ]
                                                 }
@@ -704,44 +582,28 @@
                                                                 "name": "AabbErrorOffset",
                                                                 "fields": [
                                                                     {
-                                                                        "name": "center",
+                                                                        "name": "center_and_error",
                                                                         "type": {
                                                                             "kind": "vector",
-                                                                            "elementCount": 3,
+                                                                            "elementCount": 4,
                                                                             "elementType": {
                                                                                 "kind": "scalar",
                                                                                 "scalarType": "float32"
                                                                             }
                                                                         },
-                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                                     },
                                                                     {
-                                                                        "name": "error",
-                                                                        "type": {
-                                                                            "kind": "scalar",
-                                                                            "scalarType": "float32"
-                                                                        },
-                                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                                    },
-                                                                    {
-                                                                        "name": "half_extend",
+                                                                        "name": "half_extent_and_offset",
                                                                         "type": {
                                                                             "kind": "vector",
-                                                                            "elementCount": 3,
+                                                                            "elementCount": 4,
                                                                             "elementType": {
                                                                                 "kind": "scalar",
                                                                                 "scalarType": "float32"
                                                                             }
                                                                         },
-                                                                        "binding": {"kind": "uniform", "offset": 16, "size": 12, "elementStride": 4}
-                                                                    },
-                                                                    {
-                                                                        "name": "offset",
-                                                                        "type": {
-                                                                            "kind": "scalar",
-                                                                            "scalarType": "uint32"
-                                                                        },
-                                                                        "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                                     }
                                                                 ]
                                                             },
@@ -750,32 +612,14 @@
                                                         {
                                                             "name": "lod_group_sphere",
                                                             "type": {
-                                                                "kind": "struct",
-                                                                "name": "BoundingSphere",
-                                                                "fields": [
-                                                                    {
-                                                                        "name": "center",
-                                                                        "type": {
-                                                                            "kind": "vector",
-                                                                            "elementCount": 3,
-                                                                            "elementType": {
-                                                                                "kind": "scalar",
-                                                                                "scalarType": "float32"
-                                                                            }
-                                                                        },
-                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
-                                                                    },
-                                                                    {
-                                                                        "name": "radius",
-                                                                        "type": {
-                                                                            "kind": "scalar",
-                                                                            "scalarType": "float32"
-                                                                        },
-                                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                                    }
-                                                                ]
+                                                                "kind": "vector",
+                                                                "elementCount": 4,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 32, "size": 16, "elementStride": 0}
+                                                            "binding": {"kind": "uniform", "offset": 32, "size": 16, "elementStride": 4}
                                                         }
                                                     ]
                                                 }
@@ -1050,7 +894,8 @@
         }
     ],
     "hashedStrings": {
-        "IDLE!!": 1334978036
+        "IDLE!!": 1334978036,
+        "Attempting to write to a readonly image!": 1258391195
     }
 
 }

@@ -57,41 +57,25 @@
                                                         "name": "center",
                                                         "type": {
                                                             "kind": "vector",
-                                                            "elementCount": 3,
+                                                            "elementCount": 4,
                                                             "elementType": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "float32"
                                                             }
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                     },
                                                     {
-                                                        "name": "pad1",
-                                                        "type": {
-                                                            "kind": "scalar",
-                                                            "scalarType": "float32"
-                                                        },
-                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                    },
-                                                    {
-                                                        "name": "half_extend",
+                                                        "name": "half_extent",
                                                         "type": {
                                                             "kind": "vector",
-                                                            "elementCount": 3,
+                                                            "elementCount": 4,
                                                             "elementType": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "float32"
                                                             }
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 16, "size": 12, "elementStride": 4}
-                                                    },
-                                                    {
-                                                        "name": "pad2",
-                                                        "type": {
-                                                            "kind": "scalar",
-                                                            "scalarType": "float32"
-                                                        },
-                                                        "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                     }
                                                 ]
                                             }
@@ -355,41 +339,25 @@
                                                             "name": "center",
                                                             "type": {
                                                                 "kind": "vector",
-                                                                "elementCount": 3,
+                                                                "elementCount": 4,
                                                                 "elementType": {
                                                                     "kind": "scalar",
                                                                     "scalarType": "float32"
                                                                 }
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 0, "size": 12, "elementStride": 4}
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                         },
                                                         {
-                                                            "name": "pad1",
-                                                            "type": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "float32"
-                                                            },
-                                                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                                                        },
-                                                        {
-                                                            "name": "half_extend",
+                                                            "name": "half_extent",
                                                             "type": {
                                                                 "kind": "vector",
-                                                                "elementCount": 3,
+                                                                "elementCount": 4,
                                                                 "elementType": {
                                                                     "kind": "scalar",
                                                                     "scalarType": "float32"
                                                                 }
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 16, "size": 12, "elementStride": 4}
-                                                        },
-                                                        {
-                                                            "name": "pad2",
-                                                            "type": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "float32"
-                                                            },
-                                                            "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                         }
                                                     ]
                                                 }
@@ -670,5 +638,9 @@
                 }
             ]
         }
-    ]
+    ],
+    "hashedStrings": {
+        "Attempting to write to a readonly image!": 1258391195
+    }
+
 }

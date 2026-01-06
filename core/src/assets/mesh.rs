@@ -7,7 +7,7 @@ use bevy_math::{
 };
 use bevy_tasks::{AsyncComputeTaskPool, ParallelSlice};
 use bytemuck::{Pod, Zeroable};
-use glam::{Vec2, Vec3, Vec3A};
+use glam::{Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use itertools::Itertools;
 use meshopt::{
     SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_vertex_remap_multi,
@@ -16,62 +16,51 @@ use meshopt::{
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
 
-use crate::bindings::Vertex;
+use crate::bindings::{Aabb, AabbErrorOffset, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 
-#[derive(Copy, Clone, Pod, Zeroable)]
-#[repr(C)]
-pub struct CullData {
-    pub aabb: AabbErrorOffset,
-    pub lod_group_sphere: BoundingSphere,
+
+impl Default for AabbErrorOffset {
+    fn default() -> Self {
+        AabbErrorOffset { center_and_error: Default::default(), half_extent_and_offset: Default::default() }
+    }
 }
 
-#[derive(Copy, Clone, Default, Pod, Zeroable)]
-#[repr(C)]
-pub struct Aabb {
-    pub center: Vec3,
-    pub half_extent: Vec3,
+
+impl Default for BvhNode {
+    fn default() -> Self {
+        BvhNode { aabbs: Default::default(), lod_bounds: Default::default(), child_counts: Default::default(), pad: Default::default() }
+    }
 }
 
-#[derive(Copy, Clone, Default, Pod, Zeroable)]
-#[repr(C)]
-pub struct AabbErrorOffset {
-    pub center: Vec3,
-    pub error: f32,
-    pub half_extent: Vec3,
-    pub child_offset: u32,
+
+impl BvhNode {
+    pub fn child_counts(&self, i: usize) -> u8 {
+        ((self.child_counts >> (i * 8)) & 0xFF) as u8
+    }
+    pub fn set_child_count(&mut self, i: usize, value: u8) {
+        let shift = i * 8;
+        let mask = !(0xFFu64 << shift);
+        self.child_counts = (self.child_counts & mask) | ((value as u64) << shift);
+    }
 }
 
-#[derive(Copy, Clone, Default, Pod, Zeroable)]
-#[repr(C)]
-pub struct BoundingSphere {
-    pub center: Vec3,
-    pub radius: f32,
+impl AabbErrorOffset {
+    pub fn error(&self) -> f32 {
+        self.center_and_error.w
+    }
+    pub fn offset(&self) -> u32 {
+        self.half_extent_and_offset.w.to_bits()
+    }
+    pub fn set_offset(&mut self, value: u32) {
+        self.half_extent_and_offset.w = f32::from_bits(value);
+    }
+    pub fn set_error(&mut self, error: f32) {
+        self.center_and_error.w = error;
+    }
 }
 
-#[derive(Copy, Clone, Pod, Zeroable, Debug)]
-#[repr(C)]
-pub struct Meshlet {
-    pub vertex_count: u32,
-    pub vertex_index: u32,
-    pub triangle_count: u32,
-    pub triangle_index: u32,
-}
-
-#[derive(Copy, Clone, Default, Pod, Zeroable)]
-#[repr(C)]
-pub struct BvhNode {
-    /// The tight AABBs of this node's children, used for frustum and occlusion during BVH
-    /// traversal.
-    pub aabbs: [AabbErrorOffset; 8],
-    /// The LOD bounding spheres of this node's children, used for LOD selection during BVH
-    /// traversal.
-    pub lod_bounds: [BoundingSphere; 8],
-    /// If `u8::MAX`, it indicates that the child of each children is a BVH node, otherwise it is the number of meshlets in the group.
-    pub child_counts: [u8; 8],
-    pub _padding: [u32; 2],
-}
 
 #[derive(Clone)]
 pub struct MeshletMesh {
@@ -250,13 +239,13 @@ impl MeshletMesh {
             .iter()
             .enumerate()
             .map(|(i, v)| Vertex {
-                position: *v,
-                normal: Vec3::new(
+                position_and_uv1: (*v).extend(vertex_uvs[i * 2 + 0]),
+                normal_and_uv2: Vec4::new(
                     vertex_normals[i * 3 + 0],
                     vertex_normals[i * 3 + 1],
                     vertex_normals[i * 3 + 2],
+                    vertex_uvs[i * 2 + 1],
                 ),
-                uv: Vec2::new(vertex_uvs[i * 2 + 0], vertex_uvs[i * 2 + 1]),
             })
             .collect::<Vec<Vertex>>();
 
@@ -296,7 +285,7 @@ fn compute_meshlets(
     vertices: &VertexDataAdapter,
     position_only_vertex_remap: &[u32],
     position_only_vertex_count: usize,
-    prev_lod_data: Option<(BoundingSphere, f32)>,
+    prev_lod_data: Option<(Vec4, f32)>,
 ) -> (meshopt::Meshlets, Vec<TempMeshletCullData>) {
     // For each vertex, build a list of all triangles that use it
     let mut vertices_to_triangles = vec![Vec::new(); position_only_vertex_count];
@@ -388,10 +377,7 @@ fn compute_meshlets(
             let (lod_group_sphere, error) = prev_lod_data.unwrap_or_else(|| {
                 let bounds = meshopt::compute_meshlet_bounds(meshlet, vertices);
                 (
-                    BoundingSphere {
-                        center: bounds.center.into(),
-                        radius: bounds.radius,
-                    },
+                    Vec3::from_array(bounds.center).extend(bounds.radius),
                     0.0,
                 )
             });
@@ -602,31 +588,31 @@ fn merge_meshlets(meshlets: &mut meshopt::Meshlets, merge: meshopt::Meshlets) {
         }));
 }
 
-fn merge_spheres(a: BoundingSphere, b: BoundingSphere) -> BoundingSphere {
-    let sr = a.radius.min(b.radius);
-    let br = a.radius.max(b.radius);
-    let len = a.center.distance(b.center);
+fn merge_spheres(a: Vec4, b: Vec4) -> Vec4 {
+    let sr = a.w.min(b.w);
+    let br = a.w.max(b.w);
+    let len = a.xyz().distance(b.xyz());
     if len + sr <= br || sr == 0.0 || len == 0.0 {
-        if a.radius > b.radius { a } else { b }
+        if a.w > b.w { a } else { b }
     } else {
         let radius = (sr + br + len) / 2.0;
         let center =
-            (a.center + b.center + (a.radius - b.radius) * (a.center - b.center) / len) / 2.0;
-        BoundingSphere { center, radius }
+            (a.xyz() + b.xyz() + (a.w - b.w) * (a.xyz() - b.xyz()) / len) / 2.0;
+        center.extend(radius)
     }
 }
 
 #[derive(Copy, Clone)]
 struct TempMeshletCullData {
     aabb: Aabb3d,
-    lod_group_sphere: BoundingSphere,
+    lod_group_sphere: Vec4,
     error: f32,
 }
 
 #[derive(Clone)]
 struct TempMeshletGroup {
     aabb: Aabb3d,
-    lod_bounds: BoundingSphere,
+    lod_bounds: Vec4,
     parent_error: f32,
     meshlets: SmallVec<[u32; TARGET_MESHLETS_PER_GROUP]>,
 }
@@ -635,10 +621,7 @@ impl Default for TempMeshletGroup {
     fn default() -> Self {
         Self {
             aabb: aabb_default(), // Default AABB to merge into
-            lod_bounds: BoundingSphere {
-                center: Vec3::ZERO,
-                radius: 0.0,
-            },
+            lod_bounds: Vec4::ZERO,
             parent_error: f32::MAX,
             meshlets: SmallVec::new(),
         }
@@ -818,39 +801,34 @@ impl BvhBuilder {
                 let out = &mut out[onode];
                 out.aabbs[i] = aabb_to_meshlet(group.aabb, group.parent_error, group.meshlets[0]);
                 out.lod_bounds[i] = group.lod_bounds;
-                out.child_counts[i] = group.meshlets[1] as _;
+                out.set_child_count(i, group.meshlets[1] as _);
             } else {
                 let child_id = self.build_inner(groups, out, max_depth, child_id, depth + 1);
                 let child = &out[child_id as usize];
                 let mut aabb = aabb_default();
                 let mut parent_error = 0.0f32;
-                let mut lod_bounds = BoundingSphere {
-                    center: Vec3::ZERO,
-                    radius: 0.0,
-                };
+                let mut lod_bounds = Vec4::ZERO;
+
                 for i in 0..8 {
-                    if child.child_counts[i] == 0 {
+                    if child.child_counts(i) == 0 {
                         break;
                     }
 
                     aabb = aabb.merge(&Aabb3d::new(
-                        child.aabbs[i].center,
-                        child.aabbs[i].half_extent,
+                        child.aabbs[i].center_and_error.xyz(),
+                        child.aabbs[i].half_extent_and_offset.xyz(),
                     ));
                     lod_bounds = merge_spheres(
                         lod_bounds,
-                        BoundingSphere {
-                            center: child.lod_bounds[i].center,
-                            radius: child.lod_bounds[i].radius,
-                        },
+                        child.lod_bounds[i],
                     );
-                    parent_error = parent_error.max(child.aabbs[i].error);
+                    parent_error = parent_error.max(child.aabbs[i].error());
                 }
 
                 let out = &mut out[onode];
                 out.aabbs[i] = aabb_to_meshlet(aabb, parent_error, child_id);
                 out.lod_bounds[i] = lod_bounds;
-                out.child_counts[i] = u8::MAX;
+                out.set_child_count(i, u8::MAX);
             }
         }
 
@@ -892,7 +870,7 @@ impl BvhBuilder {
             let group = &groups[0];
             o.aabbs[0] = aabb_to_meshlet(group.aabb, group.parent_error, group.meshlets[0]);
             o.lod_bounds[0] = group.lod_bounds;
-            o.child_counts[0] = group.meshlets[1] as _;
+            o.set_child_count(0, group.meshlets[1] as _);
             out.push(o);
             aabb = group.aabb;
             max_depth = 1;
@@ -903,13 +881,13 @@ impl BvhBuilder {
 
             let root = &out[0];
             for i in 0..8 {
-                if root.child_counts[i] == 0 {
+                if root.child_counts(i) == 0 {
                     break;
                 }
 
                 aabb = aabb.merge(&Aabb3d::new(
-                    root.aabbs[i].center,
-                    root.aabbs[i].half_extent,
+                    root.aabbs[i].center_and_error.xyz(),
+                    root.aabbs[i].half_extent_and_offset.xyz(),
                 ));
             }
         }
@@ -924,8 +902,8 @@ impl BvhBuilder {
         (
             out,
             Aabb {
-                center: aabb.center().into(),
-                half_extent: aabb.half_size().into(),
+                center: aabb.center().to_vec3().extend(0.0),
+                half_extent: aabb.half_size().to_vec3().extend(0.0),
             },
             max_depth,
         )
@@ -941,32 +919,32 @@ fn verify_bvh(
     let node = &out[node as usize];
     for i in 0..8 {
         let sphere = node.lod_bounds[i];
-        let error = node.aabbs[i].error;
-        if node.child_counts[i] == u8::MAX {
-            let child = &out[node.aabbs[i].child_offset as usize];
+        let error = node.aabbs[i].error();
+        if node.child_counts(i) == u8::MAX {
+            let child = &out[node.aabbs[i].offset() as usize];
             for i in 0..8 {
-                if child.child_counts[i] == 0 {
+                if child.child_counts(i) == 0 {
                     break;
                 }
                 assert!(
-                    child.aabbs[i].error <= error,
+                    child.aabbs[i].error() <= error,
                     "BVH errors are not monotonic"
                 );
-                let sphere_error = (sphere.center - child.lod_bounds[i].center).length()
-                    - (sphere.radius - child.lod_bounds[i].radius);
+                let sphere_error = (sphere.xyz() - child.lod_bounds[i].xyz()).length()
+                    - (sphere.w - child.lod_bounds[i].w);
                 assert!(
                     sphere_error <= 0.0001,
                     "BVH lod spheres are not monotonic ({sphere_error})"
                 );
             }
-            verify_bvh(out, cull_data, reachable, node.aabbs[i].child_offset);
+            verify_bvh(out, cull_data, reachable, node.aabbs[i].offset());
         } else {
-            for m in 0..node.child_counts[i] as u32 {
-                let mid = (m + node.aabbs[i].child_offset) as usize;
+            for m in 0..node.child_counts(i) as u32 {
+                let mid = (m + node.aabbs[i].offset()) as usize;
                 let meshlet = &cull_data[mid];
                 assert!(meshlet.error <= error, "meshlet errors are not monotonic");
-                let sphere_error = (sphere.center - meshlet.lod_group_sphere.center).length()
-                    - (sphere.radius - meshlet.lod_group_sphere.radius);
+                let sphere_error = (sphere.xyz() - meshlet.lod_group_sphere.xyz()).length()
+                    - (sphere.w - meshlet.lod_group_sphere.w);
                 assert!(
                     sphere_error <= 0.0001,
                     "meshlet lod spheres are not monotonic: ({sphere_error})"
@@ -986,9 +964,7 @@ fn aabb_default() -> Aabb3d {
 
 fn aabb_to_meshlet(aabb: Aabb3d, error: f32, child_offset: u32) -> AabbErrorOffset {
     AabbErrorOffset {
-        center: aabb.center().into(),
-        error,
-        half_extent: aabb.half_size().into(),
-        child_offset,
+        center_and_error: aabb.center().to_vec3().extend(error),
+        half_extent_and_offset: aabb.half_size().to_vec3().extend(f32::from_bits(child_offset)),
     }
 }

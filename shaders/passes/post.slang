@@ -25,7 +25,7 @@ float3 view_dir(uint2 pixelCoord) {
 [numthreads(8, 8, 1)]
 void post(uint2 dtid: SV_DispatchThreadID) {
     float4 color = bindings.color.Load(dtid);
-    float depth = bindings.depth.Instance[dtid];
+    float depth = bindings.depth.Load(dtid);
 
     if (depth == 0.0) {
         bindings.out.Store(dtid, float4(view_dir(dtid), 1.0));

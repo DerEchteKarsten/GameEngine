@@ -28,7 +28,7 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
     };
 
     let camera = Camera::new(vec3(0.0, 0.0, 0.0), 65.0_f32.to_radians(), 0.01, 100.0);
-    // let model: Handle<Mesh> = asset_server.load("stanford_bunny.glb");
+    let model: Handle<Mesh> = asset_server.load("stanford_bunny.glb");
     cmd.insert_resource(controles);
     cmd.spawn(camera);
 
@@ -36,17 +36,17 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
 
     for _x in 0..1 {
         for _y in 0..1 {
-            // cmd.spawn((
-            //     Instance {
-            //         model: model.clone(),
-            //     },
-            //     Transform::new_euler(
-            //         Vec3::new(0.0, 0.0, 1.0),
-            //         Vec3::new(10.0, 10.0, 10.0),
-            //         Vec3::new(0.0, 0.0, 0.0),
-            //     ),
-            //     Model,
-            // ));
+            cmd.spawn((
+                Instance {
+                    model: model.clone(),
+                },
+                Transform::new_euler(
+                    Vec3::new(0.0, 0.0, 1.0),
+                    Vec3::new(10.0, 10.0, 10.0),
+                    Vec3::new(0.0, 0.0, 0.0),
+                ),
+                Model,
+            ));
         }
     }
 }
@@ -66,7 +66,6 @@ fn update(
     //         log::debug!("parent: {:?}, child: {:?}", transform, qchildren.get(*i).unwrap().as_matrix());
     //     }
     // }
-    println!("{:?}", _time.delta());
 }
 
 fn main() {
