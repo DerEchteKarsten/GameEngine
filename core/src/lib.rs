@@ -44,7 +44,7 @@ pub fn init(world: &mut World) {
     let windows = world.get_non_send_resource::<WinitWindows>().unwrap();
     let window = windows.windows.values().into_iter().last().unwrap().deref();
 
-    lava::init(Some(&window), true).unwrap();
+    lava::init(Some(&window), true, false).unwrap();
 }
 
 pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
@@ -129,31 +129,31 @@ fn render(
         cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
         cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
         if world.instance_bvh_root_nodes.len() > 0 {
-            cmd.compute::<InstanceCull>()
-                .bind(InstanceCullBindings {
-                    num_instances: world.instance_bvh_root_nodes.len() as u64,
-                    aabbs: &world.instance_aabbs,
-                    instance_bvh_root_nodes: &world.instance_bvh_root_nodes,
-                    bvh_node_stack: &resources.bvh_node_stack,
-                    dp: &resources.dispatch_params,
-                    instance_transforms: &world.instance_transforms, 
-                })
-                .dispatch(
-                    world.instance_bvh_root_nodes.len().div_ceil(64) as u32,
-                    1,
-                    1,
-                );
+            // cmd.compute::<InstanceCull>()
+            //     .bind(InstanceCullBindings {
+            //         num_instances: world.instance_bvh_root_nodes.len() as u64,
+            //         aabbs: &world.instance_aabbs,
+            //         instance_bvh_root_nodes: &world.instance_bvh_root_nodes,
+            //         bvh_node_stack: &resources.bvh_node_stack,
+            //         dp: &resources.dispatch_params,
+            //         instance_transforms: &world.instance_transforms, 
+            //     })
+            //     .dispatch(
+            //         world.instance_bvh_root_nodes.len().div_ceil(64) as u32,
+            //         1,
+            //         1,
+            //     );
 
-            cmd.compute::<BvhCull>()
-                .bind(BvhCullBindings {
-                    bvh_node_stack: &resources.bvh_node_stack,
-                    bvh_nodes: &world.bvh_nodes,
-                    clusters: &resources.cluster_buffer,
-                    cull_data: &world.cull_data,
-                    dp: &resources.dispatch_params,
-                    instance_transforms: &world.instance_transforms,
-                })
-                .dispatch(4, 1, 1);
+            // cmd.compute::<BvhCull>()
+            //     .bind(BvhCullBindings {
+            //         bvh_node_stack: &resources.bvh_node_stack,
+            //         bvh_nodes: &world.bvh_nodes,
+            //         clusters: &resources.cluster_buffer,
+            //         cull_data: &world.cull_data,
+            //         dp: &resources.dispatch_params,
+            //         instance_transforms: &world.instance_transforms,
+            //     })
+            //     .dispatch(4, 1, 1);
                 
             // let params =
             //     cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
@@ -172,7 +172,7 @@ fn render(
                 .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
                 .depth_attachment(&resources.depth_attachment)
                 .backface_culling(false)
-                .draw_fullscreen(RasterVertexDispatch::indirect(&resources.dispatch_params, offset_of!(DispatchParams, indirect_draw) as u32, 1));
+                .draw_fullscreen(RasterVertexDispatch::Draw { vertex_count: world.vertices.len() as u32, instance_count: world.meshlets.len() as u32 });
 
             // cmd.raster()
             //     .mesh("meshshader", "mesh")
@@ -200,7 +200,7 @@ fn render(
                 inverse_view: camera.view_matrix().inverse(),
                 window_size: Vec4::new(Ctx::window_width().unwrap() as f32, Ctx::window_height().unwrap() as f32, 0.0, 0.0),
             }).dispatch_fullscreen();
-
+            
         cmd.present(swapchain_image);
         Ok(())
     })
@@ -237,8 +237,8 @@ pub fn CorePlugin(app: &mut App) {
             },
             AssetPlugin {
                 mode: bevy_asset::AssetMode::Processed,
-                file_path: "/home/karsten/Documents/code/GameEngine/game/assets".to_string(),
-                processed_file_path: "/home/karsten/Documents/code/GameEngine/game/imported_assets"
+                file_path: "/home/karsten/code/GameEngine/game/assets".to_string(),
+                processed_file_path: "/home/karsten/code/GameEngine/game/imported_assets"
                     .to_string(),
                 ..Default::default()
             },
