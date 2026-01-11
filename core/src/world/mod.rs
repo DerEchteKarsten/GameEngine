@@ -4,16 +4,11 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use glam::Mat4;
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
-use lava::{
-    vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, StorageBuffer},
-};
+use lava::vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, StorageBuffer};
 
 use crate::bindings::{Aabb, BvhNode, CullData, Meshlet, Vertex};
 use crate::{
-    assets::{
-        Mesh,
-        material::Material,
-    },
+    assets::{Mesh, material::Material},
     components::transform::Transform,
 };
 
@@ -57,7 +52,7 @@ pub fn transform_parent_changed(
             let child_transform = q_children.get(c).unwrap();
             transforms.push(transform.as_matrix() * child_transform.as_matrix());
         }
-        staging_buffer.0.copy_from_slice(&transforms).unwrap();
+        staging_buffer.0.copy_from_slice(&transforms, 0).unwrap();
         world.instance_transforms.copy_from(
             staging_buffer.0.cast_mut(),
             (*instance_offset * size_of::<Mat4>()) as u64,
@@ -87,7 +82,7 @@ pub fn transform_child_changed(
 
         staging_buffer
             .0
-            .copy_from_slice(&[parent_transform.as_matrix() * transform.as_matrix()])
+            .copy_from_slice(&[parent_transform.as_matrix() * transform.as_matrix()], 0)
             .unwrap();
         world.instance_transforms.copy_from(
             staging_buffer.0.cast_mut(),
@@ -153,11 +148,14 @@ pub fn load_assets(
                             let mut n = n.clone();
                             n.aabbs.iter_mut().enumerate().for_each(|(i, aabb)| {
                                 let offset = aabb.offset();
-                                aabb.set_offset(offset + if ((n.child_counts >> (i * 8)) & 0xFF) as u8 == 255 {
-                                    bvh_root as u32
-                                } else {
-                                    meshlet_index as u32
-                                });
+                                aabb.set_offset(
+                                    offset
+                                        + if ((n.child_counts >> (i * 8)) & 0xFF) as u8 == 255 {
+                                            bvh_root as u32
+                                        } else {
+                                            meshlet_index as u32
+                                        },
+                                );
                             });
                             n
                         })

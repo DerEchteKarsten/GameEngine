@@ -104,7 +104,7 @@ impl lava::command_buffer::ComputePass for BvhCull {
     type GpuBinding = CBvhCullBindings;
 
     const ENTRY: &'static str = "bvh_cull\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
     fn cache() -> &'static OnceLock<ash::vk::Pipeline> {
         static CACHE: OnceLock<ash::vk::Pipeline> = OnceLock::new();
         &CACHE
@@ -202,7 +202,7 @@ impl lava::command_buffer::ComputePass for InstanceCull {
     type GpuBinding = CInstanceCullBindings;
 
     const ENTRY: &'static str = "instance_cull\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/instance_cull.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/instance_cull.slang.spv");
     fn cache() -> &'static OnceLock<ash::vk::Pipeline> {
         static CACHE: OnceLock<ash::vk::Pipeline> = OnceLock::new();
         &CACHE
@@ -210,7 +210,7 @@ impl lava::command_buffer::ComputePass for InstanceCull {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct CMeshShaderBindings {
+pub struct CMeshshaderBindings {
     pub proj: Mat4,
     pub view: Mat4,
     pub model: Mat4,
@@ -219,7 +219,7 @@ pub struct CMeshShaderBindings {
     pub meshlets: u64,
 }
 
-pub struct MeshShaderBindings<'a> {
+pub struct MeshshaderBindings<'a> {
     pub proj: Mat4,
     pub view: Mat4,
     pub model: Mat4,
@@ -228,11 +228,11 @@ pub struct MeshShaderBindings<'a> {
     pub meshlets: &'a lava::vkobjects::buffer::Buffer<Meshlet>,
 }
 
-unsafe impl bytemuck::Pod for CMeshShaderBindings {}
-unsafe impl bytemuck::Zeroable for CMeshShaderBindings {}
+unsafe impl bytemuck::Pod for CMeshshaderBindings {}
+unsafe impl bytemuck::Zeroable for CMeshshaderBindings {}
 
-impl lava::command_buffer::Binding for CMeshShaderBindings {
-    type CpuBinding<'a> = MeshShaderBindings<'a>;
+impl lava::command_buffer::Binding for CMeshshaderBindings {
+    type CpuBinding<'a> = MeshshaderBindings<'a>;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
@@ -279,13 +279,13 @@ aspect: ash::vk::ImageAspectFlags::empty(),
 }
 pub struct Meshshader;
 impl lava::command_buffer::RasterPass for Meshshader {
-    type GpuBinding = CMeshShaderBindings;
+    type GpuBinding = CMeshshaderBindings;
 }
 
 impl lava::command_buffer::RasterMeshShaderPass for Meshshader {
     const MESH: &'static str = "mesh\0";
     const FRAGMENT: &'static str = "mesh_fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/meshshader.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/meshshader.slang.spv");
     const TASK: Option<&'static str> = Some("amp\0");
 
     fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {
@@ -371,7 +371,7 @@ impl lava::command_buffer::ComputePass for Post {
     type GpuBinding = CPostBindings;
 
     const ENTRY: &'static str = "post\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/post.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/post.slang.spv");
     fn cache() -> &'static OnceLock<ash::vk::Pipeline> {
         static CACHE: OnceLock<ash::vk::Pipeline> = OnceLock::new();
         &CACHE
@@ -475,8 +475,68 @@ impl lava::command_buffer::RasterPass for Raster {
 impl lava::command_buffer::RasterVertexShaderPass for Raster {
     const VERTEX: &'static str = "vertex\0";
     const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/raster.slang.spv");
-    type Vertex = ();
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/raster.slang.spv");
+    
+    fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {
+        static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
+        &CACHE
+    }
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> {
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+        &CACHE
+    }
+}
+    
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CRasterUiBindings {
+    pub verticies: u64,
+}
+
+pub struct RasterUiBindings<'a> {
+    pub verticies: &'a lava::vkobjects::buffer::Buffer<UIVertex>,
+}
+
+unsafe impl bytemuck::Pod for CRasterUiBindings {}
+unsafe impl bytemuck::Zeroable for CRasterUiBindings {}
+
+impl lava::command_buffer::Binding for CRasterUiBindings {
+    type CpuBinding<'a> = RasterUiBindings<'a>;
+
+    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
+        Self {
+            verticies: bindings.verticies.address,
+        }
+    }
+
+    fn resources<'a>(
+        bindings: &Self::CpuBinding<'a>,
+        stages: ash::vk::PipelineStageFlags2,
+    ) -> Vec<(ResourceHandle, ResourceState)> {
+        vec![
+            (ResourceHandle::Buffer(bindings.verticies.handle),
+ResourceState {
+    stages,
+    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: ash::vk::ImageLayout::UNDEFINED,
+aspect: ash::vk::ImageAspectFlags::empty(), 
+
+}),
+        ]
+    }
+}
+pub struct RasterUi;
+
+
+impl lava::command_buffer::RasterPass for RasterUi {
+    type GpuBinding = CRasterUiBindings;
+}
+
+impl lava::command_buffer::RasterVertexShaderPass for RasterUi {
+    const VERTEX: &'static str = "vertex\0";
+    const FRAGMENT: &'static str = "fragment\0";
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/raster_ui.slang.spv");
+    
     fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {
         static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
         &CACHE
@@ -492,6 +552,40 @@ impl lava::command_buffer::RasterVertexShaderPass for Raster {
 pub struct AabbErrorOffset {
     pub center_and_error: Vec4,
     pub half_extent_and_offset: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct DispatchParams {
+    pub node_head: u32,
+    pub node_tail: u32,
+    pub done: u32,
+    pub meshlet_count: u32,
+    pub indirect_draw: DrawIndirectCommand,
+    pub indirect_dispatch: DispatchIndirectCommand,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstancedOffset {
+    pub instance: u32,
+    pub offset: i32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct CullData {
+    pub aabb: AabbErrorOffset,
+    pub lod_group_sphere: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Aabb {
+    pub center: Vec4,
+    pub half_extent: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Vertex {
+    pub position_and_uv1: Vec4,
+    pub normal_and_uv2: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -511,21 +605,11 @@ pub struct Meshlet {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CullData {
-    pub aabb: AabbErrorOffset,
-    pub lod_group_sphere: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Vertex {
-    pub position_and_uv1: Vec4,
-    pub normal_and_uv2: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstancedOffset {
-    pub instance: u32,
-    pub offset: i32,
+pub struct DrawIndirectCommand {
+    pub vertex_count: u32,
+    pub instance_count: u32,
+    pub first_vertex: u32,
+    pub first_instance: u32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -536,25 +620,10 @@ pub struct DispatchIndirectCommand {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct DrawIndirectCommand {
-    pub vertex_count: u32,
-    pub instance_count: u32,
-    pub first_vertex: u32,
-    pub first_instance: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DispatchParams {
-    pub node_head: u32,
-    pub node_tail: u32,
-    pub done: u32,
-    pub meshlet_count: u32,
-    pub indirect_draw: DrawIndirectCommand,
-    pub indirect_dispatch: DispatchIndirectCommand,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Aabb {
-    pub center: Vec4,
-    pub half_extent: Vec4,
+pub struct UIVertex {
+    pub pos: Vec2,
+    pub uv: Vec2,
+    pub color: u32,
+    pub texture_index: u32,
+    pub pad: UVec2,
 }

@@ -20,20 +20,25 @@ use crate::bindings::{Aabb, AabbErrorOffset, BvhNode, CullData, Meshlet, Vertex}
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 
-
 impl Default for AabbErrorOffset {
     fn default() -> Self {
-        AabbErrorOffset { center_and_error: Default::default(), half_extent_and_offset: Default::default() }
+        AabbErrorOffset {
+            center_and_error: Default::default(),
+            half_extent_and_offset: Default::default(),
+        }
     }
 }
-
 
 impl Default for BvhNode {
     fn default() -> Self {
-        BvhNode { aabbs: Default::default(), lod_bounds: Default::default(), child_counts: Default::default(), pad: Default::default() }
+        BvhNode {
+            aabbs: Default::default(),
+            lod_bounds: Default::default(),
+            child_counts: Default::default(),
+            pad: Default::default(),
+        }
     }
 }
-
 
 impl BvhNode {
     pub fn child_counts(&self, i: usize) -> u8 {
@@ -60,7 +65,6 @@ impl AabbErrorOffset {
         self.center_and_error.w = error;
     }
 }
-
 
 #[derive(Clone)]
 pub struct MeshletMesh {
@@ -376,10 +380,7 @@ fn compute_meshlets(
         for meshlet in meshlet.iter() {
             let (lod_group_sphere, error) = prev_lod_data.unwrap_or_else(|| {
                 let bounds = meshopt::compute_meshlet_bounds(meshlet, vertices);
-                (
-                    Vec3::from_array(bounds.center).extend(bounds.radius),
-                    0.0,
-                )
+                (Vec3::from_array(bounds.center).extend(bounds.radius), 0.0)
             });
 
             cull_data.push(TempMeshletCullData {
@@ -596,8 +597,7 @@ fn merge_spheres(a: Vec4, b: Vec4) -> Vec4 {
         if a.w > b.w { a } else { b }
     } else {
         let radius = (sr + br + len) / 2.0;
-        let center =
-            (a.xyz() + b.xyz() + (a.w - b.w) * (a.xyz() - b.xyz()) / len) / 2.0;
+        let center = (a.xyz() + b.xyz() + (a.w - b.w) * (a.xyz() - b.xyz()) / len) / 2.0;
         center.extend(radius)
     }
 }
@@ -818,10 +818,7 @@ impl BvhBuilder {
                         child.aabbs[i].center_and_error.xyz(),
                         child.aabbs[i].half_extent_and_offset.xyz(),
                     ));
-                    lod_bounds = merge_spheres(
-                        lod_bounds,
-                        child.lod_bounds[i],
-                    );
+                    lod_bounds = merge_spheres(lod_bounds, child.lod_bounds[i]);
                     parent_error = parent_error.max(child.aabbs[i].error());
                 }
 
@@ -965,6 +962,9 @@ fn aabb_default() -> Aabb3d {
 fn aabb_to_meshlet(aabb: Aabb3d, error: f32, child_offset: u32) -> AabbErrorOffset {
     AabbErrorOffset {
         center_and_error: aabb.center().to_vec3().extend(error),
-        half_extent_and_offset: aabb.half_size().to_vec3().extend(f32::from_bits(child_offset)),
+        half_extent_and_offset: aabb
+            .half_size()
+            .to_vec3()
+            .extend(f32::from_bits(child_offset)),
     }
 }

@@ -31,6 +31,7 @@ bevy_tasks = "0.16.0"
 itertools = "0.14.0"
 metis = "0.2.2"
 bevy_math = "0.17.0"
+egui = {version = "0.33.3", features = ["bytemuck"]}
 
 [build-dependencies]
 walkdir = "2"

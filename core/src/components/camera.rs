@@ -100,10 +100,7 @@ pub fn update_mouse_buttons(
         }
     }
 }
-pub fn update_mouse_move(
-    mut controls: ResMut<Controls>,
-    mut evr_motion: EventReader<MouseMotion>,
-) {
+pub fn update_mouse_move(mut controls: ResMut<Controls>, mut evr_motion: EventReader<MouseMotion>) {
     if !controls.look_around {
         return;
     }

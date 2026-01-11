@@ -10,10 +10,10 @@ use bevy_reflect::TypePath;
 use bytemuck::Pod;
 use glam::{Mat4, Vec3};
 
-use crate::{assets::{
-    material::Material,
-    mesh::MeshletMesh,
-}, bindings::Aabb};
+use crate::{
+    assets::{material::Material, mesh::MeshletMesh},
+    bindings::Aabb,
+};
 
 pub mod material;
 pub mod mesh;
