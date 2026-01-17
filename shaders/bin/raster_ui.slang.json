@@ -1,6 +1,17 @@
 {
     "parameters": [
         {
+            "name": "SamplerHeap",
+            "binding": {"kind": "descriptorTableSlot", "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "samplerState"
+                }
+            }
+        },
+        {
             "name": "TextureHeap",
             "binding": {"kind": "descriptorTableSlot", "index": 1},
             "type": {
@@ -46,56 +57,54 @@
                                                 "name": "UIVertex",
                                                 "fields": [
                                                     {
-                                                        "name": "pos",
+                                                        "name": "pos_and_uv",
                                                         "type": {
                                                             "kind": "vector",
-                                                            "elementCount": 2,
+                                                            "elementCount": 4,
                                                             "elementType": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "float32"
                                                             }
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 4}
-                                                    },
-                                                    {
-                                                        "name": "uv",
-                                                        "type": {
-                                                            "kind": "vector",
-                                                            "elementCount": 2,
-                                                            "elementType": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "float32"
-                                                            }
-                                                        },
-                                                        "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 4}
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                     },
                                                     {
                                                         "name": "color",
                                                         "type": {
-                                                            "kind": "scalar",
-                                                            "scalarType": "uint32"
+                                                            "kind": "vector",
+                                                            "elementCount": 4,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                     },
                                                     {
                                                         "name": "texture_index",
                                                         "type": {
-                                                            "kind": "scalar",
-                                                            "scalarType": "uint32"
+                                                            "kind": "struct",
+                                                            "name": "Image",
+                                                            "fields": [
+                                                                {
+                                                                    "name": "DescriptorSet",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                                },
+                                                                {
+                                                                    "name": "DescriptorIndex",
+                                                                    "type": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    },
+                                                                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                                }
+                                                            ]
                                                         },
-                                                        "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
-                                                    },
-                                                    {
-                                                        "name": "pad",
-                                                        "type": {
-                                                            "kind": "vector",
-                                                            "elementCount": 2,
-                                                            "elementType": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "uint32"
-                                                            }
-                                                        },
-                                                        "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 4}
+                                                        "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
                                                     }
                                                 ]
                                             }
@@ -131,56 +140,54 @@
                                                     "name": "UIVertex",
                                                     "fields": [
                                                         {
-                                                            "name": "pos",
+                                                            "name": "pos_and_uv",
                                                             "type": {
                                                                 "kind": "vector",
-                                                                "elementCount": 2,
+                                                                "elementCount": 4,
                                                                 "elementType": {
                                                                     "kind": "scalar",
                                                                     "scalarType": "float32"
                                                                 }
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 4}
-                                                        },
-                                                        {
-                                                            "name": "uv",
-                                                            "type": {
-                                                                "kind": "vector",
-                                                                "elementCount": 2,
-                                                                "elementType": {
-                                                                    "kind": "scalar",
-                                                                    "scalarType": "float32"
-                                                                }
-                                                            },
-                                                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 4}
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                                                         },
                                                         {
                                                             "name": "color",
                                                             "type": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "uint32"
+                                                                "kind": "vector",
+                                                                "elementCount": 4,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                                                         },
                                                         {
                                                             "name": "texture_index",
                                                             "type": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "uint32"
+                                                                "kind": "struct",
+                                                                "name": "Image",
+                                                                "fields": [
+                                                                    {
+                                                                        "name": "DescriptorSet",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                                    },
+                                                                    {
+                                                                        "name": "DescriptorIndex",
+                                                                        "type": {
+                                                                            "kind": "scalar",
+                                                                            "scalarType": "uint32"
+                                                                        },
+                                                                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                                    }
+                                                                ]
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
-                                                        },
-                                                        {
-                                                            "name": "pad",
-                                                            "type": {
-                                                                "kind": "vector",
-                                                                "elementCount": 2,
-                                                                "elementType": {
-                                                                    "kind": "scalar",
-                                                                    "scalarType": "uint32"
-                                                                }
-                                                            },
-                                                            "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 4}
+                                                            "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
                                                         }
                                                     ]
                                                 }
@@ -222,7 +229,7 @@
             ],
             "result": {
                 "stage": "vertex",
-                "binding": {"kind": "varyingOutput", "index": 0},
+                "binding": {"kind": "varyingOutput", "index": 0, "count": 4},
                 "type": {
                     "kind": "struct",
                     "name": "VSOutput",
@@ -243,7 +250,7 @@
                             "name": "color",
                             "type": {
                                 "kind": "vector",
-                                "elementCount": 3,
+                                "elementCount": 4,
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
@@ -251,11 +258,57 @@
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 0}
+                        },
+                        {
+                            "name": "texture",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Image",
+                                "fields": [
+                                    {
+                                        "name": "DescriptorSet",
+                                        "type": {
+                                            "kind": "scalar",
+                                            "scalarType": "uint32"
+                                        },
+                                        "stage": "vertex",
+                                        "binding": {"kind": "varyingOutput", "index": 0}
+                                    },
+                                    {
+                                        "name": "DescriptorIndex",
+                                        "type": {
+                                            "kind": "scalar",
+                                            "scalarType": "uint32"
+                                        },
+                                        "stage": "vertex",
+                                        "binding": {"kind": "varyingOutput", "index": 1}
+                                    }
+                                ]
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 1, "count": 2}
+                        },
+                        {
+                            "name": "uv",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 2,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 3}
                         }
                     ]
                 }
             },
             "bindings": [
+                {
+                    "name": "SamplerHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
                 {
                     "name": "TextureHeap",
                     "binding": {"kind": "descriptorTableSlot", "index": 1}
@@ -277,7 +330,7 @@
                 {
                     "name": "input",
                     "stage": "fragment",
-                    "binding": {"kind": "varyingInput", "index": 0},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 4},
                     "type": {
                         "kind": "struct",
                         "name": "VSOutput",
@@ -298,7 +351,7 @@
                                 "name": "color",
                                 "type": {
                                     "kind": "vector",
-                                    "elementCount": 3,
+                                    "elementCount": 4,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
@@ -306,6 +359,48 @@
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 0}
+                            },
+                            {
+                                "name": "texture",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Image",
+                                    "fields": [
+                                        {
+                                            "name": "DescriptorSet",
+                                            "type": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
+                                            },
+                                            "stage": "fragment",
+                                            "binding": {"kind": "varyingInput", "index": 0}
+                                        },
+                                        {
+                                            "name": "DescriptorIndex",
+                                            "type": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
+                                            },
+                                            "stage": "fragment",
+                                            "binding": {"kind": "varyingInput", "index": 1}
+                                        }
+                                    ]
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 1, "count": 2}
+                            },
+                            {
+                                "name": "uv",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 2,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 3}
                             }
                         ]
                     }
@@ -336,6 +431,10 @@
                 }
             },
             "bindings": [
+                {
+                    "name": "SamplerHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
                 {
                     "name": "TextureHeap",
                     "binding": {"kind": "descriptorTableSlot", "index": 1}

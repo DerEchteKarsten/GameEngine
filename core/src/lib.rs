@@ -59,7 +59,7 @@ pub fn init(world: &mut World) {
     let windows = world.get_non_send_resource::<WinitWindows>().unwrap();
     let window = windows.windows.values().into_iter().last().unwrap().deref();
 
-    lava::init(Some(&window), true, true).unwrap();
+    lava::init(Some(&window), true, false).unwrap();
 }
 
 pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
@@ -83,7 +83,7 @@ fn render(
     world: Res<RenderWorld>,
     mut resources: Local<Option<RenderResources>>,
     mut staging_buffer: ResMut<StagingBuffer>,
-    mut ui_resources: Res<UiResources>
+    ui_resources: Res<UiResources>
 ) {
     let camera = query.single().unwrap();
 
@@ -179,23 +179,23 @@ fn render(
             // let params =
             //     cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
 
-            cmd.raster::<Raster>()
-                .bind(RasterBindings {
-                    indicies: &world.indecies,
-                    instance_offsets: &resources.cluster_buffer,
-                    instance_transforms: &world.instance_transforms,
-                    meshlets: &world.meshlets,
-                    verticies: &world.vertices,
-                    proj: camera.projection_matrix(),
-                    view: camera.view_matrix(),
-                })
-                .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
-                .depth_attachment(&resources.depth_attachment)
-                .backface_culling(false)
-                .draw_fullscreen(RasterVertexDispatch::Draw {
-                    vertex_count: world.vertices.len() as u32,
-                    instance_count: world.meshlets.len() as u32,
-                });
+            // cmd.raster::<Raster>()
+            //     .bind(RasterBindings {
+            //         indicies: &world.indecies,
+            //         instance_offsets: &resources.cluster_buffer,
+            //         instance_transforms: &world.instance_transforms,
+            //         meshlets: &world.meshlets,
+            //         verticies: &world.vertices,
+            //         proj: camera.projection_matrix(),
+            //         view: camera.view_matrix(),
+            //     })
+            //     .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
+            //     .depth_attachment(&resources.depth_attachment)
+            //     .backface_culling(false)
+            //     .draw_fullscreen(RasterVertexDispatch::Draw {
+            //         vertex_count: world.vertices.len() as u32,
+            //         instance_count: world.meshlets.len() as u32,
+            //     });
 
             // cmd.raster()
             //     .mesh("meshshader", "mesh")
@@ -214,31 +214,32 @@ fn render(
             //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
         }
 
-        cmd.compute::<Post>()
-            .bind(PostBindings {
-                color: &resources.color_attachment,
-                depth: &resources.depth_attachment,
-                out: &swapchain_image,
-                inverse_proj: camera.projection_matrix().inverse(),
-                inverse_view: camera.view_matrix().inverse(),
-                window_size: Vec4::new(
-                    Ctx::window_width().unwrap() as f32,
-                    Ctx::window_height().unwrap() as f32,
-                    0.0,
-                    0.0,
-                ),
-            })
-            .dispatch_fullscreen();
+        // cmd.compute::<Post>()
+        //     .bind(PostBindings {
+        //         color: &resources.color_attachment,
+        //         depth: &resources.depth_attachment,
+        //         out: &swapchain_image,
+        //         inverse_proj: camera.projection_matrix().inverse(),
+        //         inverse_view: camera.view_matrix().inverse(),
+        //         window_size: Vec4::new(
+        //             Ctx::window_width().unwrap() as f32,
+        //             Ctx::window_height().unwrap() as f32,
+        //             0.0,
+        //             0.0,
+        //         ),
+        //     })
+        //     .dispatch_fullscreen();
 
         cmd.raster::<RasterUi>() 
             .bind(RasterUiBindings {
                 verticies: ui_resources.verticies.as_ref(),
             })
-            .color_attachment(&swapchain_image, None)
+            .color_attachment(&swapchain_image, Some([0.0, 0.0, 0.0, 1.0]))
             .depth_attachment(&resources.ui_depth_attachment)
             .backface_culling(false)
+            .wire_frame(true)
             .index_buffer(&ui_resources.indicies)
-            .draw_fullscreen(RasterVertexDispatch::DrawIndexed { triangle_count: ui_resources.verticies.len() as u32, instance_count: 1 });
+            .draw_fullscreen(RasterVertexDispatch::DrawIndexed { triangle_count: ui_resources.indicies.len() as u32 / 3, instance_count: 1 });
 
         cmd.present(swapchain_image);
         Ok(())

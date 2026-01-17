@@ -13,13 +13,13 @@ use bevy_window::{
     CursorLeft, CursorMoved, PrimaryWindow, Window, WindowEvent, WindowFocused, WindowResized,
     WindowTheme, WindowThemeChanged,
 };
-use egui::{MouseWheelUnit, PointerButton, Pos2, RawInput, epaint::Primitive};
-use glam::UVec2;
+use egui::{MouseWheelUnit, PointerButton, Pos2, RawInput, TextureId, epaint::{Primitive, RectShape}};
+use glam::{UVec2, UVec4, Vec4};
 use gltf::json::extensions::mesh;
-use lava::{command_buffer::CommandBuffer, vkobjects::{buffer::{BufferUsageFlags, CpuBuffer, StorageBuffer}, image::{Image, ImageSize}}};
+use lava::{bindless::BindlessHandle, command_buffer::CommandBuffer, state::Ctx, vkobjects::{buffer::{BufferUsageFlags, CpuBuffer, StorageBuffer}, image::{Image, ImageSize}}};
 use std::{
     collections::HashMap,
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut}, random::{self, random},
 };
 
 use crate::{bindings::{self, Meshlet, UIVertex}, world::StagingBuffer};
@@ -183,7 +183,7 @@ fn read_input(
     }
 }
 
-fn update_ui(mut input: ResMut<Input>, ctx: Res<EguiContext>, mut resources: ResMut<UiResources>) {
+fn update_ui(mut input: ResMut<Input>, ctx: Res<EguiContext>, mut resources: ResMut<UiResources>, mut staging_buffer: ResMut<StagingBuffer>) {
     if !lava::is_init() {
         return;
     }
@@ -196,6 +196,33 @@ fn update_ui(mut input: ResMut<Input>, ctx: Res<EguiContext>, mut resources: Res
         });
     });
     input.input.events.clear();
+
+    for f in &full_output.textures_delta.free {
+        if let Some(image) = resources.texture_map.remove(f) {
+            image.destroy();
+        }
+    }
+
+    for (f, texture) in &full_output.textures_delta.set {
+        let egui::ImageData::Color(image_data) = &texture.image;
+        let image = Image::new_2d(ImageUsageFlags::SAMPLED, Format::R8G8B8A8_SNORM, ImageSize::XY(image_data.size[0] as u32, image_data.size[1] as u32)).unwrap();
+        staging_buffer.copy_from_slice(image_data.as_raw(), 0).unwrap();
+        Ctx::transfer_queue().execute_command_wait(|cmd| unsafe{
+            let regions = [
+                ash::vk::BufferImageCopy {
+                    buffer_image_height: image_data.size[1] as u32,
+                    buffer_offset: 0,
+                    buffer_row_length: image_data.size[0] as u32,
+                    image_extent: ash::vk::Extent3D { width: image_data.size[0] as u32, height: image_data.size[1] as u32, depth: 1 },
+                    image_offset: ash::vk::Offset3D { x: 0, y: 0, z: 0 },
+                    image_subresource: ash::vk::ImageSubresourceLayers { aspect_mask: ash::vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 1, layer_count: 0 }
+                }
+            ];
+            Ctx::device().cmd_copy_buffer_to_image(*cmd, staging_buffer.handle, image.handle, ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, &regions);
+        }).unwrap();
+        resources.texture_map.insert(*f, image);
+    }
+
     let clipped_primitives = ctx
         .ctx
         .tessellate(full_output.shapes, full_output.pixels_per_point);
@@ -210,20 +237,22 @@ fn update_ui(mut input: ResMut<Input>, ctx: Res<EguiContext>, mut resources: Res
     }else {
         None
     }).collect::<Vec<_>>();
-    
+
+    resources.verticies.clear();
+    resources.indicies.clear();
     resources.verticies.assert_size(num_verticies as u64 * size_of::<egui::epaint::Vertex>() as u64).unwrap();
     resources.indicies.assert_size(num_verticies as u64 * size_of::<u32>() as u64).unwrap();
-
-    for mesh in meshes {
-        let triangle_index = resources.indicies.len() as u32;
-        let indicies = mesh.indices.iter().map(|i| i+triangle_index).collect::<Vec<_>>();
-        resources.verticies.push(&mesh.vertices.iter().map(|v| UIVertex {
-            color: 0,
-            pad: UVec2::ZERO,
-            pos: glam::Vec2::new(v.pos.x, v.pos.y),
-            texture_index: 0,//mesh.texture_id,
-            uv: glam::Vec2::new(v.uv.x, v.uv.y)
-        }).collect::<Vec<_>>());
+    for (i, mesh) in meshes.iter().enumerate() {
+        let vertex_offset = resources.verticies.len() as u32;
+        let texture_index = resources.texture_map.get(&mesh.texture_id).unwrap().bindless_handle.unwrap();
+        let indicies = mesh.indices.iter().map(|i| i+vertex_offset).collect::<Vec<_>>();
+        let verticies = mesh.vertices.iter().map(|v| UIVertex {
+            pos_and_uv: glam::Vec4::new(-1.0 + (v.pos.x / Ctx::window_width().unwrap() as f32)*2.0, -1.0 + (v.pos.y / Ctx::window_height().unwrap() as f32)*2.0, v.uv.x, v.uv.y),
+            color: Vec4::new(v.color.r() as f32 / 255.0, v.color.g() as f32 / 255.0, v.color.b() as f32 / 255.0, v.color.a() as f32 / 255.0),
+            texture_index,
+        }).collect::<Vec<_>>();
+        
+        resources.verticies.push(&verticies);
         resources.indicies.push(&indicies);
     }
 }
@@ -232,7 +261,7 @@ fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
         indicies: StorageBuffer::new(BufferUsageFlags::INDEX).unwrap(),
         verticies: StorageBuffer::default(),
-        texture_atlas: Image::new_2d(ImageUsageFlags::STORAGE, Format::R8G8B8A8_SRGB, ImageSize::XY(100, 100)).unwrap()
+        texture_map: HashMap::new(),
     });
 }
 
@@ -240,7 +269,7 @@ fn init(mut commands: Commands) {
 pub struct UiResources {
     pub verticies: StorageBuffer<bindings::UIVertex, CpuBuffer>,
     pub indicies: StorageBuffer<u32, CpuBuffer>,
-    pub texture_atlas: Image,
+    pub texture_map: HashMap<TextureId, Image>,
 }
 
 #[allow(non_snake_case)]

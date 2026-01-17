@@ -157,7 +157,7 @@ pub fn rust_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String 
                         format!(
                             "    pub {}: {},\n",
                             &f.name,
-                            &cpu_type(&f.type_info, structs)
+                            &gpu_type(&f.type_info, structs)
                         )
                         .as_str(),
                     );

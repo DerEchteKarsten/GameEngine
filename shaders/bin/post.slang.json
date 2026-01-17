@@ -1,6 +1,17 @@
 {
     "parameters": [
         {
+            "name": "SamplerHeap",
+            "binding": {"kind": "descriptorTableSlot", "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "samplerState"
+                }
+            }
+        },
+        {
             "name": "TextureHeap",
             "binding": {"kind": "descriptorTableSlot", "index": 1},
             "type": {
@@ -300,6 +311,10 @@
             ],
             "threadGroupSize": [8, 8, 1],
             "bindings": [
+                {
+                    "name": "SamplerHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
                 {
                     "name": "TextureHeap",
                     "binding": {"kind": "descriptorTableSlot", "index": 1}
