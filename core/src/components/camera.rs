@@ -45,7 +45,7 @@ impl Camera {
     pub fn projection_matrix(&self) -> Mat4 {
         Mat4::perspective_rh(
             self.fov,
-            Ctx::window_width().unwrap() as f32 / Ctx::window_height().unwrap() as f32,
+            Ctx::window_width() as f32 / Ctx::window_height() as f32,
             self.z_far,
             self.z_near,
         )
@@ -105,8 +105,8 @@ pub fn update_mouse_move(mut controls: ResMut<Controls>, mut evr_motion: EventRe
         return;
     }
     for ev in evr_motion.read() {
-        controls.pitch += (ev.delta.y / Ctx::window_height().unwrap() as f32) * SENSITIVITY;
-        controls.yaw += (ev.delta.x / Ctx::window_width().unwrap() as f32) * SENSITIVITY;
+        controls.pitch += (ev.delta.y / Ctx::window_height() as f32) * SENSITIVITY;
+        controls.yaw += (ev.delta.x / Ctx::window_width() as f32) * SENSITIVITY;
 
         if controls.pitch < -PI / 2.0 + 0.1 {
             controls.pitch = -PI / 2.0 + 0.1;

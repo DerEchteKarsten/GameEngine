@@ -21,7 +21,7 @@ use bevy_ecs::{
 use bevy_input::InputPlugin;
 use bevy_log::LogPlugin;
 use bevy_tasks::{AsyncComputeTaskPool, TaskPoolBuilder};
-use bevy_time::TimePlugin;
+use bevy_time::{Time, TimePlugin};
 use bevy_window::{ExitCondition, Window, WindowPlugin, WindowResized, WindowResolution};
 use bevy_winit::{WinitPlugin, WinitWindows};
 use bytemuck::{Pod, Zeroable};
@@ -59,7 +59,7 @@ pub fn init(world: &mut World) {
     let windows = world.get_non_send_resource::<WinitWindows>().unwrap();
     let window = windows.windows.values().into_iter().last().unwrap().deref();
 
-    lava::init(Some(&window), true, false).unwrap();
+    lava::init(&window, true, false).unwrap();
 }
 
 pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
@@ -71,7 +71,6 @@ pub fn on_resize(mut event_reader: EventReader<WindowResized>) {
 
 struct RenderResources {
     depth_attachment: Image,
-    ui_depth_attachment: Image,
     color_attachment: Image,
     cluster_buffer: Buffer<InstancedOffset>,
     dispatch_params: Buffer<DispatchParams>,
@@ -83,19 +82,14 @@ fn render(
     world: Res<RenderWorld>,
     mut resources: Local<Option<RenderResources>>,
     mut staging_buffer: ResMut<StagingBuffer>,
-    ui_resources: Res<UiResources>
+    ui_resources: Res<UiResources>,
+    time: Res<Time>,
 ) {
     let camera = query.single().unwrap();
 
     let resources = resources.get_or_insert_with(|| RenderResources {
         depth_attachment: Image::new_2d(
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-            Format::D32_SFLOAT,
-            ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32),
-        )
-        .unwrap(),
-        ui_depth_attachment: Image::new_2d(
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
             Format::D32_SFLOAT,
             ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32),
         )
@@ -230,16 +224,17 @@ fn render(
         //     })
         //     .dispatch_fullscreen();
 
-        cmd.raster::<RasterUi>() 
-            .bind(RasterUiBindings {
-                verticies: ui_resources.verticies.as_ref(),
-            })
-            .color_attachment(&swapchain_image, Some([0.0, 0.0, 0.0, 1.0]))
-            .depth_attachment(&resources.ui_depth_attachment)
-            .backface_culling(false)
-            .wire_frame(true)
-            .index_buffer(&ui_resources.indicies)
-            .draw_fullscreen(RasterVertexDispatch::DrawIndexed { triangle_count: ui_resources.indicies.len() as u32 / 3, instance_count: 1 });
+        for (scissior, offset, triangle_count) in &ui_resources.meshes {
+            cmd.raster::<RasterUi>() 
+                .bind(RasterUiBindings {
+                    verticies: ui_resources.verticies.as_ref(),
+                })
+                .color_attachment(&swapchain_image, None)
+                .backface_culling(false)
+                .wire_frame(false)
+                .index_buffer(&ui_resources.indicies)
+                .draw(RasterVertexDispatch::indexed(*triangle_count, 1, *offset as u32), Ctx::window_width(), Ctx::window_height(), &[*scissior]);
+        }
 
         cmd.present(swapchain_image);
         Ok(())

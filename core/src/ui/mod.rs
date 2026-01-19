@@ -1,4 +1,4 @@
-use ash::vk::{Format, ImageUsageFlags};
+use ash::vk::{self, Format, ImageUsageFlags, Rect2D};
 use bevy_app::{App, PreUpdate, Startup, Update};
 use bevy_ecs::{
     component::Component, event::EventReader, query::With, resource::Resource, system::{Commands, Query, Res, ResMut, Single}
@@ -187,12 +187,22 @@ fn update_ui(mut input: ResMut<Input>, ctx: Res<EguiContext>, mut resources: Res
     if !lava::is_init() {
         return;
     }
+    let mut age = 0;
+    let mut name = "test";
     let full_output = ctx.ctx.run(input.input.clone(), |ctx| {
-        egui::CentralPanel::default().show(&ctx, |ui| {
-            ui.label("Test");
-            if ui.button("Press Me!").clicked() {
-                println!("Hello World!");
-            }
+        egui::CentralPanel::default()
+            .show(&ctx, |ui| {
+                ui.heading(format!("My egui Application {}", resources.meshes.len()));
+                ui.horizontal(|ui| {
+                    ui.label("Your name: ");
+                    ui.text_edit_singleline(&mut name);
+                });
+                ui.add(egui::Slider::new(&mut age, 0..=120).text("age"));
+                if ui.button("Increment").clicked() {
+                    age += 1;
+                }
+                ui.label(format!("Hello '{name}', age {age}"));
+                // ui.image(egui::include_image!("test.png"));
         });
     });
     input.input.events.clear();
@@ -205,20 +215,11 @@ fn update_ui(mut input: ResMut<Input>, ctx: Res<EguiContext>, mut resources: Res
 
     for (f, texture) in &full_output.textures_delta.set {
         let egui::ImageData::Color(image_data) = &texture.image;
-        let image = Image::new_2d(ImageUsageFlags::SAMPLED, Format::R8G8B8A8_SNORM, ImageSize::XY(image_data.size[0] as u32, image_data.size[1] as u32)).unwrap();
+        let image = Image::new_2d(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::TRANSFER_SRC, Format::R8G8B8A8_SRGB, ImageSize::XY(image_data.size[0] as u32, image_data.size[1] as u32)).unwrap();
         staging_buffer.copy_from_slice(image_data.as_raw(), 0).unwrap();
-        Ctx::transfer_queue().execute_command_wait(|cmd| unsafe{
-            let regions = [
-                ash::vk::BufferImageCopy {
-                    buffer_image_height: image_data.size[1] as u32,
-                    buffer_offset: 0,
-                    buffer_row_length: image_data.size[0] as u32,
-                    image_extent: ash::vk::Extent3D { width: image_data.size[0] as u32, height: image_data.size[1] as u32, depth: 1 },
-                    image_offset: ash::vk::Offset3D { x: 0, y: 0, z: 0 },
-                    image_subresource: ash::vk::ImageSubresourceLayers { aspect_mask: ash::vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 1, layer_count: 0 }
-                }
-            ];
-            Ctx::device().cmd_copy_buffer_to_image(*cmd, staging_buffer.handle, image.handle, ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, &regions);
+        Ctx::transfer_queue().execute_command_wait(|cmd| {
+            cmd.copy_buffer_to_image(&staging_buffer, &image);
+            cmd.transition_layout(&image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         }).unwrap();
         resources.texture_map.insert(*f, image);
     }
@@ -233,27 +234,34 @@ fn update_ui(mut input: ResMut<Input>, ctx: Res<EguiContext>, mut resources: Res
     let meshes = clipped_primitives.into_iter().filter_map(|prim| if let Primitive::Mesh(mesh) = prim.primitive {
         num_verticies += mesh.vertices.len();
         num_indicies += mesh.indices.len();        
-        Some(mesh)
+        Some((mesh, prim.clip_rect))
     }else {
         None
     }).collect::<Vec<_>>();
 
     resources.verticies.clear();
     resources.indicies.clear();
-    resources.verticies.assert_size(num_verticies as u64 * size_of::<egui::epaint::Vertex>() as u64).unwrap();
+    resources.meshes.clear();
+    resources.verticies.assert_size(num_verticies as u64 * size_of::<UIVertex>() as u64).unwrap();
     resources.indicies.assert_size(num_verticies as u64 * size_of::<u32>() as u64).unwrap();
-    for (i, mesh) in meshes.iter().enumerate() {
+    for (mesh, rect) in meshes.iter() {
         let vertex_offset = resources.verticies.len() as u32;
+        let index_offset = resources.indicies.len() as u32;
+        let triangle_count = mesh.indices.len() as u32 / 3;
         let texture_index = resources.texture_map.get(&mesh.texture_id).unwrap().bindless_handle.unwrap();
         let indicies = mesh.indices.iter().map(|i| i+vertex_offset).collect::<Vec<_>>();
         let verticies = mesh.vertices.iter().map(|v| UIVertex {
-            pos_and_uv: glam::Vec4::new(-1.0 + (v.pos.x / Ctx::window_width().unwrap() as f32)*2.0, -1.0 + (v.pos.y / Ctx::window_height().unwrap() as f32)*2.0, v.uv.x, v.uv.y),
+            pos_and_uv: glam::Vec4::new(-1.0 + (v.pos.x / Ctx::window_width() as f32)*2.0, -1.0 + (v.pos.y / Ctx::window_height() as f32)*2.0, v.uv.x, v.uv.y),
             color: Vec4::new(v.color.r() as f32 / 255.0, v.color.g() as f32 / 255.0, v.color.b() as f32 / 255.0, v.color.a() as f32 / 255.0),
-            texture_index,
+            pad: UVec2::ZERO,
+            texture_index: UVec2::new(texture_index.descriptor_set, texture_index.descriptor_index),
         }).collect::<Vec<_>>();
-        
         resources.verticies.push(&verticies);
         resources.indicies.push(&indicies);
+        resources.meshes.push((Rect2D{
+            offset: vk::Offset2D { x: rect.min.x as i32, y: rect.min.y as i32 },
+            extent: vk::Extent2D { width: (rect.max.x - rect.min.x) as u32, height: (rect.max.y - rect.min.y) as u32 },
+        }, index_offset, triangle_count));
     }
 }
 
@@ -262,6 +270,7 @@ fn init(mut commands: Commands) {
         indicies: StorageBuffer::new(BufferUsageFlags::INDEX).unwrap(),
         verticies: StorageBuffer::default(),
         texture_map: HashMap::new(),
+        meshes: vec![]
     });
 }
 
@@ -270,6 +279,7 @@ pub struct UiResources {
     pub verticies: StorageBuffer<bindings::UIVertex, CpuBuffer>,
     pub indicies: StorageBuffer<u32, CpuBuffer>,
     pub texture_map: HashMap<TextureId, Image>,
+    pub meshes: Vec<(Rect2D, u32, u32)>,
 }
 
 #[allow(non_snake_case)]

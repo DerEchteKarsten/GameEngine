@@ -5,14 +5,15 @@
 struct VSOutput {
     float4 position : SV_Position;
     float4 color;
-    nointerpolation Image2D<float> texture;
     float2 uv;
+    nointerpolation uint2 texture;
 };
 
 struct UIVertex {
     float4 pos_and_uv;
     float4 color;
-    Image2D<float4> texture_index;
+    uint2 texture_index;
+    uint2 pad;
 }
 
 struct RasterMeshUiBindings {
@@ -27,10 +28,10 @@ VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_Verte
     
     let vertex = b.verticies.val[vertex_index];
     VSOutput output;
-    output.position = float4(vertex.pos_and_uv.xy, 1.0, 1.0);
-    var rng = RandomSamplerState(uint2(4, 23), vertex_index);
-    output.color = float4(rng.uniform_float(), rng.uniform_float(), rng.uniform_float(), 1.0);
-    output.uv = vertex.pos_and_uv.zw; 
+    output.position = float4(vertex.pos_and_uv.xy, 0.5, 1.0);
+    output.color = vertex.color;
+    output.uv = vertex.pos_and_uv.zw;
+    output.texture = vertex.texture_index;
     return output;
 }
 
@@ -41,7 +42,8 @@ struct PSOutput {
 [shader("fragment")]
 PSOutput fragment(in VSOutput input)
 {
+    Image<Texture2D<float4>> texture = { input.texture.x, input.texture.y };
     PSOutput output;
-    output.color = input.color * input.texture.Sample(input.uv);
+    output.color = texture.Sample(input.uv) * input.color;
     return output;
 }
