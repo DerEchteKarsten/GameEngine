@@ -1,12 +1,13 @@
 use std::ops::{Deref, DerefMut};
 
-use bevy_asset::{Assets, Handle};
-use bevy_ecs::prelude::*;
+use bevy::prelude::*;
+
 use glam::Mat4;
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
 use lava::vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, StorageBuffer};
 
 use crate::bindings::{Aabb, BvhNode, CullData, Meshlet, Vertex};
+use crate::ui::UiContext;
 use crate::{
     assets::{Mesh, material::Material},
     components::transform::Transform,
@@ -97,6 +98,7 @@ pub fn load_assets(
     mut world: ResMut<RenderWorld>,
     mut staging_buffer: ResMut<StagingBuffer>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut ui: NonSendMut<UiContext>,
 ) {
     if world.upload_queue.is_empty() {
         return;
@@ -165,8 +167,6 @@ pub fn load_assets(
                     world.max_bvh_depth = world.max_bvh_depth.max(m.bvh_depth);
                 }
                 mesh.uploaded = true;
-                log::debug!("Uploaded");
-                // log::debug!("{:#?}", mesh);
             }
             let instance_offset = world.instance_transforms.len() + transforms.len();
             let children = mesh
@@ -221,6 +221,13 @@ pub fn load_assets(
     world.meshlets.push(&mut staging_buffer, &meshlets);
     world.cull_data.push(&mut staging_buffer, &cull_data);
     world.bvh_nodes.push(&mut staging_buffer, &bvh);
+    if let Some(ui) = ui.ui() {
+        if let Some(wi) = ui.window("Uploading")
+            .begin() {
+            ui.text("Uploading");
+            wi.end();
+        }
+    }
 }
 
 #[derive(Resource)]

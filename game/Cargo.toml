@@ -6,13 +6,16 @@ edition = "2024"
 [dependencies]
 core = { version = "0.1.0", path = "../core" }
 glam = "0.30.5"
-bevy_a11y = "0.16.0"
-bevy_app = "0.16.0"
-bevy_asset = { version = "0.16.0", features = ["asset_processor", "embedded_watcher", "file_watcher", "multi_threaded"] }
-bevy_ecs = {version = "0.16.0", features = ["trace", "multi_threaded"]}
-bevy_input = "0.16.0"
-bevy_log = "0.16.0"
-bevy_reflect = "0.16.0"
-bevy_time = "0.16.0"
-bevy_window = "0.16.0"
-bevy_winit = "0.16.0"
+bevy = {version = "0.18.0", default-features = false, features = [
+    "trace", 
+    "detailed_trace",
+    "debug",
+    "wayland",
+    "asset_processor", 
+    "embedded_watcher", 
+    "file_watcher", 
+    "multi_threaded",
+    "trace_tracy",
+    "bevy_asset",
+    "bevy_window",
+]}

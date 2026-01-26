@@ -1,12 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Ok, Result};
-use bevy_app::Plugin;
-use bevy_asset::{
-    AssetApp, AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext,
-    processor::LoadTransformAndSave, saver::AssetSaver, transformer::AssetTransformer,
-};
-use bevy_reflect::TypePath;
+use bevy::{asset::{AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext, processor::LoadTransformAndSave, saver::AssetSaver, transformer::AssetTransformer}, prelude::*};
 use bytemuck::Pod;
 use glam::{Mat4, Vec3};
 
@@ -20,7 +15,7 @@ pub mod mesh;
 
 pub struct MeshAssets;
 impl Plugin for MeshAssets {
-    fn build(&self, app: &mut bevy_app::App) {
+    fn build(&self, app: &mut App) {
         app
             .register_asset_processor::<LoadTransformAndSave<GltfMeshLoader, MeshTransformer, MeshSaver>>(
                 LoadTransformAndSave::new(MeshTransformer, MeshSaver),
@@ -33,7 +28,7 @@ impl Plugin for MeshAssets {
     }
 }
 
-#[derive(bevy_asset::Asset, TypePath)]
+#[derive(Asset, TypePath)]
 pub struct Mesh {
     pub uploaded: bool,
     pub meshes: Vec<MeshletMesh>,
@@ -43,13 +38,14 @@ pub struct Mesh {
     pub instance_mesh: Vec<u32>,
 }
 
-#[derive(bevy_asset::Asset, TypePath)]
+#[derive(Asset, TypePath)]
 pub struct GltfMesh {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
     _images: Vec<gltf::image::Data>,
 }
 
+#[derive(TypePath)]
 pub struct GltfMeshLoader;
 impl AssetLoader for GltfMeshLoader {
     type Asset = GltfMesh;
@@ -58,9 +54,9 @@ impl AssetLoader for GltfMeshLoader {
 
     async fn load(
         &self,
-        reader: &mut dyn bevy_asset::io::Reader,
+        reader: &mut dyn bevy::asset::io::Reader,
         _settings: &(),
-        _load_context: &mut bevy_asset::LoadContext<'_>,
+        _load_context: &mut bevy::asset::LoadContext<'_>,
     ) -> gltf::Result<Self::Asset> {
         let mut file_buf = Vec::new();
         reader.read_to_end(&mut file_buf).await?;
@@ -81,7 +77,7 @@ impl AssetLoader for GltfMeshLoader {
 pub fn typed_to_bytes<T: Sized>(typed: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(typed.as_ptr().cast(), std::mem::size_of_val(typed)) }
 }
-
+#[derive(TypePath)]
 struct MeshTransformer;
 impl AssetTransformer for MeshTransformer {
     type AssetInput = GltfMesh;
@@ -90,10 +86,10 @@ impl AssetTransformer for MeshTransformer {
     type Settings = ();
     async fn transform<'a>(
         &'a self,
-        asset: bevy_asset::transformer::TransformedAsset<Self::AssetInput>,
+        asset: bevy::asset::transformer::TransformedAsset<Self::AssetInput>,
         _settings: &'a Self::Settings,
     ) -> std::result::Result<
-        bevy_asset::transformer::TransformedAsset<Self::AssetOutput>,
+        bevy::asset::transformer::TransformedAsset<Self::AssetOutput>,
         Self::Error,
     > {
         let mut remap = HashMap::new();
@@ -181,20 +177,20 @@ impl AssetTransformer for MeshTransformer {
     }
 }
 
-async fn write_slice<T: Pod>(field: &[T], writer: &mut bevy_asset::io::Writer) -> Result<()> {
+async fn write_slice<T: Pod>(field: &[T], writer: &mut bevy::asset::io::Writer) -> Result<()> {
     writer
         .write_all(&(field.len() as u64).to_le_bytes())
         .await?;
     writer.write_all(bytemuck::cast_slice(field)).await?;
     Ok(())
 }
-async fn read_u64(reader: &mut dyn bevy_asset::io::Reader) -> Result<u64> {
+async fn read_u64(reader: &mut dyn bevy::asset::io::Reader) -> Result<u64> {
     let mut bytes = [0u8; 8];
     reader.read_exact(&mut bytes).await?;
     Ok(u64::from_le_bytes(bytes))
 }
 
-async fn read_slice<T: Pod>(reader: &mut dyn bevy_asset::io::Reader) -> Result<Vec<T>> {
+async fn read_slice<T: Pod>(reader: &mut dyn bevy::asset::io::Reader) -> Result<Vec<T>> {
     let len = read_u64(reader).await? as usize;
 
     let mut data = core::iter::repeat_with(T::zeroed)
@@ -207,6 +203,7 @@ async fn read_slice<T: Pod>(reader: &mut dyn bevy_asset::io::Reader) -> Result<V
     Ok(data)
 }
 
+#[derive(TypePath)]
 struct MeshSaver;
 impl AssetSaver for MeshSaver {
     type Asset = Mesh;
@@ -215,8 +212,8 @@ impl AssetSaver for MeshSaver {
     type OutputLoader = MeshLoader;
     async fn save(
         &self,
-        writer: &mut bevy_asset::io::Writer,
-        asset: bevy_asset::saver::SavedAsset<'_, Self::Asset>,
+        writer: &mut bevy::asset::io::Writer,
+        asset: bevy::asset::saver::SavedAsset<'_, Self::Asset>,
         _settings: &Self::Settings,
     ) -> std::result::Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
         let mesh = asset.get();
@@ -247,6 +244,7 @@ impl AssetSaver for MeshSaver {
     }
 }
 
+#[derive(TypePath)]
 pub struct MeshLoader;
 impl AssetLoader for MeshLoader {
     type Asset = Mesh;
@@ -254,7 +252,7 @@ impl AssetLoader for MeshLoader {
     type Settings = ();
     async fn load(
         &self,
-        reader: &mut dyn bevy_asset::io::Reader,
+        reader: &mut dyn bevy::asset::io::Reader,
         _settings: &Self::Settings,
         _load_context: &mut LoadContext<'_>,
     ) -> std::result::Result<Self::Asset, Self::Error> {

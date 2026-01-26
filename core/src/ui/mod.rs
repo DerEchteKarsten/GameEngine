@@ -1,118 +1,152 @@
 use ash::vk::{self, Format, ImageUsageFlags, Rect2D};
-use bevy_app::{App, PreUpdate, Startup, Update};
-use bevy_ecs::{
-    component::Component, event::EventReader, query::With, resource::Resource, system::{Commands, Query, Res, ResMut, Single}
-};
-use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_input::{
-    keyboard::{Key, KeyCode, KeyboardInput},
-    mouse::{MouseButton, MouseButtonInput, MouseScrollUnit, MouseWheel},
-};
-use bevy_time::Time;
-use bevy_window::{
-    CursorLeft, CursorMoved, PrimaryWindow, Window, WindowEvent, WindowFocused, WindowResized,
-    WindowTheme, WindowThemeChanged,
-};
-use egui::{MouseWheelUnit, PointerButton, Pos2, RawInput, TextureId, epaint::{Primitive, RectShape}};
-use glam::{UVec2, UVec4, Vec4};
+use bevy::{input::{ButtonState, keyboard::KeyboardInput, mouse::{MouseButtonInput, MouseWheel}}, prelude::*, window::WindowEvent};
+use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
+use imgui::{FontSource, Io};
 use lava::{bindless::BindlessHandle, command_buffer::CommandBuffer, state::Ctx, vkobjects::{buffer::{BufferUsageFlags, CpuBuffer, StorageBuffer}, image::{Image, ImageSize}}};
 use std::{
-    collections::HashMap,
-    ops::{Deref, DerefMut}, random::{self, random},
+    collections::HashMap, ops::{Deref, DerefMut}, ptr::NonNull, random::{self, random}, sync::{Arc, Mutex}, time::Instant
 };
 
-use crate::{bindings::{self, Meshlet, UIVertex}, world::StagingBuffer};
+use crate::{bindings::{self, UIVertex}, render, world::StagingBuffer};
 
-#[derive(Resource)]
-pub struct EguiContext {
-    ctx: egui::Context,
+pub struct UiContext {
+    ctx: imgui::Context,
+    ui: Option<NonNull<imgui::Ui>>
 }
 
-#[derive(Default, Resource)]
-pub struct Input {
-    input: RawInput,
-}
-
-#[inline(always)]
-pub fn bevy_to_egui_key(key: &KeyCode, str: Option<&str>) -> Option<egui::Key> {
-    if let Some(str) = str {
-        return egui::Key::from_name(str);
+impl UiContext {
+    pub fn ui(&mut self) -> Option<&mut imgui::Ui> {
+        unsafe { self.ui.map(|mut e| e.as_mut()) }
     }
-    let key = match key {
-        KeyCode::Unidentified(_) => return None,
+}
 
-        KeyCode::Enter => egui::Key::Enter,
-        KeyCode::Tab => egui::Key::Tab,
-        KeyCode::Space => egui::Key::Space,
-        KeyCode::ArrowDown => egui::Key::ArrowDown,
-        KeyCode::ArrowLeft => egui::Key::ArrowLeft,
-        KeyCode::ArrowRight => egui::Key::ArrowRight,
-        KeyCode::ArrowUp => egui::Key::ArrowUp,
-        KeyCode::End => egui::Key::End,
-        KeyCode::Home => egui::Key::Home,
-        KeyCode::PageDown => egui::Key::PageDown,
-        KeyCode::PageUp => egui::Key::PageUp,
-        KeyCode::Backspace => egui::Key::Backspace,
-        KeyCode::Delete => egui::Key::Delete,
-        KeyCode::Insert => egui::Key::Insert,
-        KeyCode::Escape => egui::Key::Escape,
-        KeyCode::F1 => egui::Key::F1,
-        KeyCode::F2 => egui::Key::F2,
-        KeyCode::F3 => egui::Key::F3,
-        KeyCode::F4 => egui::Key::F4,
-        KeyCode::F5 => egui::Key::F5,
-        KeyCode::F6 => egui::Key::F6,
-        KeyCode::F7 => egui::Key::F7,
-        KeyCode::F8 => egui::Key::F8,
-        KeyCode::F9 => egui::Key::F9,
-        KeyCode::F10 => egui::Key::F10,
-        KeyCode::F11 => egui::Key::F11,
-        KeyCode::F12 => egui::Key::F12,
-        KeyCode::F13 => egui::Key::F13,
-        KeyCode::F14 => egui::Key::F14,
-        KeyCode::F15 => egui::Key::F15,
-        KeyCode::F16 => egui::Key::F16,
-        KeyCode::F17 => egui::Key::F17,
-        KeyCode::F18 => egui::Key::F18,
-        KeyCode::F19 => egui::Key::F19,
-        KeyCode::F20 => egui::Key::F20,
-
-        _ => return None,
+fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
+    let igkey = match key {
+        KeyCode::KeyA => imgui::Key::A,
+        KeyCode::KeyB => imgui::Key::B,
+        KeyCode::KeyC => imgui::Key::C,
+        KeyCode::KeyD => imgui::Key::D,
+        KeyCode::KeyE => imgui::Key::E,
+        KeyCode::KeyF => imgui::Key::F,
+        KeyCode::KeyG => imgui::Key::G,
+        KeyCode::KeyH => imgui::Key::H,
+        KeyCode::KeyI => imgui::Key::I,
+        KeyCode::KeyJ => imgui::Key::J,
+        KeyCode::KeyK => imgui::Key::K,
+        KeyCode::KeyL => imgui::Key::L,
+        KeyCode::KeyM => imgui::Key::M,
+        KeyCode::KeyN => imgui::Key::N,
+        KeyCode::KeyO => imgui::Key::O,
+        KeyCode::KeyP => imgui::Key::P,
+        KeyCode::KeyQ => imgui::Key::Q,
+        KeyCode::KeyR => imgui::Key::R,
+        KeyCode::KeyS => imgui::Key::S,
+        KeyCode::KeyT => imgui::Key::T,
+        KeyCode::KeyU => imgui::Key::U,
+        KeyCode::KeyV => imgui::Key::V,
+        KeyCode::KeyW => imgui::Key::W,
+        KeyCode::KeyX => imgui::Key::X,
+        KeyCode::KeyY => imgui::Key::Y,
+        KeyCode::KeyZ => imgui::Key::Z,
+        KeyCode::Digit1 => imgui::Key::Keypad1,
+        KeyCode::Digit2 => imgui::Key::Keypad2,
+        KeyCode::Digit3 => imgui::Key::Keypad3,
+        KeyCode::Digit4 => imgui::Key::Keypad4,
+        KeyCode::Digit5 => imgui::Key::Keypad5,
+        KeyCode::Digit6 => imgui::Key::Keypad6,
+        KeyCode::Digit7 => imgui::Key::Keypad7,
+        KeyCode::Digit8 => imgui::Key::Keypad8,
+        KeyCode::Digit9 => imgui::Key::Keypad9,
+        KeyCode::Digit0 => imgui::Key::Keypad0,
+        KeyCode::Enter => imgui::Key::Enter, // TODO: Should this be treated as alias?
+        KeyCode::Escape => imgui::Key::Escape,
+        KeyCode::Backspace => imgui::Key::Backspace,
+        KeyCode::Tab => imgui::Key::Tab,
+        KeyCode::Space => imgui::Key::Space,
+        KeyCode::Minus => imgui::Key::Minus,
+        KeyCode::Equal => imgui::Key::Equal,
+        KeyCode::BracketLeft => imgui::Key::LeftBracket,
+        KeyCode::BracketRight => imgui::Key::RightBracket,
+        KeyCode::Backslash => imgui::Key::Backslash,
+        KeyCode::Semicolon => imgui::Key::Semicolon,
+        KeyCode::Comma => imgui::Key::Comma,
+        KeyCode::Period => imgui::Key::Period,
+        KeyCode::Slash => imgui::Key::Slash,
+        KeyCode::CapsLock => imgui::Key::CapsLock,
+        KeyCode::F1 => imgui::Key::F1,
+        KeyCode::F2 => imgui::Key::F2,
+        KeyCode::F3 => imgui::Key::F3,
+        KeyCode::F4 => imgui::Key::F4,
+        KeyCode::F5 => imgui::Key::F5,
+        KeyCode::F6 => imgui::Key::F6,
+        KeyCode::F7 => imgui::Key::F7,
+        KeyCode::F8 => imgui::Key::F8,
+        KeyCode::F9 => imgui::Key::F9,
+        KeyCode::F10 => imgui::Key::F10,
+        KeyCode::F11 => imgui::Key::F11,
+        KeyCode::F12 => imgui::Key::F12,
+        KeyCode::PrintScreen => imgui::Key::PrintScreen,
+        KeyCode::ScrollLock => imgui::Key::ScrollLock,
+        KeyCode::Pause => imgui::Key::Pause,
+        KeyCode::Insert => imgui::Key::Insert,
+        KeyCode::Home => imgui::Key::Home,
+        KeyCode::PageUp => imgui::Key::PageUp,
+        KeyCode::Delete => imgui::Key::Delete,
+        KeyCode::End => imgui::Key::End,
+        KeyCode::PageDown => imgui::Key::PageDown,
+        KeyCode::ArrowRight => imgui::Key::RightArrow,
+        KeyCode::ArrowLeft => imgui::Key::LeftArrow,
+        KeyCode::ArrowDown => imgui::Key::DownArrow,
+        KeyCode::ArrowUp => imgui::Key::UpArrow,
+        KeyCode::NumpadDivide => imgui::Key::KeypadDivide,
+        KeyCode::NumpadMultiply => imgui::Key::KeypadMultiply,
+        KeyCode::Minus => imgui::Key::KeypadSubtract,
+        KeyCode::NumpadAdd => imgui::Key::KeypadAdd,
+        KeyCode::NumpadEnter => imgui::Key::KeypadEnter,
+        KeyCode::Numpad1 => imgui::Key::Keypad1,
+        KeyCode::Numpad2 => imgui::Key::Keypad2,
+        KeyCode::Numpad3 => imgui::Key::Keypad3,
+        KeyCode::Numpad4 => imgui::Key::Keypad4,
+        KeyCode::Numpad5 => imgui::Key::Keypad5,
+        KeyCode::Numpad6 => imgui::Key::Keypad6,
+        KeyCode::Numpad7 => imgui::Key::Keypad7,
+        KeyCode::Numpad8 => imgui::Key::Keypad8,
+        KeyCode::Numpad9 => imgui::Key::Keypad9,
+        KeyCode::Numpad0 => imgui::Key::Keypad0,
+        KeyCode::NumpadDecimal => imgui::Key::KeypadDecimal,
+        KeyCode::ContextMenu => imgui::Key::Menu,
+        KeyCode::NumpadEqual => imgui::Key::KeypadEqual,
+        KeyCode::ControlLeft => imgui::Key::LeftCtrl,
+        KeyCode::ShiftLeft => imgui::Key::LeftShift,
+        KeyCode::AltLeft => imgui::Key::LeftAlt,
+        KeyCode::ControlRight => imgui::Key::RightCtrl,
+        KeyCode::ShiftRight => imgui::Key::RightShift,
+        KeyCode::AltRight => imgui::Key::RightAlt,
+        KeyCode::SuperRight => imgui::Key::RightSuper,
+        KeyCode::SuperLeft => imgui::Key::LeftSuper,
+        _ => {
+            log::error!("Unknown Key");
+            // Ignore unknown keys
+            return;
+        }
     };
-    Some(key)
+    io.add_key_event(igkey, pressed);
 }
 
-#[inline(always)]
-fn egui_mouse_button(button: &MouseButton) -> Option<egui::PointerButton> {
-    match button {
-        MouseButton::Left => Some(PointerButton::Primary),
-        MouseButton::Right => Some(PointerButton::Secondary),
-        MouseButton::Middle => Some(PointerButton::Middle),
-        MouseButton::Forward => Some(PointerButton::Extra1),
-        MouseButton::Back => Some(PointerButton::Extra2),
-        MouseButton::Other(_) => None,
-    }
-}
 
 fn read_input(
-    mut events: EventReader<WindowEvent>,
-    mut input: ResMut<Input>,
+    mut events: MessageReader<WindowEvent>,
+    mut resources: ResMut<UiResources>,
+    mut ctx: NonSendMut<UiContext>,
+    mut staging_buffer: ResMut<StagingBuffer>,
     time: Res<Time>,
-    windows: Single<&Window, With<PrimaryWindow>>,
 ) {
-    input.input.time = Some(time.elapsed_secs_f64());
+    let io = ctx.ctx.io_mut();
+    io.update_delta_time(time.delta());
+
     for event in events.read() {
         match event {
-            WindowEvent::WindowFocused(WindowFocused { focused, .. }) => {
-                input.input.focused = *focused
-            }
-            WindowEvent::WindowThemeChanged(WindowThemeChanged { theme, .. }) => {
-                input.input.system_theme = Some(match theme {
-                    WindowTheme::Dark => egui::Theme::Dark,
-                    WindowTheme::Light => egui::Theme::Light,
-                })
-            }
             WindowEvent::KeyboardInput(KeyboardInput {
                 key_code,
                 logical_key,
@@ -121,147 +155,77 @@ fn read_input(
                 text,
                 ..
             }) => {
-                if *key_code == KeyCode::ControlLeft || *key_code == KeyCode::ControlRight {
-                    input.input.modifiers.ctrl = true;
-                    input.input.modifiers.command = true;
-                    input.input.modifiers.mac_cmd = true;
-                } else if *key_code == KeyCode::AltLeft || *key_code == KeyCode::AltRight {
-                    input.input.modifiers.alt = true;
+                if let Some(char) = text && *state == ButtonState::Pressed {
+                    let char = char.as_bytes()[0].into();
+                    io.add_input_character(char);
                 }
-                if let Some(key) = bevy_to_egui_key(key_code, text.as_ref().map(|str| str.as_str()))
-                {
-                    let modifiers = input.input.modifiers;
-                    input.input.events.push(egui::Event::Key {
-                        key,
-                        physical_key: None,
-                        pressed: state.is_pressed(),
-                        repeat: *repeat,
-                        modifiers,
-                    });
-                }
-            }
+                handle_key(io, key_code, *state == ButtonState::Pressed)
+            },
             WindowEvent::CursorMoved(CursorMoved {
                 position, delta, ..
-            }) => input
-                .input
-                .events
-                .push(egui::Event::PointerMoved(egui::Pos2 {
-                    x: position.x,
-                    y: position.y,
-                })),
-            WindowEvent::MouseButtonInput(MouseButtonInput { button, state, .. }) => {
-                if let Some(button) = egui_mouse_button(&button) {
-                    let pos = windows
-                        .cursor_position()
-                        .map(|v| Pos2::new(v.x, v.y))
-                        .unwrap_or(Pos2::new(f32::MAX, f32::MAX));
-                    let modifiers = input.input.modifiers;
-                    input.input.events.push(egui::Event::PointerButton {
-                        button,
-                        modifiers: modifiers,
-                        pos,
-                        pressed: state.is_pressed(),
-                    });
-                }
-            }
-            WindowEvent::CursorLeft(CursorLeft { .. }) => {
-                input.input.events.push(egui::Event::PointerGone)
-            }
+            }) => io.add_mouse_pos_event([position.x, position.y]),
+            WindowEvent::MouseButtonInput(MouseButtonInput { button, state, .. }) => io.add_mouse_button_event(match button {
+                MouseButton::Forward => imgui::MouseButton::Extra1,
+                MouseButton::Back => imgui::MouseButton::Extra2,
+                MouseButton::Left => imgui::MouseButton::Left,
+                MouseButton::Right => imgui::MouseButton::Right,
+                MouseButton::Middle => imgui::MouseButton::Middle,
+                _=>imgui::MouseButton::Extra1
+            }, *state == ButtonState::Pressed),
             WindowEvent::MouseWheel(MouseWheel { unit, x, y, .. }) => {
-                let modifiers = input.input.modifiers;
-                input.input.events.push(egui::Event::MouseWheel {
-                    unit: match unit {
-                        MouseScrollUnit::Line => MouseWheelUnit::Line,
-                        MouseScrollUnit::Pixel => MouseWheelUnit::Point,
-                    },
-                    delta: egui::Vec2 { x: *x, y: *y },
-                    modifiers,
-                })
+                io.add_mouse_wheel_event([*x,*y]);
             }
             _ => {}
         }
     }
-}
-
-fn update_ui(mut input: ResMut<Input>, ctx: Res<EguiContext>, mut resources: ResMut<UiResources>, mut staging_buffer: ResMut<StagingBuffer>) {
+    io.font_global_scale = 1.0;
+    io.display_size = [Ctx::window_width() as f32, Ctx::window_height() as f32];
     if !lava::is_init() {
         return;
     }
-    let mut age = 0;
-    let mut name = "test";
-    let full_output = ctx.ctx.run(input.input.clone(), |ctx| {
-        egui::CentralPanel::default()
-            .show(&ctx, |ui| {
-                ui.heading(format!("My egui Application {}", resources.meshes.len()));
-                ui.horizontal(|ui| {
-                    ui.label("Your name: ");
-                    ui.text_edit_singleline(&mut name);
-                });
-                ui.add(egui::Slider::new(&mut age, 0..=120).text("age"));
-                if ui.button("Increment").clicked() {
-                    age += 1;
-                }
-                ui.label(format!("Hello '{name}', age {age}"));
-                // ui.image(egui::include_image!("test.png"));
-        });
-    });
-    input.input.events.clear();
-
-    for f in &full_output.textures_delta.free {
-        if let Some(image) = resources.texture_map.remove(f) {
-            image.destroy();
-        }
-    }
-
-    for (f, texture) in &full_output.textures_delta.set {
-        let egui::ImageData::Color(image_data) = &texture.image;
-        let image = Image::new_2d(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::TRANSFER_SRC, Format::R8G8B8A8_SRGB, ImageSize::XY(image_data.size[0] as u32, image_data.size[1] as u32)).unwrap();
-        staging_buffer.copy_from_slice(image_data.as_raw(), 0).unwrap();
+    if resources.font_atlas.is_none() {
+        let atlas = ctx.ctx.fonts().build_alpha8_texture();
+        let image = Image::new_2d(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::TRANSFER_SRC, Format::R8_UNORM, ImageSize::XY(atlas.width, atlas.height)).unwrap();
+        staging_buffer.copy_from_slice(atlas.data, 0).unwrap();
         Ctx::transfer_queue().execute_command_wait(|cmd| {
             cmd.copy_buffer_to_image(&staging_buffer, &image);
             cmd.transition_layout(&image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         }).unwrap();
-        resources.texture_map.insert(*f, image);
+        resources.font_atlas = Some(image);
     }
 
-    let clipped_primitives = ctx
-        .ctx
-        .tessellate(full_output.shapes, full_output.pixels_per_point);
+    ctx.ui = Some(unsafe { NonNull::new_unchecked(ctx.ctx.new_frame()) });
+}
 
-    let mut num_verticies = 0;
-    let mut num_indicies = 0;
-
-    let meshes = clipped_primitives.into_iter().filter_map(|prim| if let Primitive::Mesh(mesh) = prim.primitive {
-        num_verticies += mesh.vertices.len();
-        num_indicies += mesh.indices.len();        
-        Some((mesh, prim.clip_rect))
-    }else {
-        None
-    }).collect::<Vec<_>>();
-
+fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>) {
+    if !lava::is_init() {
+        return;
+    }
+    if ctx.ui.is_none() {
+        return;
+    }
+    ctx.ui = None;
+    let draw_data = ctx.ctx.render();
+    
     resources.verticies.clear();
     resources.indicies.clear();
-    resources.meshes.clear();
-    resources.verticies.assert_size(num_verticies as u64 * size_of::<UIVertex>() as u64).unwrap();
-    resources.indicies.assert_size(num_verticies as u64 * size_of::<u32>() as u64).unwrap();
-    for (mesh, rect) in meshes.iter() {
+    resources.verticies.assert_size(draw_data.total_vtx_count as u64 * size_of::<UIVertex>() as u64).unwrap();
+    resources.indicies.assert_size(draw_data.total_idx_count as u64 * size_of::<u32>() as u64).unwrap();
+    let transform = Vec2::from(draw_data.display_pos);
+    let scale = Vec2::from(draw_data.display_size);
+    if draw_data.draw_lists_count() == 0 {
+        return;
+    }
+    for list in draw_data.draw_lists() {
         let vertex_offset = resources.verticies.len() as u32;
-        let index_offset = resources.indicies.len() as u32;
-        let triangle_count = mesh.indices.len() as u32 / 3;
-        let texture_index = resources.texture_map.get(&mesh.texture_id).unwrap().bindless_handle.unwrap();
-        let indicies = mesh.indices.iter().map(|i| i+vertex_offset).collect::<Vec<_>>();
-        let verticies = mesh.vertices.iter().map(|v| UIVertex {
-            pos_and_uv: glam::Vec4::new(-1.0 + (v.pos.x / Ctx::window_width() as f32)*2.0, -1.0 + (v.pos.y / Ctx::window_height() as f32)*2.0, v.uv.x, v.uv.y),
-            color: Vec4::new(v.color.r() as f32 / 255.0, v.color.g() as f32 / 255.0, v.color.b() as f32 / 255.0, v.color.a() as f32 / 255.0),
-            pad: UVec2::ZERO,
-            texture_index: UVec2::new(texture_index.descriptor_set, texture_index.descriptor_index),
+        let indicies = list.idx_buffer().iter().map(|i| *i as u32 +vertex_offset).collect::<Vec<_>>();
+        let verticies = list.vtx_buffer().iter().map(|v| UIVertex {
+            color: Vec4::new(v.col[0]as f32 / 255.0, v.col[1]as f32 / 255.0, v.col[2]as f32 / 255.0, v.col[3]as f32 / 255.0 ),
+            pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0 - Vec2::splat(1.0)),
+            uv: Vec2::new(v.uv[0], v.uv[1])
         }).collect::<Vec<_>>();
         resources.verticies.push(&verticies);
         resources.indicies.push(&indicies);
-        resources.meshes.push((Rect2D{
-            offset: vk::Offset2D { x: rect.min.x as i32, y: rect.min.y as i32 },
-            extent: vk::Extent2D { width: (rect.max.x - rect.min.x) as u32, height: (rect.max.y - rect.min.y) as u32 },
-        }, index_offset, triangle_count));
     }
 }
 
@@ -269,8 +233,7 @@ fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
         indicies: StorageBuffer::new(BufferUsageFlags::INDEX).unwrap(),
         verticies: StorageBuffer::default(),
-        texture_map: HashMap::new(),
-        meshes: vec![]
+        font_atlas: None,
     });
 }
 
@@ -278,16 +241,21 @@ fn init(mut commands: Commands) {
 pub struct UiResources {
     pub verticies: StorageBuffer<bindings::UIVertex, CpuBuffer>,
     pub indicies: StorageBuffer<u32, CpuBuffer>,
-    pub texture_map: HashMap<TextureId, Image>,
-    pub meshes: Vec<(Rect2D, u32, u32)>,
+    pub font_atlas: Option<Image>,
 }
 
 #[allow(non_snake_case)]
 pub fn UiPlugin(app: &mut App) {
-    app.add_systems(PreUpdate, (read_input, update_ui.after(read_input).after(init)))
-        .add_systems(Startup, init)
-        .insert_resource(EguiContext {
-            ctx: egui::Context::default(),
-        })
-        .init_resource::<Input>();
+    app.add_systems(PreUpdate, read_input)
+        .add_systems(Startup, (init.after(crate::init)))
+        .add_systems(PostUpdate, update_ui.before(render))
+        .insert_non_send_resource({
+            let mut ctx = imgui::Context::create();
+            ctx.fonts().add_font(&[
+                FontSource::DefaultFontData { config: None }
+            ]);
+        UiContext {
+            ctx,
+            ui: None,
+        }});
 }

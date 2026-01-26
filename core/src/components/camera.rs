@@ -1,16 +1,7 @@
 use std::f32::consts::PI;
-
-use bevy_app::{App, PreUpdate, Update};
-use bevy_ecs::resource::Resource;
-use bevy_input::{
-    ButtonInput, ButtonState,
-    keyboard::KeyCode,
-    mouse::{MouseButton, MouseButtonInput, MouseMotion},
-};
-use bevy_time::Time;
 use glam::{Mat4, Vec3, vec3};
 
-use bevy_ecs::prelude::*;
+use bevy::{input::{ButtonState, mouse::{MouseButtonInput, MouseMotion}}, prelude::*};
 use lava::state::Ctx;
 
 const MOVE_SPEED: f32 = 1.0;
@@ -85,7 +76,7 @@ impl Default for Controls {
 
 pub fn update_mouse_buttons(
     mut controls: ResMut<Controls>,
-    mut mousebtn_evr: EventReader<MouseButtonInput>,
+    mut mousebtn_evr: MessageReader<MouseButtonInput>,
 ) {
     for ev in mousebtn_evr.read() {
         if ev.button == MouseButton::Right && ev.state == ButtonState::Pressed {
@@ -100,7 +91,7 @@ pub fn update_mouse_buttons(
         }
     }
 }
-pub fn update_mouse_move(mut controls: ResMut<Controls>, mut evr_motion: EventReader<MouseMotion>) {
+pub fn update_mouse_move(mut controls: ResMut<Controls>, mut evr_motion: MessageReader<MouseMotion>) {
     if !controls.look_around {
         return;
     }

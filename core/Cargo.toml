@@ -6,16 +6,22 @@ edition = "2024"
 
 [dependencies]
 glam = { version = "0.30.5", features = ["bytemuck"] }
-bevy_a11y = "0.16.0"
-bevy_app = "0.16.0"
-bevy_asset = { version = "0.16.0", features = ["asset_processor", "embedded_watcher", "file_watcher", "multi_threaded"] }
-bevy_ecs = {version = "0.16.0", features = ["trace", "multi_threaded"]}
-bevy_input = "0.16.0"
-bevy_log = "0.16.0"
-bevy_reflect = "0.16.0"
-bevy_time = "0.16.0"
-bevy_window = "0.16.0"
-bevy_winit = {version = "0.16.0", features = ["wayland"]}
+bevy = {version = "0.18.0", default-features = false, features = [
+    "trace", 
+    "debug",
+    "detailed_trace",
+    "wayland",
+    "asset_processor", 
+    "embedded_watcher", 
+    "file_watcher", 
+    "multi_threaded",
+    "trace_tracy",
+    "trace_tracy_memory",
+    "bevy_winit",
+    "bevy_asset",
+    "bevy_window",
+]}
+
 lava = { version = "0.1.0", path = "../lava" }
 ash = "0.38.0"
 log = "0.4.28"
@@ -27,14 +33,17 @@ smallvec = "1.15.1"
 meshopt = "0.6.1"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 bytemuck_derive = "1.10.2"
-bevy_tasks = "0.16.0"
 itertools = "0.14.0"
 metis = "0.2.2"
-bevy_math = "0.17.0"
-egui = {version = "0.33.3", features = ["bytemuck"]}
 rand = "0.9.2"
+imgui = "0.12.0"
+
 
 [build-dependencies]
 walkdir = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+
+[profile.release]
+debug = true

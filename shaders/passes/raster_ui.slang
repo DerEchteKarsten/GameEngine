@@ -6,18 +6,17 @@ struct VSOutput {
     float4 position : SV_Position;
     float4 color;
     float2 uv;
-    nointerpolation uint2 texture;
 };
 
 struct UIVertex {
-    float4 pos_and_uv;
+    float2 pos;
+    float2 uv;
     float4 color;
-    uint2 texture_index;
-    uint2 pad;
 }
 
 struct RasterMeshUiBindings {
     Buf<UIVertex> verticies;
+    Image2D<float> font_atlas;
 }
 
 [[vk::push_constant]] RasterMeshUiBindings b;
@@ -28,10 +27,9 @@ VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_Verte
     
     let vertex = b.verticies.val[vertex_index];
     VSOutput output;
-    output.position = float4(vertex.pos_and_uv.xy, 0.5, 1.0);
+    output.position = float4(vertex.pos.xy, 0.5, 1.0);
     output.color = vertex.color;
-    output.uv = vertex.pos_and_uv.zw;
-    output.texture = vertex.texture_index;
+    output.uv = vertex.uv.xy;
     return output;
 }
 
@@ -42,8 +40,7 @@ struct PSOutput {
 [shader("fragment")]
 PSOutput fragment(in VSOutput input)
 {
-    Image<Texture2D<float4>> texture = { input.texture.x, input.texture.y };
     PSOutput output;
-    output.color = texture.Sample(input.uv) * input.color;
+    output.color = input.color * b.font_atlas.Sample(input.uv);
     return output;
 }

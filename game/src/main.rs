@@ -8,15 +8,7 @@ use core::{
     world::Instance,
 };
 
-use bevy_app::{App, Startup, Update};
-use bevy_asset::{AssetServer, Handle};
-use bevy_ecs::{
-    component::Component,
-    hierarchy::Children,
-    query::With,
-    system::{Commands, Query, Res},
-};
-use bevy_time::Time;
+use bevy::prelude::*;
 use glam::{Vec3, vec3};
 
 #[derive(Component)]

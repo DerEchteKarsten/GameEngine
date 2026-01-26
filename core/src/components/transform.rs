@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use bevy_ecs::component::Component;
+use bevy::prelude::*;
 use glam::*;
 
 #[derive(Component, Clone)]
