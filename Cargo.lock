@@ -727,7 +727,6 @@ dependencies = [
  "tracing-subscriber",
  "tracing-tracy",
  "tracing-wasm",
- "tracy-client",
 ]
 
 [[package]]
@@ -1433,6 +1432,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "tiff",
+ "tracy-client",
  "walkdir",
 ]
 

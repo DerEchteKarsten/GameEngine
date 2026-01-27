@@ -1,0 +1,587 @@
+{
+    "parameters": [
+        {
+            "name": "SamplerHeap",
+            "binding": {"kind": "descriptorTableSlot", "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "samplerState"
+                }
+            }
+        },
+        {
+            "name": "TextureHeap",
+            "binding": {"kind": "descriptorTableSlot", "index": 1},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "DynamicResource"
+                }
+            }
+        },
+        {
+            "name": "RWTextureHeap",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "DynamicResource"
+                }
+            }
+        },
+        {
+            "name": "b",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "MeshShaderBindings",
+                    "fields": [
+                        {
+                            "name": "proj",
+                            "type": {
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                        },
+                        {
+                            "name": "view",
+                            "type": {
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                        },
+                        {
+                            "name": "model",
+                            "type": {
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 128, "size": 64, "elementStride": 0}
+                        },
+                        {
+                            "name": "vertices",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "struct",
+                                                "name": "Vertex",
+                                                "fields": [
+                                                    {
+                                                        "name": "position_and_uv1",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 4,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                                                    },
+                                                    {
+                                                        "name": "normal_and_uv2",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 4,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 192, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "indecies",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint8"
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 200, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "meshlets",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "struct",
+                                                "name": "Meshlet",
+                                                "fields": [
+                                                    {
+                                                        "name": "vertex_count",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "vertex_index",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "triangle_count",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "triangle_index",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 208, "size": 8, "elementStride": 0}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "MeshShaderBindings",
+                        "fields": [
+                            {
+                                "name": "proj",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "view",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "model",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 128, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "vertices",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "struct",
+                                                    "name": "Vertex",
+                                                    "fields": [
+                                                        {
+                                                            "name": "position_and_uv1",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 4,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                                                        },
+                                                        {
+                                                            "name": "normal_and_uv2",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 4,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 192, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "indecies",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "uint8"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 200, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "meshlets",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "struct",
+                                                    "name": "Meshlet",
+                                                    "fields": [
+                                                        {
+                                                            "name": "vertex_count",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "vertex_index",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "triangle_count",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "triangle_index",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 208, "size": 8, "elementStride": 0}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 224, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "mesh_fragment",
+            "stage": "fragment",
+            "parameters": [
+                {
+                    "name": "id",
+                    "semanticName": "SV_PRIMITIVEID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "meshletid",
+                    "stage": "fragment",
+                    "binding": {"kind": "varyingInput", "index": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "color",
+                    "stage": "fragment",
+                    "binding": {"kind": "varyingInput", "index": 1},
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "float32"
+                        }
+                    }
+                }
+            ],
+            "result": {
+                "stage": "fragment",
+                "binding": {"kind": "varyingOutput", "index": 0},
+                "semanticName": "SV_TARGET",
+                "type": {
+                    "kind": "struct",
+                    "name": "Fragment",
+                    "fields": [
+                        {
+                            "name": "color",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "fragment",
+                            "binding": {"kind": "varyingOutput", "index": 0},
+                            "semanticName": "SV_TARGET"
+                        }
+                    ]
+                }
+            },
+            "bindings": [
+                {
+                    "name": "SamplerHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
+                {
+                    "name": "TextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "RWTextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "b",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        },
+        {
+            "name": "amp",
+            "stage": "amplification",
+            "parameters": [
+                {
+                    "name": "dtid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "gtid",
+                    "semanticName": "SV_GROUPTHREADID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                }
+            ],
+            "bindings": [
+                {
+                    "name": "SamplerHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
+                {
+                    "name": "TextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "RWTextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "b",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        },
+        {
+            "name": "mesh",
+            "stage": "mesh",
+            "parameters": [
+                {
+                    "name": "triangles",
+                    "type": {
+                        "kind": "None"
+                    }
+                },
+                {
+                    "name": "primitives",
+                    "stage": "mesh",
+                    "binding": {"kind": "varyingOutput", "index": 0, "count": 2},
+                    "type": {
+                        "kind": "None"
+                    }
+                },
+                {
+                    "name": "vertices",
+                    "type": {
+                        "kind": "None"
+                    }
+                },
+                {
+                    "name": "gtid",
+                    "semanticName": "SV_GROUPTHREADID",
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32"
+                    }
+                },
+                {
+                    "name": "gid",
+                    "semanticName": "SV_GROUPID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                },
+                {
+                    "name": "dtid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                }
+            ],
+            "bindings": [
+                {
+                    "name": "SamplerHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
+                {
+                    "name": "TextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "RWTextureHeap",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "b",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ],
+    "hashedStrings": {
+        "Attempting to write to a readonly image!": 1258391195
+    }
+
+}

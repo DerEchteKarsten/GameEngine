@@ -2,3 +2,5 @@
 /core/minecraft
 /shaders/target
 /shaders/Cargo.lock
+/game/assets
+/game/imported_assets

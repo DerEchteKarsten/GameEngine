@@ -2,6 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use bevy::prelude::*;
 
+use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, TaskPool};
 use glam::Mat4;
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
 use lava::vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, StorageBuffer};
@@ -204,23 +205,26 @@ pub fn load_assets(
             world.upload_queue.push((entity, mesh, transform));
         }
     }
-    world
-        .instance_bvh_root_nodes
-        .push(&mut staging_buffer, &bvh_root_nodes);
-    world
-        .instance_transforms
-        .push(&mut staging_buffer, &transforms);
-    world
-        .instance_materials
-        .push(&mut staging_buffer, &material_ids);
-    world.materials.push(&mut staging_buffer, &materials);
-    world.instance_aabbs.push(&mut staging_buffer, &aabbs);
 
-    world.vertices.push(&mut staging_buffer, &vertices);
-    world.indecies.push(&mut staging_buffer, &indices);
-    world.meshlets.push(&mut staging_buffer, &meshlets);
-    world.cull_data.push(&mut staging_buffer, &cull_data);
-    world.bvh_nodes.push(&mut staging_buffer, &bvh);
+    // AsyncComputeTaskPool::spawn(async move {
+        world
+            .instance_bvh_root_nodes
+            .push(&mut staging_buffer, &bvh_root_nodes);
+        world
+            .instance_transforms
+            .push(&mut staging_buffer, &transforms);
+        world
+            .instance_materials
+            .push(&mut staging_buffer, &material_ids);
+        world.materials.push(&mut staging_buffer, &materials);
+        world.instance_aabbs.push(&mut staging_buffer, &aabbs);
+    
+        world.vertices.push(&mut staging_buffer, &vertices);
+        world.indecies.push(&mut staging_buffer, &indices);
+        world.meshlets.push(&mut staging_buffer, &meshlets);
+        world.cull_data.push(&mut staging_buffer, &cull_data);
+        world.bvh_nodes.push(&mut staging_buffer, &bvh);
+    // });
     if let Some(ui) = ui.ui() {
         if let Some(wi) = ui.window("Uploading")
             .begin() {
