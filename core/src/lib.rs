@@ -9,7 +9,9 @@ use std::{
 };
 
 use ash::vk::{self, Format};
-use bevy::{app::AppLabel, ecs::system::NonSendMarker, prelude::*, time::TimePlugin, window::{PrimaryWindow, WindowResized, WindowResolution}, winit::{WinitPlugin, WinitWindows}};
+#[cfg(feature = "bevy_window")]
+use bevy::a11y::AccessibilityPlugin;
+use bevy::{a11y::AccessibilityPlugin, app::{AppLabel, PanicHandlerPlugin}, diagnostic::{DiagnosticsPlugin, FrameCountPlugin}, ecs::system::NonSendMarker, input::InputPlugin, log::LogPlugin, prelude::*, time::TimePlugin, window::{PrimaryWindow, WindowResized, WindowResolution}, winit::{WinitPlugin, WinitWindows}};
 use bevy::prelude::*;
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
@@ -47,7 +49,13 @@ pub fn init(
 ) {
     bevy::winit::WINIT_WINDOWS.with_borrow(|window| {
         let window = window.windows.iter().last().unwrap().1.deref();
-        lava::init(&window, false, false).unwrap();
+        #[cfg(debug_assertions)]
+        let validation = true;
+
+        #[cfg(not(debug_assertions))]
+        let validation = false;
+
+        lava::init(&window, validation, false).unwrap();
     });
 }
 
@@ -289,28 +297,36 @@ pub fn CorePlugin(app: &mut App) {
     app
         .add_systems(Startup, (init, init_world.after(init)))
         .add_plugins((
-            DefaultPlugins
-                .set(AssetPlugin {
-                    mode: AssetMode::Processed,
-                    file_path: "./assets".to_string(),
-                    processed_file_path: "./imported_assets".to_string(),
-                    ..Default::default()
-                })
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        resolution: WindowResolution::new(
-                            INITIAL_WINDOW_SIZE.x as u32,
-                            INITIAL_WINDOW_SIZE.y as u32,
-                        ),
-                        present_mode: bevy::window::PresentMode::AutoNoVsync,
-                        title: "RayTracer".to_owned(),
-                        resizable: true,
-                        ..Default::default()
-                    }),
+            AssetPlugin {
+                mode: AssetMode::Processed,
+                file_path: format!("./assets"),
+                processed_file_path: format!("./imported_assets"),
+                ..Default::default()
+            },
+            WindowPlugin {
+                primary_window: Some(Window {
+                    resolution: WindowResolution::new(
+                        INITIAL_WINDOW_SIZE.x as u32,
+                        INITIAL_WINDOW_SIZE.y as u32,
+                    ),
+                    present_mode: bevy::window::PresentMode::AutoNoVsync,
+                    title: "RayTracer".to_owned(),
+                    resizable: true,
                     ..Default::default()
                 }),
+                ..Default::default()
+            },
+            PanicHandlerPlugin,
+            LogPlugin::default(),
+            TaskPoolPlugin::default(),
+            FrameCountPlugin,
+            TimePlugin,
+            DiagnosticsPlugin,
+            InputPlugin,
+            AccessibilityPlugin,
+            WinitPlugin::default(),
             CameraPlugin,
-            MeshAssets,
+            MeshAssets, 
             UiPlugin,
         ))
         .add_systems(PreUpdate, (on_resize, Ctx::start_frame))
@@ -326,4 +342,8 @@ pub fn CorePlugin(app: &mut App) {
         )
         .init_resource::<UiState>()
         .add_systems(PostUpdate, render);
+    #[cfg(feature = "trace")]
+    {
+        app.add_systems(Last, tracy_client::frame_mark);
+    }
 }

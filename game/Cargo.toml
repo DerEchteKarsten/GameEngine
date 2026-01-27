@@ -15,7 +15,13 @@ bevy = {version = "0.18.0", default-features = false, features = [
     "embedded_watcher", 
     "file_watcher", 
     "multi_threaded",
-    "trace_tracy",
     "bevy_asset",
     "bevy_window",
 ]}
+
+[features]
+default = []
+trace = ["core/trace", "bevy/trace_tracy"]
+
+[profile.release]
+debug = true

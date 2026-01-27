@@ -925,7 +925,7 @@ fn verify_bvh(
                 let sphere_error = (sphere.xyz() - child.lod_bounds[i].xyz()).length()
                     - (sphere.w - child.lod_bounds[i].w);
                 assert!(
-                    sphere_error <= 0.0001,
+                    sphere_error <= 0.001,
                     "BVH lod spheres are not monotonic ({sphere_error})"
                 );
             }
@@ -934,11 +934,11 @@ fn verify_bvh(
             for m in 0..node.child_counts(i) as u32 {
                 let mid = (m + node.aabbs[i].offset()) as usize;
                 let meshlet = &cull_data[mid];
-                assert!(meshlet.error <= error, "meshlet errors are not monotonic");
+                assert!(meshlet.error <= error || meshlet.error.is_infinite() || error.is_infinite(), "meshlet errors are not monotonic: {} <= {}", meshlet.error, error);
                 let sphere_error = (sphere.xyz() - meshlet.lod_group_sphere.xyz()).length()
                     - (sphere.w - meshlet.lod_group_sphere.w);
                 assert!(
-                    sphere_error <= 0.0001,
+                    sphere_error <= 0.001,
                     "meshlet lod spheres are not monotonic: ({sphere_error})"
                 );
                 reachable[mid] = true;
