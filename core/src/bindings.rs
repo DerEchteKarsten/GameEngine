@@ -559,6 +559,33 @@ impl lava::command_buffer::RasterVertexShaderPass for RasterUi {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
+pub struct Aabb {
+    pub center: Vec4,
+    pub half_extent: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct BvhNode {
+    pub aabbs: [AabbErrorOffset; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct CullData {
+    pub aabb: AabbErrorOffset,
+    pub lod_group_sphere: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct DispatchIndirectCommand {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
 pub struct DispatchParams {
     pub node_head: u32,
     pub node_tail: u32,
@@ -575,25 +602,15 @@ pub struct Vertex {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct UIVertex {
-    pub pos: Vec2,
-    pub uv: Vec2,
-    pub color: Vec4,
+pub struct AabbErrorOffset {
+    pub center_and_error: Vec4,
+    pub half_extent_and_offset: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct BvhNode {
-    pub aabbs: [AabbErrorOffset; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DispatchIndirectCommand {
-    pub x: u32,
-    pub y: u32,
-    pub z: u32,
+pub struct InstancedOffset {
+    pub instance: u32,
+    pub offset: i32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -613,25 +630,8 @@ pub struct DrawIndirectCommand {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CullData {
-    pub aabb: AabbErrorOffset,
-    pub lod_group_sphere: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Aabb {
-    pub center: Vec4,
-    pub half_extent: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstancedOffset {
-    pub instance: u32,
-    pub offset: i32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbErrorOffset {
-    pub center_and_error: Vec4,
-    pub half_extent_and_offset: Vec4,
+pub struct UIVertex {
+    pub pos: Vec2,
+    pub uv: Vec2,
+    pub color: Vec4,
 }
