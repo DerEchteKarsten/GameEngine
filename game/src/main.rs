@@ -7,6 +7,7 @@ use core::{
     },
     world::Instance,
 };
+use std::f32::consts::PI;
 
 use bevy::prelude::*;
 use glam::{Vec3, vec3};
@@ -20,7 +21,7 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
     };
 
     let camera = Camera::new(vec3(0.0, 0.0, 0.0), 65.0_f32.to_radians(), 0.01, 100.0);
-    let model: Handle<Mesh> = asset_server.load("sponza.glb");
+    let model: Handle<Mesh> = asset_server.load("tower.glb");
     cmd.insert_resource(controles);
     cmd.spawn(camera);
 
@@ -35,7 +36,7 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
                 Transform::new_euler(
                     Vec3::new(0.0, 0.0, 1.0),
                     Vec3::new(10.0, 10.0, 10.0),
-                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, PI),
                 ),
                 Model,
             ));

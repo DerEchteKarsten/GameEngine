@@ -3,12 +3,12 @@ use bevy::{input::{ButtonState, keyboard::KeyboardInput, mouse::{MouseButtonInpu
 use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
 use imgui::{FontSource, Io};
-use lava::{bindless::BindlessHandle, command_buffer::CommandBuffer, state::Ctx, vkobjects::{buffer::{BufferUsageFlags, CpuBuffer, StorageBuffer}, image::{Image, ImageSize}}};
+use lava::{FRAMES_IN_FLIGHT, bindless::BindlessHandle, command_buffer::CommandBuffer, state::Ctx, vkobjects::{buffer::{BufferUsageFlags, CpuBuffer, StorageBuffer}, image::{Image, ImageSize}}};
 use std::{
     collections::HashMap, ops::{Deref, DerefMut}, ptr::NonNull, random::{self, random}, sync::{Arc, Mutex}, time::Instant
 };
 
-use crate::{bindings::{self, UIVertex}, render, world::StagingBuffer};
+use crate::{bindings::{self, UIVertex}, render::{self, ExtractSchedule, RenderStartup, world::StagingBuffer}};
 
 pub struct UiContext {
     ctx: imgui::Context,
@@ -206,11 +206,12 @@ fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>)
     }
     ctx.ui = None;
     let draw_data = ctx.ctx.render();
-    
-    resources.verticies.clear();
-    resources.indicies.clear();
-    resources.verticies.assert_size(draw_data.total_vtx_count as u64 * size_of::<UIVertex>() as u64).unwrap();
-    resources.indicies.assert_size(draw_data.total_idx_count as u64 * size_of::<u32>() as u64).unwrap();
+    let frame = Ctx::current_frame() as usize % FRAMES_IN_FLIGHT;
+
+    resources.verticies[frame].clear();
+    resources.indicies[frame].clear();
+    resources.verticies[frame].assert_size(draw_data.total_vtx_count as u64 * size_of::<UIVertex>() as u64).unwrap();
+    resources.indicies[frame].assert_size(draw_data.total_idx_count as u64 * size_of::<u32>() as u64).unwrap();
     let transform = Vec2::from(draw_data.display_pos);
     let scale = Vec2::from(draw_data.display_size);
     if draw_data.draw_lists_count() == 0 {
@@ -224,31 +225,31 @@ fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>)
             pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0 - Vec2::splat(1.0)),
             uv: Vec2::new(v.uv[0], v.uv[1])
         }).collect::<Vec<_>>();
-        resources.verticies.push(&verticies);
-        resources.indicies.push(&indicies);
+        resources.verticies[frame].push(&verticies);
+        resources.indicies[frame].push(&indicies);
     }
 }
 
 fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
-        indicies: StorageBuffer::new(BufferUsageFlags::INDEX).unwrap(),
-        verticies: StorageBuffer::default(),
+        indicies: [StorageBuffer::with_capacity(BufferUsageFlags::INDEX, 1000*3).unwrap(), StorageBuffer::with_capacity(BufferUsageFlags::INDEX, 1000*3).unwrap()],
+        verticies: [StorageBuffer::with_capacity(BufferUsageFlags::STORAGE, 1000).unwrap(), StorageBuffer::with_capacity(BufferUsageFlags::STORAGE, 1000).unwrap()],
         font_atlas: None,
     });
 }
 
 #[derive(Resource)]
 pub struct UiResources {
-    pub verticies: StorageBuffer<bindings::UIVertex, CpuBuffer>,
-    pub indicies: StorageBuffer<u32, CpuBuffer>,
+    pub verticies: [StorageBuffer<bindings::UIVertex, CpuBuffer>; FRAMES_IN_FLIGHT],
+    pub indicies: [StorageBuffer<u32, CpuBuffer>; FRAMES_IN_FLIGHT],
     pub font_atlas: Option<Image>,
 }
 
 #[allow(non_snake_case)]
 pub fn UiPlugin(app: &mut App) {
-    app.add_systems(PreUpdate, read_input)
-        .add_systems(Startup, (init.after(crate::init)))
-        .add_systems(PostUpdate, update_ui.before(render))
+    app.add_systems(Update, read_input)
+        .add_systems(RenderStartup, init)
+        .add_systems(ExtractSchedule, update_ui)
         .insert_non_send_resource({
             let mut ctx = imgui::Context::create();
             ctx.fonts().add_font(&[

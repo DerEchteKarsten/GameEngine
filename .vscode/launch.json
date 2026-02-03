@@ -96,7 +96,7 @@
                 }
             },
             "args": [],
-            "cwd": "${workspaceFolder}"
+            "cwd": "${workspaceFolder}/game"
         },
         {
             "type": "lldb",

@@ -559,16 +559,9 @@ impl lava::command_buffer::RasterVertexShaderPass for RasterUi {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct Vertex {
-    pub position_and_uv1: Vec4,
-    pub normal_and_uv2: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DispatchIndirectCommand {
-    pub x: u32,
-    pub y: u32,
-    pub z: u32,
+pub struct CullData {
+    pub aabb: AabbErrorOffset,
+    pub lod_group_sphere: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -582,11 +575,9 @@ pub struct DispatchParams {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct Meshlet {
-    pub vertex_count: u32,
-    pub vertex_index: u32,
-    pub triangle_count: u32,
-    pub triangle_index: u32,
+pub struct AabbErrorOffset {
+    pub center_and_error: Vec4,
+    pub half_extent_and_offset: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -598,15 +589,22 @@ pub struct DrawIndirectCommand {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct AabbErrorOffset {
-    pub center_and_error: Vec4,
-    pub half_extent_and_offset: Vec4,
+pub struct Vertex {
+    pub position_and_uv1: Vec4,
+    pub normal_and_uv2: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CullData {
-    pub aabb: AabbErrorOffset,
-    pub lod_group_sphere: Vec4,
+pub struct InstancedOffset {
+    pub instance: u32,
+    pub offset: i32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct DispatchIndirectCommand {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -618,15 +616,17 @@ pub struct BvhNode {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstancedOffset {
-    pub instance: u32,
-    pub offset: i32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
 pub struct Aabb {
     pub center: Vec4,
     pub half_extent: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Meshlet {
+    pub vertex_count: u32,
+    pub vertex_index: u32,
+    pub triangle_count: u32,
+    pub triangle_index: u32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]

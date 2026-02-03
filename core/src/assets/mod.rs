@@ -102,8 +102,11 @@ impl AssetTransformer for MeshTransformer {
                 }
 
                 let reader = primitive.reader(|buffer| Some(&asset.buffers[buffer.index()]));
+                let Some(normals) = reader.read_normals() else {
+                    continue;
+                };
+                let normals = normals.flatten().collect::<Vec<_>>();
 
-                let normals = reader.read_normals().unwrap().flatten().collect::<Vec<_>>();
                 let verticies = reader
                     .read_positions()
                     .unwrap()
@@ -153,12 +156,13 @@ impl AssetTransformer for MeshTransformer {
                         .unwrap_or(!0u32),
                 });
 
-                let mesh = remap
-                    .get(&(gltf_mesh.index(), primitive.index()))
-                    .unwrap()
-                    .clone();
+                let Some(mesh) = remap
+                    .get(&(gltf_mesh.index(), primitive.index())) else {
+                    continue;
+                };
+                
                 instance_materials.push(material as u32);
-                instance_mesh.push(mesh);
+                instance_mesh.push(mesh.clone());
                 instance_transforms.push(Mat4::from_cols_array_2d(&transform));
             }
         }
