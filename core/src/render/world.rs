@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::ffi::c_void;
 use std::future::AsyncDrop;
 use std::ops::{Deref, DerefMut, Range};
+use std::ptr::NonNull;
 use std::sync::{Arc};
 
 use bevy::asset::{AsAssetId, LoadState};
@@ -14,6 +16,7 @@ use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, Task, TaskPool, block_o
 use bytemuck::Pod;
 use futures::lock::Mutex;
 use glam::Mat4;
+use lava::state::Ctx;
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
 use lava::vkobjects::buffer::{Buffer, BufferUsageFlags, CpuBuffer, GpuBuffer, StorageBuffer};
 
@@ -41,7 +44,7 @@ impl AsAssetId for Instance {
 }
 
 
-const STAGING_CHUNK_SIZE: u64 = 16 * 1024 * 1024;
+const STAGING_BUFFER_SIZE: u64 = 16 * 1024 * 1024;
 
 struct Allocator {
     total_size: u64,
@@ -76,7 +79,7 @@ struct UploadQueue {
     delay_deletion: Vec<(Buffer<u8, GpuBuffer>, u64)>,
 }
 
-async fn allocate(alloc: Arc<Mutex<Allocator>>, size: u64) -> Option<u64> {
+async fn allocate(alloc: &Arc<Mutex<Allocator>>, size: u64) -> Option<u64> {
     let mut inner = alloc.lock().await;
     for (&start, &length) in inner.free_ranges.iter() {
         if length >= size {
@@ -90,15 +93,33 @@ async fn allocate(alloc: Arc<Mutex<Allocator>>, size: u64) -> Option<u64> {
     None
 }
 
-struct LargeBuffer<T: Copy + Pod> {
-    buffer: Buffer<T, GpuBuffer>,
-    buffer_task: Option<Task<Option<Buffer<T, GpuBuffer>>>>,
+struct PersistantBuffer<T: Copy + Pod + Send + Sync> {
+    buffer: Buffer<T>,
+    buffer_task: Option<(u64, Task<Option<Buffer<T>>>)>,
     wirtes: Vec<(u64, Arc<[T]>)>,
     size: u64,
     queue_size: u64,
 }
 
-impl<T: Copy + Pod + Send> LargeBuffer<T> {
+impl<T: Copy + Pod + Send + Sync> AsRef<Buffer<T>> for PersistantBuffer<T> {
+    fn as_ref(&self) -> &Buffer<T> {
+        &self.buffer
+    }
+}
+
+impl<T: Copy + Pod + Send + Sync> AsMut<Buffer<T>> for PersistantBuffer<T> {
+    fn as_mut(&mut self) -> &mut Buffer<T> {
+        &mut self.buffer
+    }
+}
+
+impl<T: Copy + Pod + Send + Sync> Default for PersistantBuffer<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Copy + Pod + Send + Sync> PersistantBuffer<T> {
     pub fn new() -> Self {
         Self {
             buffer: Buffer::with_alignment(BufferUsageFlags::STORAGE, 1024 * 1024, None).unwrap(),
@@ -118,37 +139,59 @@ impl<T: Copy + Pod + Send> LargeBuffer<T> {
     }
 
     pub fn resolve_write(&mut self, queue: &mut UploadQueue) {
-        if let Some(task) = &mut self.buffer_task {
+        if let Some((new_size, task)) = &mut self.buffer_task {
             if let Some(buffer) = check_ready(task) {
-                queue.delay_deletion.push((std::mem::replace(&mut self.buffer, buffer).cast_owned(), 0));
+                self.size = *new_size;
+                if let Some(buffer) = buffer{
+                    queue.delay_deletion.push((std::mem::replace(&mut self.buffer, buffer).cast_owned(), 0));
+                }
             }
         } else {
             if !self.wirtes.is_empty() {
-                self.buffer_task = Some(AsyncComputeTaskPool::get().spawn({
-                    let writes = std::mem::take(&mut self.wirtes);
-                    let staging_buffer = queue.staging_buffer.handle.clone();
+                let queue_size = self.queue_size;
+                self.buffer_task = Some((queue_size, AsyncComputeTaskPool::get().spawn({
                     let ptr = {
                         let lock = queue.staging_buffer.allocation.read().unwrap();
-                        lock.0.mapped_ptr().unwrap()
+                        lock.0.mapped_ptr().unwrap().as_ptr() as usize
                     };
+                    let writes = std::mem::take(&mut self.wirtes);
+                    let staging_buffer = queue.staging_buffer.clone();
                     let allocator = queue.allocator.clone();
                     let mut buffer = self.buffer.clone();
-                    let queue_size = self.queue_size;
+                    let size = self.size as usize / size_of::<T>();
                     async move {
-                        if buffer.size < queue_size {
-                            let new_buffer = 
-                        }
+                        let new_buffer = if buffer.size < queue_size {
+                            let new_buffer = Buffer::<T>::with_alignment(BufferUsageFlags::STORAGE, queue_size.next_power_of_two(), None).unwrap();
+                            Ctx::transfer_queue().execute_command_wait(|cmd| {
+                                cmd.copy_buffer(&buffer, &new_buffer, size, 0, 0);
+                            });
+                            buffer = new_buffer;
+                            true 
+                        }else {
+                            false
+                        };
 
-                        for (write_offset, data) in writes {
+                        for (dst_offset, data) in writes {
                             let data_size = (data.len() * std::mem::size_of::<T>()) as u64;
-                            let offset = allocate(allocator, data_size).await.unwrap();
-                            
-                            unsafe { data.as_ptr().copy_to(ptr.byte_add(offset as usize).as_ptr().cast(), data.len()); };
-                            
+                            let src_offset = loop {
+                                if let Some(v) = allocate(&allocator, data_size).await {
+                                    break v;
+                                }
+                                log::error!("Staging Buffer Full!!");
+                            };
+                            let p = ptr as *mut u8;
+                            unsafe { data.as_ptr().copy_to(p.byte_add(src_offset as usize).cast(), data.len()); };
+                            Ctx::transfer_queue().execute_command_async(|cmd| {
+                                cmd.copy_buffer(&staging_buffer, buffer.cast(), size, src_offset as u32, dst_offset as u32);
+                            }).await;
                         }
-                        buffer
+                        if new_buffer {
+                            Some(buffer)
+                        }else {
+                            None
+                        }
                     }
-                }) );
+                }) ));
             }
         }
     } 
@@ -157,18 +200,18 @@ impl<T: Copy + Pod + Send> LargeBuffer<T> {
 impl UploadQueue {
     pub fn new() -> Self {
         let mut free_ranges = BTreeMap::new();
-        free_ranges.insert(0, total_size);
+        free_ranges.insert(0, STAGING_BUFFER_SIZE);
         
         Self {
             staging_buffer: Buffer::with_alignment(
                 BufferUsageFlags::empty(),
-                STAGING_CHUNK_SIZE,
+                STAGING_BUFFER_SIZE,
                 None,
             )
             .unwrap(),
             delay_deletion: Vec::new(),
             allocator: Arc::new(Mutex::new(Allocator {
-                total_size,
+                total_size: STAGING_BUFFER_SIZE,
                 free_ranges,
             }))
         }
@@ -176,31 +219,49 @@ impl UploadQueue {
 }
 
 #[derive(Resource, Default)]
-pub struct RenderWorld {
-    pub vertices: StorageBuffer<Vertex>,
-    pub indecies: StorageBuffer<u8>,
-    pub meshlets: StorageBuffer<Meshlet>,
-    pub cull_data: StorageBuffer<CullData>,
-    pub bvh_nodes: StorageBuffer<BvhNode>,
-    pub materials: StorageBuffer<Material>,
+pub struct InstanceManager {
+    pub transforms: StorageBuffer<Mat4>,
+    pub materials: StorageBuffer<u32>,
+    pub bvh_root_nodes: StorageBuffer<u32>,
+    pub aabbs: StorageBuffer<Aabb>,
+    pub max_bvh_depth: u32,
+}
 
-    pub instance_transforms: StorageBuffer<Mat4>,
-    pub instance_materials: StorageBuffer<u32>,
-    pub instance_bvh_root_nodes: StorageBuffer<u32>,
-    pub instance_aabbs: StorageBuffer<Aabb>,
+impl InstanceManager {
+    fn clear(&mut self) {
+        self.transforms.clear();
+        self.materials.clear();
+        self.bvh_root_nodes.clear();
+        self.aabbs.clear();
+        self.max_bvh_depth = 0;
+    }
+    fn add_instance(&mut self, transform: Mat4, material: u32, bvh_root_node_index: u32, aabb: Aabb) {
+        self.transforms.push(staging_buffer, data);
+    }
+}
+
+
+#[derive(Resource, Default)]
+pub struct MeshletManager {
+    pub vertices: PersistantBuffer<Vertex>,
+    pub indecies: PersistantBuffer<u8>,
+    pub meshlets: PersistantBuffer<Meshlet>,
+    pub cull_data: PersistantBuffer<CullData>,
+    pub bvh_nodes: PersistantBuffer<BvhNode>,
+    pub materials: PersistantBuffer<Material>,
 
     _acceleration_structure_scratch_memory: Option<Buffer<u8>>,
     _acceleration_structure_memory: Option<Buffer<u8>>,
     _tlas: Option<AccelerationStructure>,
-    pub max_bvh_depth: u32,
 }
 
 pub(super) fn init_world(mut cmd: Commands) {
-    cmd.insert_resource(RenderWorld::default());
+    cmd.insert_resource(MeshletManager::default());
 }
 
 fn extract_meshlet_instances(
-    mut render_world: ResMut<RenderWorld>,
+    mut instance_manager: ResMut<InstanceManager>,
+    mut meshlet_manager: ResMut<MeshletManager>,
     mut main_world: ResMut<MainWorld>,
     mut system_state: Local<
         Option<
@@ -225,10 +286,7 @@ fn extract_meshlet_instances(
     let (instances_query, asset_server, mut assets, mut asset_events) =
         system_state.get_mut(&mut main_world);
     
-    render_world.max_bvh_depth = 0;
-    render_world.instance_bvh_root_nodes.clear();
-    render_world.instance_aabbs.clear();
-    render_world.instance_transforms.clear();
+    instance_manager.clear();
 
     for asset_event in asset_events.read() {
         if let AssetEvent::Unused { id } | AssetEvent::Modified { id } = asset_event {
@@ -254,9 +312,9 @@ fn extract_meshlet_instances(
         let transform = transform.affine();
     
         render_world.instance_transforms.push(mesh_uniform);
-        self.instance_aabbs.get_mut().push(aabb);
-        self.instance_material_ids.get_mut().push(0);
-        self.instance_bvh_root_nodes.get_mut().push(root_bvh_node);
+        self.aabbs.get_mut().push(aabb);
+        self.material_ids.get_mut().push(0);
+        self.bvh_root_nodes.get_mut().push(root_bvh_node);
 
         self.scene_instance_count += 1;
         self.max_bvh_depth = self.max_bvh_depth.max(bvh_depth);
@@ -372,6 +430,5 @@ fn extract_meshlet_instances(
 
 pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
-        .add_systems(ExtractSchedule, extract_meshlet_instances)
-        .add_systems(Render, spawn_upload_thread)        
+        .add_systems(ExtractSchedule, extract_meshlet_instances);
 }
