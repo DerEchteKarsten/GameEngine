@@ -8,7 +8,7 @@ use std::{
     collections::HashMap, ops::{Deref, DerefMut}, ptr::NonNull, random::{self, random}, sync::{Arc, Mutex}, time::Instant
 };
 
-use crate::{bindings::{self, UIVertex}, render::{self, ExtractSchedule, RenderStartup, world::StagingBuffer}};
+use crate::{bindings::{self, UIVertex}, render::{self, ExtractSchedule, RenderStartup}};
 
 pub struct UiContext {
     ctx: imgui::Context,
@@ -139,7 +139,6 @@ fn read_input(
     mut events: MessageReader<WindowEvent>,
     mut resources: ResMut<UiResources>,
     mut ctx: NonSendMut<UiContext>,
-    mut staging_buffer: ResMut<StagingBuffer>,
     time: Res<Time>,
 ) {
     let io = ctx.ctx.io_mut();
@@ -180,9 +179,16 @@ fn read_input(
     }
     io.font_global_scale = 1.0;
     io.display_size = [Ctx::window_width() as f32, Ctx::window_height() as f32];
-    if !lava::is_init() {
+
+    ctx.ui = Some(unsafe { NonNull::new_unchecked(ctx.ctx.new_frame()) });
+}
+
+fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>, mut queue: ResMut<UploadQueue>) {
+    if ctx.ui.is_none() {
         return;
     }
+    ctx.ui = None;
+
     if resources.font_atlas.is_none() {
         let atlas = ctx.ctx.fonts().build_alpha8_texture();
         let image = Image::new_2d(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::TRANSFER_SRC, Format::R8_UNORM, ImageSize::XY(atlas.width, atlas.height)).unwrap();
@@ -194,17 +200,6 @@ fn read_input(
         resources.font_atlas = Some(image);
     }
 
-    ctx.ui = Some(unsafe { NonNull::new_unchecked(ctx.ctx.new_frame()) });
-}
-
-fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>) {
-    if !lava::is_init() {
-        return;
-    }
-    if ctx.ui.is_none() {
-        return;
-    }
-    ctx.ui = None;
     let draw_data = ctx.ctx.render();
     let frame = Ctx::current_frame() as usize % FRAMES_IN_FLIGHT;
 

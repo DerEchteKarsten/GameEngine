@@ -52,7 +52,7 @@ struct Allocator {
 }
 
 
-async fn dealloc(alloc: Arc<Mutex<Allocator>>, start: u64, end: u64) {
+async fn dealloc(alloc: &Arc<Mutex<Allocator>>, start: u64, end: u64) {
     let mut inner = alloc.lock().await;
     inner.free_ranges.insert(start, end - start);
     let mut keys_to_merge = Vec::new();
@@ -150,10 +150,7 @@ impl<T: Copy + Pod + Send + Sync> PersistantBuffer<T> {
             if !self.wirtes.is_empty() {
                 let queue_size = self.queue_size;
                 self.buffer_task = Some((queue_size, AsyncComputeTaskPool::get().spawn({
-                    let ptr = {
-                        let lock = queue.staging_buffer.allocation.read().unwrap();
-                        lock.0.mapped_ptr().unwrap().as_ptr() as usize
-                    };
+                    let ptr = queue.cpu_ptr();
                     let writes = std::mem::take(&mut self.wirtes);
                     let staging_buffer = queue.staging_buffer.clone();
                     let allocator = queue.allocator.clone();
@@ -184,6 +181,7 @@ impl<T: Copy + Pod + Send + Sync> PersistantBuffer<T> {
                             Ctx::transfer_queue().execute_command_async(|cmd| {
                                 cmd.copy_buffer(&staging_buffer, buffer.cast(), size, src_offset as u32, dst_offset as u32);
                             }).await;
+                            dealloc(&allocator, src_offset, src_offset+data_size).await;
                         }
                         if new_buffer {
                             Some(buffer)
@@ -216,6 +214,10 @@ impl UploadQueue {
             }))
         }
     }
+
+    pub fn cpu_ptr(&self) -> usize {
+        self.staging_buffer.allocation.read().unwrap().0.mapped_ptr().unwrap().as_ptr() as usize
+    }
 }
 
 #[derive(Resource, Default)]
@@ -235,8 +237,36 @@ impl InstanceManager {
         self.aabbs.clear();
         self.max_bvh_depth = 0;
     }
-    fn add_instance(&mut self, transform: Mat4, material: u32, bvh_root_node_index: u32, aabb: Aabb) {
-        self.transforms.push(staging_buffer, data);
+    fn add_instances(&mut self, queue: &mut UploadQueue, transforms: &[Mat4], material: &[u32], bvh_root_node_index: &[u32], aabbs: &[Aabb]) {
+        let transform_size = size_of_val(transforms);
+        let material_size = size_of_val(material);
+        let bvh_size = size_of_val(bvh_root_node_index);
+        let aabb_size = size_of_val(aabb);
+        let size = transform_size + material_size + bvh_size + aabb_size;
+        let ptr = queue.cpu_ptr();
+        async fn copy<T>(data: &[T], offset: usize) {
+            unsafe { data.as_ptr().copy_to(offset as *mut T, size_of_val(data)) }; 
+        }
+        futures::join!(
+            ComputeTaskPool::get().spawn(copy(transforms, ptr)),
+            ComputeTaskPool::get().spawn(copy(material, ptr + transform_size)),
+            ComputeTaskPool::get().spawn(copy(bvh_root_node_index, ptr + transform_size + material_size)),
+            ComputeTaskPool::get().spawn(copy(aabb, ptr + transform_size + material_size + bvh_size))
+        );
+
+
+        ComputeTaskPool::get().spawn_local(async {
+            let mem = loop {
+                if let Some(mem) = allocate(&queue.allocator, size as u64).await {
+                    break mem;
+                }
+            };
+            Ctx::queue()
+                .execute_command_wait(|cmd| {
+                    cmd.copy_buffer_regions(src, dst, num_elements, &regions);
+                });
+            dealloc(&queue.allocator, mem, mem+size).await;
+        });
     }
 }
 
