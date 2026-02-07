@@ -192,7 +192,7 @@ pub fn cpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
                     &t.fields[0].type_info.valueType.as_ref().unwrap().clone(),
                     structs,
                 );
-                format!("&'a lava::vkobjects::buffer::Buffer<{}>", inner)
+                format!("&'a lava::vkobjects::buffer::BufferSlice<{}>", inner)
             }
             _ => rust_type(t, structs),
         },
@@ -284,7 +284,7 @@ pub fn generate_push_constant(
         .iter()
         .map(
             |f| match f.type_info.name.as_ref().map(|e| e.as_str()).unwrap_or("") {
-                "MutBuf" | "Buf" => format!("{}: bindings.{}.address,", f.name, f.name),
+                "MutBuf" | "Buf" => format!("{}: bindings.{}.address() as u64,", f.name, f.name),
                 "Image" | "MutImage" => {
                     format!("{}: bindings.{}.bindless_handle.unwrap(),", f.name, f.name)
                 }

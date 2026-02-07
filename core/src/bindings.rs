@@ -16,12 +16,12 @@ pub struct CBvhCullBindings {
 }
 
 pub struct BvhCullBindings<'a> {
-    pub bvh_nodes: &'a lava::vkobjects::buffer::Buffer<BvhNode>,
-    pub instance_transforms: &'a lava::vkobjects::buffer::Buffer<Mat4>,
-    pub cull_data: &'a lava::vkobjects::buffer::Buffer<CullData>,
-    pub bvh_node_stack: &'a lava::vkobjects::buffer::Buffer<InstancedOffset>,
-    pub clusters: &'a lava::vkobjects::buffer::Buffer<InstancedOffset>,
-    pub dp: &'a lava::vkobjects::buffer::Buffer<DispatchParams>,
+    pub bvh_nodes: &'a lava::vkobjects::buffer::BufferSlice<BvhNode>,
+    pub instance_transforms: &'a lava::vkobjects::buffer::BufferSlice<Mat4>,
+    pub cull_data: &'a lava::vkobjects::buffer::BufferSlice<CullData>,
+    pub bvh_node_stack: &'a lava::vkobjects::buffer::BufferSlice<InstancedOffset>,
+    pub clusters: &'a lava::vkobjects::buffer::BufferSlice<InstancedOffset>,
+    pub dp: &'a lava::vkobjects::buffer::BufferSlice<DispatchParams>,
 }
 
 unsafe impl bytemuck::Pod for CBvhCullBindings {}
@@ -32,12 +32,12 @@ impl lava::command_buffer::Binding for CBvhCullBindings {
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
-            bvh_nodes: bindings.bvh_nodes.address,
-instance_transforms: bindings.instance_transforms.address,
-cull_data: bindings.cull_data.address,
-bvh_node_stack: bindings.bvh_node_stack.address,
-clusters: bindings.clusters.address,
-dp: bindings.dp.address,
+            bvh_nodes: bindings.bvh_nodes.address() as u64,
+instance_transforms: bindings.instance_transforms.address() as u64,
+cull_data: bindings.cull_data.address() as u64,
+bvh_node_stack: bindings.bvh_node_stack.address() as u64,
+clusters: bindings.clusters.address() as u64,
+dp: bindings.dp.address() as u64,
         }
     }
 
@@ -123,11 +123,11 @@ pub struct CInstanceCullBindings {
 
 pub struct InstanceCullBindings<'a> {
     pub num_instances: u64,
-    pub aabbs: &'a lava::vkobjects::buffer::Buffer<Aabb>,
-    pub instance_bvh_root_nodes: &'a lava::vkobjects::buffer::Buffer<u32>,
-    pub instance_transforms: &'a lava::vkobjects::buffer::Buffer<Mat4>,
-    pub dp: &'a lava::vkobjects::buffer::Buffer<DispatchParams>,
-    pub bvh_node_stack: &'a lava::vkobjects::buffer::Buffer<InstancedOffset>,
+    pub aabbs: &'a lava::vkobjects::buffer::BufferSlice<Aabb>,
+    pub instance_bvh_root_nodes: &'a lava::vkobjects::buffer::BufferSlice<u32>,
+    pub instance_transforms: &'a lava::vkobjects::buffer::BufferSlice<Mat4>,
+    pub dp: &'a lava::vkobjects::buffer::BufferSlice<DispatchParams>,
+    pub bvh_node_stack: &'a lava::vkobjects::buffer::BufferSlice<InstancedOffset>,
 }
 
 unsafe impl bytemuck::Pod for CInstanceCullBindings {}
@@ -139,11 +139,11 @@ impl lava::command_buffer::Binding for CInstanceCullBindings {
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
             num_instances: bindings.num_instances,
-aabbs: bindings.aabbs.address,
-instance_bvh_root_nodes: bindings.instance_bvh_root_nodes.address,
-instance_transforms: bindings.instance_transforms.address,
-dp: bindings.dp.address,
-bvh_node_stack: bindings.bvh_node_stack.address,
+aabbs: bindings.aabbs.address() as u64,
+instance_bvh_root_nodes: bindings.instance_bvh_root_nodes.address() as u64,
+instance_transforms: bindings.instance_transforms.address() as u64,
+dp: bindings.dp.address() as u64,
+bvh_node_stack: bindings.bvh_node_stack.address() as u64,
         }
     }
 
@@ -223,9 +223,9 @@ pub struct MeshshaderBindings<'a> {
     pub proj: Mat4,
     pub view: Mat4,
     pub model: Mat4,
-    pub vertices: &'a lava::vkobjects::buffer::Buffer<Vertex>,
-    pub indecies: &'a lava::vkobjects::buffer::Buffer<u8>,
-    pub meshlets: &'a lava::vkobjects::buffer::Buffer<Meshlet>,
+    pub vertices: &'a lava::vkobjects::buffer::BufferSlice<Vertex>,
+    pub indecies: &'a lava::vkobjects::buffer::BufferSlice<u8>,
+    pub meshlets: &'a lava::vkobjects::buffer::BufferSlice<Meshlet>,
 }
 
 unsafe impl bytemuck::Pod for CMeshshaderBindings {}
@@ -239,9 +239,9 @@ impl lava::command_buffer::Binding for CMeshshaderBindings {
             proj: bindings.proj,
 view: bindings.view,
 model: bindings.model,
-vertices: bindings.vertices.address,
-indecies: bindings.indecies.address,
-meshlets: bindings.meshlets.address,
+vertices: bindings.vertices.address() as u64,
+indecies: bindings.indecies.address() as u64,
+meshlets: bindings.meshlets.address() as u64,
         }
     }
 
@@ -392,11 +392,11 @@ pub struct CRasterBindings {
 pub struct RasterBindings<'a> {
     pub view: Mat4,
     pub proj: Mat4,
-    pub verticies: &'a lava::vkobjects::buffer::Buffer<Vertex>,
-    pub indicies: &'a lava::vkobjects::buffer::Buffer<u8>,
-    pub meshlets: &'a lava::vkobjects::buffer::Buffer<Meshlet>,
-    pub instance_offsets: &'a lava::vkobjects::buffer::Buffer<InstancedOffset>,
-    pub instance_transforms: &'a lava::vkobjects::buffer::Buffer<Mat4>,
+    pub verticies: &'a lava::vkobjects::buffer::BufferSlice<Vertex>,
+    pub indicies: &'a lava::vkobjects::buffer::BufferSlice<u8>,
+    pub meshlets: &'a lava::vkobjects::buffer::BufferSlice<Meshlet>,
+    pub instance_offsets: &'a lava::vkobjects::buffer::BufferSlice<InstancedOffset>,
+    pub instance_transforms: &'a lava::vkobjects::buffer::BufferSlice<Mat4>,
 }
 
 unsafe impl bytemuck::Pod for CRasterBindings {}
@@ -409,11 +409,11 @@ impl lava::command_buffer::Binding for CRasterBindings {
         Self {
             view: bindings.view,
 proj: bindings.proj,
-verticies: bindings.verticies.address,
-indicies: bindings.indicies.address,
-meshlets: bindings.meshlets.address,
-instance_offsets: bindings.instance_offsets.address,
-instance_transforms: bindings.instance_transforms.address,
+verticies: bindings.verticies.address() as u64,
+indicies: bindings.indicies.address() as u64,
+meshlets: bindings.meshlets.address() as u64,
+instance_offsets: bindings.instance_offsets.address() as u64,
+instance_transforms: bindings.instance_transforms.address() as u64,
         }
     }
 
@@ -495,7 +495,7 @@ pub struct CRasterUiBindings {
 }
 
 pub struct RasterUiBindings<'a> {
-    pub verticies: &'a lava::vkobjects::buffer::Buffer<UIVertex>,
+    pub verticies: &'a lava::vkobjects::buffer::BufferSlice<UIVertex>,
     pub font_atlas: &'a lava::vkobjects::image::Image,
 }
 
@@ -507,7 +507,7 @@ impl lava::command_buffer::Binding for CRasterUiBindings {
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
-            verticies: bindings.verticies.address,
+            verticies: bindings.verticies.address() as u64,
 font_atlas: bindings.font_atlas.bindless_handle.unwrap(),
         }
     }
@@ -559,9 +559,24 @@ impl lava::command_buffer::RasterVertexShaderPass for RasterUi {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct Aabb {
-    pub center: Vec4,
-    pub half_extent: Vec4,
+pub struct DrawIndirectCommand {
+    pub vertex_count: u32,
+    pub instance_count: u32,
+    pub first_vertex: u32,
+    pub first_instance: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct DispatchIndirectCommand {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Vertex {
+    pub position_and_uv1: Vec4,
+    pub normal_and_uv2: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -573,17 +588,9 @@ pub struct Meshlet {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct Vertex {
-    pub position_and_uv1: Vec4,
-    pub normal_and_uv2: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DrawIndirectCommand {
-    pub vertex_count: u32,
-    pub instance_count: u32,
-    pub first_vertex: u32,
-    pub first_instance: u32,
+pub struct CullData {
+    pub aabb: AabbErrorOffset,
+    pub lod_group_sphere: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -593,17 +600,9 @@ pub struct AabbErrorOffset {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct BvhNode {
-    pub aabbs: [AabbErrorOffset; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstancedOffset {
-    pub instance: u32,
-    pub offset: i32,
+pub struct Aabb {
+    pub center: Vec4,
+    pub half_extent: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -617,21 +616,22 @@ pub struct DispatchParams {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CullData {
-    pub aabb: AabbErrorOffset,
-    pub lod_group_sphere: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DispatchIndirectCommand {
-    pub x: u32,
-    pub y: u32,
-    pub z: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
 pub struct UIVertex {
     pub pos: Vec2,
     pub uv: Vec2,
     pub color: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstancedOffset {
+    pub instance: u32,
+    pub offset: i32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct BvhNode {
+    pub aabbs: [AabbErrorOffset; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: u64,
 }

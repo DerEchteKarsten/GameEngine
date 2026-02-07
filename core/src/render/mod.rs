@@ -110,7 +110,7 @@ fn render(
             cmd.raster::<Raster>()
                 .bind(RasterBindings {
                     indicies: &world.indecies,
-                    instance_offsets: &resources.cluster_buffer,
+                    instance_offsets: resources.cluster_buffer,
                     instance_transforms: &world.instance_transforms,
                     meshlets: &world.meshlets,
                     verticies: &world.vertices,
