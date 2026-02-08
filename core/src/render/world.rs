@@ -95,16 +95,10 @@ impl InstanceManager {
     }
 
     fn apply_writes(&mut self, buffer: &mut UploadBuffer) {
-        self.transforms.assert_size();
-        self.materials.assert_size();
-        self.bvh_root_nodes.assert_size();
-        self.aabbs.assert_size();
-
         fn copy<T: Pod+ Copy + Send>(buff: &mut QueueAllocated<Buffer<T>>, allocator: AsyncSubAllocator<RangeAllocator>) -> Task<BufferSlice<T, CpuBuffer>>{
             buff.assert_size();
-            let slice = buff.whole();
             let size = buff.queue_size();
-            let queue = std::mem::take(&mut buff.queue);
+            let queue = buff.clear();
             AsyncComputeTaskPool::get().spawn(async move {
                 let mut mem = allocator.allocate_blocking(size).await;
                 mem.mem_copy_from(BufferSlice::from(queue.as_slice()));
@@ -285,14 +279,13 @@ fn extract_meshlet_instances(
     mut system_state: Local<
         Option<
             SystemState<(
-                Query<(Entity, &Model, &GlobalTransform)>,
+                Query<(&Model, &GlobalTransform)>,
                 Res<AssetServer>,
                 ResMut<Assets<Mesh>>,
                 MessageReader<AssetEvent<Mesh>>,
             )>,
         >,
     >,
-    render_entities: &Entities,
 ) {
     if system_state.is_none() {
         *system_state = Some(SystemState::new(&mut main_world));
@@ -309,7 +302,7 @@ fn extract_meshlet_instances(
         }
     }
 
-    for (entity, instance, transform) in &instances_query {
+    for (instance, transform) in &instances_query {
         if asset_server.is_managed(instance.model.id())
             && !asset_server.is_loaded_with_dependencies(instance.model.id())
         {

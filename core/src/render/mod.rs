@@ -7,9 +7,9 @@ use lava::{FRAMES_IN_FLIGHT, buffer::{AsBuffer, Buffer, BufferUsageFlags, GpuBuf
 
 use crate::{INITIAL_WINDOW_SIZE, bindings::{DispatchIndirectCommand, DispatchParams, DrawIndirectCommand, InstancedOffset, Post, PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings}, components::camera::Camera, render::world::{InstanceManager, MeshletManager, WorldPlugin, init_world}, ui::UiResources};
 
-mod world;
-mod extract_param;
-mod storage_buffer;
+pub mod world;
+pub mod extract_param;
+pub mod storage_buffer;
 
 
 struct RenderResources {
