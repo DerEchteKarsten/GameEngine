@@ -1,9 +1,16 @@
+
 use std::collections::HashMap;
-use std::sync::{OnceLock, Mutex}; use glam::*;
+use std::sync::{OnceLock, Mutex}; 
+use glam::*;
 use bytemuck::{Pod, Zeroable};
-use lava::command_buffer::{ResourceHandle, ResourceState, ShaderHash, RasterHash};
+use lava::command_buffer::{Binding, ResourceHandle, ResourceState, ShaderHash, RasterHash, ComputePass, RasterPass, RayTracingPass, RasterMeshShaderPass, RasterVertexShaderPass};
 use lava::bindless::BindlessHandle;
+use lava::vkobjects::image::Image;
+use lava::buffer::slice::BufferSlice;
 use std::cell::{LazyCell};
+use ash::vk;
+use lava::vkobjects::image::get_aspects;
+
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct CBvhCullBindings {
@@ -15,83 +22,83 @@ pub struct CBvhCullBindings {
     pub dp: u64,
 }
 
-pub struct BvhCullBindings<'a> {
-    pub bvh_nodes: &'a lava::vkobjects::buffer::BufferSlice<BvhNode>,
-    pub instance_transforms: &'a lava::vkobjects::buffer::BufferSlice<Mat4>,
-    pub cull_data: &'a lava::vkobjects::buffer::BufferSlice<CullData>,
-    pub bvh_node_stack: &'a lava::vkobjects::buffer::BufferSlice<InstancedOffset>,
-    pub clusters: &'a lava::vkobjects::buffer::BufferSlice<InstancedOffset>,
-    pub dp: &'a lava::vkobjects::buffer::BufferSlice<DispatchParams>,
+pub struct BvhCullBindings {
+    pub bvh_nodes: BufferSlice<BvhNode>,
+    pub instance_transforms: BufferSlice<Mat4>,
+    pub cull_data: BufferSlice<CullData>,
+    pub bvh_node_stack: BufferSlice<InstancedOffset>,
+    pub clusters: BufferSlice<InstancedOffset>,
+    pub dp: BufferSlice<DispatchParams>,
 }
 
 unsafe impl bytemuck::Pod for CBvhCullBindings {}
 unsafe impl bytemuck::Zeroable for CBvhCullBindings {}
 
-impl lava::command_buffer::Binding for CBvhCullBindings {
-    type CpuBinding<'a> = BvhCullBindings<'a>;
+impl Binding for CBvhCullBindings {
+    type CpuBinding<'a> = BvhCullBindings;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
-            bvh_nodes: bindings.bvh_nodes.address() as u64,
-instance_transforms: bindings.instance_transforms.address() as u64,
-cull_data: bindings.cull_data.address() as u64,
-bvh_node_stack: bindings.bvh_node_stack.address() as u64,
-clusters: bindings.clusters.address() as u64,
-dp: bindings.dp.address() as u64,
+            bvh_nodes: bindings.bvh_nodes.gpu_address() as u64,
+instance_transforms: bindings.instance_transforms.gpu_address() as u64,
+cull_data: bindings.cull_data.gpu_address() as u64,
+bvh_node_stack: bindings.bvh_node_stack.gpu_address() as u64,
+clusters: bindings.clusters.gpu_address() as u64,
+dp: bindings.dp.gpu_address() as u64,
         }
     }
 
     fn resources<'a>(
         bindings: &Self::CpuBinding<'a>,
-        stages: ash::vk::PipelineStageFlags2,
+        stages: vk::PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
             (ResourceHandle::Buffer(bindings.bvh_nodes.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.instance_transforms.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.cull_data.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.bvh_node_stack.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.clusters.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.dp.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
         ]
@@ -100,13 +107,13 @@ aspect: ash::vk::ImageAspectFlags::empty(),
 pub struct BvhCull;
 
 
-impl lava::command_buffer::ComputePass for BvhCull {
+impl ComputePass for BvhCull {
     type GpuBinding = CBvhCullBindings;
 
     const ENTRY: &'static str = "bvh_cull\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
-    fn cache() -> &'static OnceLock<ash::vk::Pipeline> {
-        static CACHE: OnceLock<ash::vk::Pipeline> = OnceLock::new();
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
+    fn cache() -> &'static OnceLock<vk::Pipeline> {
+        static CACHE: OnceLock<vk::Pipeline> = OnceLock::new();
         &CACHE
     }
 }
@@ -121,75 +128,75 @@ pub struct CInstanceCullBindings {
     pub bvh_node_stack: u64,
 }
 
-pub struct InstanceCullBindings<'a> {
+pub struct InstanceCullBindings {
     pub num_instances: u64,
-    pub aabbs: &'a lava::vkobjects::buffer::BufferSlice<Aabb>,
-    pub instance_bvh_root_nodes: &'a lava::vkobjects::buffer::BufferSlice<u32>,
-    pub instance_transforms: &'a lava::vkobjects::buffer::BufferSlice<Mat4>,
-    pub dp: &'a lava::vkobjects::buffer::BufferSlice<DispatchParams>,
-    pub bvh_node_stack: &'a lava::vkobjects::buffer::BufferSlice<InstancedOffset>,
+    pub aabbs: BufferSlice<Aabb>,
+    pub instance_bvh_root_nodes: BufferSlice<u32>,
+    pub instance_transforms: BufferSlice<Mat4>,
+    pub dp: BufferSlice<DispatchParams>,
+    pub bvh_node_stack: BufferSlice<InstancedOffset>,
 }
 
 unsafe impl bytemuck::Pod for CInstanceCullBindings {}
 unsafe impl bytemuck::Zeroable for CInstanceCullBindings {}
 
-impl lava::command_buffer::Binding for CInstanceCullBindings {
-    type CpuBinding<'a> = InstanceCullBindings<'a>;
+impl Binding for CInstanceCullBindings {
+    type CpuBinding<'a> = InstanceCullBindings;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
             num_instances: bindings.num_instances,
-aabbs: bindings.aabbs.address() as u64,
-instance_bvh_root_nodes: bindings.instance_bvh_root_nodes.address() as u64,
-instance_transforms: bindings.instance_transforms.address() as u64,
-dp: bindings.dp.address() as u64,
-bvh_node_stack: bindings.bvh_node_stack.address() as u64,
+aabbs: bindings.aabbs.gpu_address() as u64,
+instance_bvh_root_nodes: bindings.instance_bvh_root_nodes.gpu_address() as u64,
+instance_transforms: bindings.instance_transforms.gpu_address() as u64,
+dp: bindings.dp.gpu_address() as u64,
+bvh_node_stack: bindings.bvh_node_stack.gpu_address() as u64,
         }
     }
 
     fn resources<'a>(
         bindings: &Self::CpuBinding<'a>,
-        stages: ash::vk::PipelineStageFlags2,
+        stages: vk::PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
             (ResourceHandle::Buffer(bindings.aabbs.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.instance_bvh_root_nodes.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.instance_transforms.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.dp.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.bvh_node_stack.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
         ]
@@ -198,13 +205,13 @@ aspect: ash::vk::ImageAspectFlags::empty(),
 pub struct InstanceCull;
 
 
-impl lava::command_buffer::ComputePass for InstanceCull {
+impl ComputePass for InstanceCull {
     type GpuBinding = CInstanceCullBindings;
 
     const ENTRY: &'static str = "instance_cull\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/instance_cull.slang.spv");
-    fn cache() -> &'static OnceLock<ash::vk::Pipeline> {
-        static CACHE: OnceLock<ash::vk::Pipeline> = OnceLock::new();
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/instance_cull.slang.spv");
+    fn cache() -> &'static OnceLock<vk::Pipeline> {
+        static CACHE: OnceLock<vk::Pipeline> = OnceLock::new();
         &CACHE
     }
 }
@@ -219,82 +226,82 @@ pub struct CMeshshaderBindings {
     pub meshlets: u64,
 }
 
-pub struct MeshshaderBindings<'a> {
+pub struct MeshshaderBindings {
     pub proj: Mat4,
     pub view: Mat4,
     pub model: Mat4,
-    pub vertices: &'a lava::vkobjects::buffer::BufferSlice<Vertex>,
-    pub indecies: &'a lava::vkobjects::buffer::BufferSlice<u8>,
-    pub meshlets: &'a lava::vkobjects::buffer::BufferSlice<Meshlet>,
+    pub vertices: BufferSlice<Vertex>,
+    pub indecies: BufferSlice<u8>,
+    pub meshlets: BufferSlice<Meshlet>,
 }
 
 unsafe impl bytemuck::Pod for CMeshshaderBindings {}
 unsafe impl bytemuck::Zeroable for CMeshshaderBindings {}
 
-impl lava::command_buffer::Binding for CMeshshaderBindings {
-    type CpuBinding<'a> = MeshshaderBindings<'a>;
+impl Binding for CMeshshaderBindings {
+    type CpuBinding<'a> = MeshshaderBindings;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
             proj: bindings.proj,
 view: bindings.view,
 model: bindings.model,
-vertices: bindings.vertices.address() as u64,
-indecies: bindings.indecies.address() as u64,
-meshlets: bindings.meshlets.address() as u64,
+vertices: bindings.vertices.gpu_address() as u64,
+indecies: bindings.indecies.gpu_address() as u64,
+meshlets: bindings.meshlets.gpu_address() as u64,
         }
     }
 
     fn resources<'a>(
         bindings: &Self::CpuBinding<'a>,
-        stages: ash::vk::PipelineStageFlags2,
+        stages: vk::PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
             (ResourceHandle::Buffer(bindings.vertices.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.indecies.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.meshlets.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
         ]
     }
 }
 pub struct Meshshader;
-impl lava::command_buffer::RasterPass for Meshshader {
+impl RasterPass for Meshshader {
     type GpuBinding = CMeshshaderBindings;
 }
 
-impl lava::command_buffer::RasterMeshShaderPass for Meshshader {
+impl RasterMeshShaderPass for Meshshader {
     const MESH: &'static str = "mesh\0";
     const FRAGMENT: &'static str = "mesh_fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/meshshader.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/meshshader.slang.spv");
     const TASK: Option<&'static str> = Some("amp\0");
 
-    fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {
-        static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
+    fn module_cache() -> &'static OnceLock<vk::ShaderModule> {
+        static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
         &CACHE
     }
 
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> {
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> {
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
         &CACHE
     }
 }
@@ -313,15 +320,15 @@ pub struct PostBindings<'a> {
     pub inverse_proj: Mat4,
     pub inverse_view: Mat4,
     pub window_size: Vec4,
-    pub depth: &'a lava::vkobjects::image::Image,
-    pub color: &'a lava::vkobjects::image::Image,
-    pub out: &'a lava::vkobjects::image::Image,
+    pub depth: &'a Image,
+    pub color: &'a Image,
+    pub out: &'a Image,
 }
 
 unsafe impl bytemuck::Pod for CPostBindings {}
 unsafe impl bytemuck::Zeroable for CPostBindings {}
 
-impl lava::command_buffer::Binding for CPostBindings {
+impl Binding for CPostBindings {
     type CpuBinding<'a> = PostBindings<'a>;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
@@ -337,7 +344,7 @@ out: bindings.out.bindless_handle.unwrap(),
 
     fn resources<'a>(
         bindings: &Self::CpuBinding<'a>,
-        stages: ash::vk::PipelineStageFlags2,
+        stages: vk::PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
             (ResourceHandle::Image((bindings.depth.view, bindings.depth.handle)),
@@ -345,21 +352,21 @@ ResourceState {
     stages,
     access: bindings.depth.const_access(),
     layout: bindings.depth.prefered_layout(),
-    aspect: lava::vkobjects::image::get_aspects(bindings.depth.format),
+    aspect: get_aspects(bindings.depth.format),
 }),
 (ResourceHandle::Image((bindings.color.view, bindings.color.handle)),
 ResourceState {
     stages,
     access: bindings.color.const_access(),
     layout: bindings.color.prefered_layout(),
-    aspect: lava::vkobjects::image::get_aspects(bindings.color.format),
+    aspect: get_aspects(bindings.color.format),
 }),
 (ResourceHandle::Image((bindings.out.view, bindings.out.handle)),
 ResourceState {
     stages,
     access: bindings.out.mut_access(),
     layout: bindings.out.prefered_layout(),
-    aspect: lava::vkobjects::image::get_aspects(bindings.out.format),
+    aspect: get_aspects(bindings.out.format),
 }),
         ]
     }
@@ -367,13 +374,13 @@ ResourceState {
 pub struct Post;
 
 
-impl lava::command_buffer::ComputePass for Post {
+impl ComputePass for Post {
     type GpuBinding = CPostBindings;
 
     const ENTRY: &'static str = "post\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/post.slang.spv");
-    fn cache() -> &'static OnceLock<ash::vk::Pipeline> {
-        static CACHE: OnceLock<ash::vk::Pipeline> = OnceLock::new();
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/post.slang.spv");
+    fn cache() -> &'static OnceLock<vk::Pipeline> {
+        static CACHE: OnceLock<vk::Pipeline> = OnceLock::new();
         &CACHE
     }
 }
@@ -389,77 +396,77 @@ pub struct CRasterBindings {
     pub instance_transforms: u64,
 }
 
-pub struct RasterBindings<'a> {
+pub struct RasterBindings {
     pub view: Mat4,
     pub proj: Mat4,
-    pub verticies: &'a lava::vkobjects::buffer::BufferSlice<Vertex>,
-    pub indicies: &'a lava::vkobjects::buffer::BufferSlice<u8>,
-    pub meshlets: &'a lava::vkobjects::buffer::BufferSlice<Meshlet>,
-    pub instance_offsets: &'a lava::vkobjects::buffer::BufferSlice<InstancedOffset>,
-    pub instance_transforms: &'a lava::vkobjects::buffer::BufferSlice<Mat4>,
+    pub verticies: BufferSlice<Vertex>,
+    pub indicies: BufferSlice<u8>,
+    pub meshlets: BufferSlice<Meshlet>,
+    pub instance_offsets: BufferSlice<InstancedOffset>,
+    pub instance_transforms: BufferSlice<Mat4>,
 }
 
 unsafe impl bytemuck::Pod for CRasterBindings {}
 unsafe impl bytemuck::Zeroable for CRasterBindings {}
 
-impl lava::command_buffer::Binding for CRasterBindings {
-    type CpuBinding<'a> = RasterBindings<'a>;
+impl Binding for CRasterBindings {
+    type CpuBinding<'a> = RasterBindings;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
             view: bindings.view,
 proj: bindings.proj,
-verticies: bindings.verticies.address() as u64,
-indicies: bindings.indicies.address() as u64,
-meshlets: bindings.meshlets.address() as u64,
-instance_offsets: bindings.instance_offsets.address() as u64,
-instance_transforms: bindings.instance_transforms.address() as u64,
+verticies: bindings.verticies.gpu_address() as u64,
+indicies: bindings.indicies.gpu_address() as u64,
+meshlets: bindings.meshlets.gpu_address() as u64,
+instance_offsets: bindings.instance_offsets.gpu_address() as u64,
+instance_transforms: bindings.instance_transforms.gpu_address() as u64,
         }
     }
 
     fn resources<'a>(
         bindings: &Self::CpuBinding<'a>,
-        stages: ash::vk::PipelineStageFlags2,
+        stages: vk::PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
             (ResourceHandle::Buffer(bindings.verticies.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.indicies.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.meshlets.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.instance_offsets.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Buffer(bindings.instance_transforms.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
         ]
@@ -468,21 +475,21 @@ aspect: ash::vk::ImageAspectFlags::empty(),
 pub struct Raster;
 
 
-impl lava::command_buffer::RasterPass for Raster {
+impl RasterPass for Raster {
     type GpuBinding = CRasterBindings;
 }
 
-impl lava::command_buffer::RasterVertexShaderPass for Raster {
+impl RasterVertexShaderPass for Raster {
     const VERTEX: &'static str = "vertex\0";
     const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/raster.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/raster.slang.spv");
     
-    fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {
-        static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
+    fn module_cache() -> &'static OnceLock<vk::ShaderModule> {
+        static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
         &CACHE
     }
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> {
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> {
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
         &CACHE
     }
 }
@@ -491,38 +498,49 @@ impl lava::command_buffer::RasterVertexShaderPass for Raster {
 #[repr(C)]
 pub struct CRasterUiBindings {
     pub verticies: u64,
+    pub indicies: u64,
     pub font_atlas: BindlessHandle,
 }
 
 pub struct RasterUiBindings<'a> {
-    pub verticies: &'a lava::vkobjects::buffer::BufferSlice<UIVertex>,
-    pub font_atlas: &'a lava::vkobjects::image::Image,
+    pub verticies: BufferSlice<UIVertex>,
+    pub indicies: BufferSlice<u32>,
+    pub font_atlas: &'a Image,
 }
 
 unsafe impl bytemuck::Pod for CRasterUiBindings {}
 unsafe impl bytemuck::Zeroable for CRasterUiBindings {}
 
-impl lava::command_buffer::Binding for CRasterUiBindings {
+impl Binding for CRasterUiBindings {
     type CpuBinding<'a> = RasterUiBindings<'a>;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
-            verticies: bindings.verticies.address() as u64,
+            verticies: bindings.verticies.gpu_address() as u64,
+indicies: bindings.indicies.gpu_address() as u64,
 font_atlas: bindings.font_atlas.bindless_handle.unwrap(),
         }
     }
 
     fn resources<'a>(
         bindings: &Self::CpuBinding<'a>,
-        stages: ash::vk::PipelineStageFlags2,
+        stages: vk::PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
             (ResourceHandle::Buffer(bindings.verticies.handle),
 ResourceState {
     stages,
-    access: ash::vk::AccessFlags2::SHADER_STORAGE_READ,
-    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
+
+}),
+(ResourceHandle::Buffer(bindings.indicies.handle),
+ResourceState {
+    stages,
+    access: vk::AccessFlags2::SHADER_STORAGE_READ,
+    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 
 }),
 (ResourceHandle::Image((bindings.font_atlas.view, bindings.font_atlas.handle)),
@@ -530,7 +548,7 @@ ResourceState {
     stages,
     access: bindings.font_atlas.const_access(),
     layout: bindings.font_atlas.prefered_layout(),
-    aspect: lava::vkobjects::image::get_aspects(bindings.font_atlas.format),
+    aspect: get_aspects(bindings.font_atlas.format),
 }),
         ]
     }
@@ -538,21 +556,21 @@ ResourceState {
 pub struct RasterUi;
 
 
-impl lava::command_buffer::RasterPass for RasterUi {
+impl RasterPass for RasterUi {
     type GpuBinding = CRasterUiBindings;
 }
 
-impl lava::command_buffer::RasterVertexShaderPass for RasterUi {
+impl RasterVertexShaderPass for RasterUi {
     const VERTEX: &'static str = "vertex\0";
     const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/raster_ui.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/raster_ui.slang.spv");
     
-    fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {
-        static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
+    fn module_cache() -> &'static OnceLock<vk::ShaderModule> {
+        static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
         &CACHE
     }
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> {
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> {
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
         &CACHE
     }
 }
@@ -574,17 +592,19 @@ pub struct DispatchIndirectCommand {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct Vertex {
-    pub position_and_uv1: Vec4,
-    pub normal_and_uv2: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
 pub struct Meshlet {
     pub vertex_count: u32,
     pub vertex_index: u32,
     pub triangle_count: u32,
     pub triangle_index: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct BvhNode {
+    pub aabbs: [AabbErrorOffset; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: u64,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -594,25 +614,9 @@ pub struct CullData {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct AabbErrorOffset {
-    pub center_and_error: Vec4,
-    pub half_extent_and_offset: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Aabb {
-    pub center: Vec4,
-    pub half_extent: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DispatchParams {
-    pub node_head: u32,
-    pub node_tail: u32,
-    pub done: u32,
-    pub meshlet_count: u32,
-    pub indirect_draw: DrawIndirectCommand,
-    pub indirect_dispatch: DispatchIndirectCommand,
+pub struct Vertex {
+    pub position_and_uv1: Vec4,
+    pub normal_and_uv2: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -623,15 +627,29 @@ pub struct UIVertex {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
+pub struct Aabb {
+    pub center: Vec4,
+    pub half_extent: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct AabbErrorOffset {
+    pub center_and_error: Vec4,
+    pub half_extent_and_offset: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
 pub struct InstancedOffset {
     pub instance: u32,
     pub offset: i32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct BvhNode {
-    pub aabbs: [AabbErrorOffset; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: u64,
+pub struct DispatchParams {
+    pub node_head: u32,
+    pub node_tail: u32,
+    pub done: u32,
+    pub meshlet_count: u32,
+    pub indirect_draw: DrawIndirectCommand,
+    pub indirect_dispatch: DispatchIndirectCommand,
 }

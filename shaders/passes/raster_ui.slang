@@ -16,6 +16,7 @@ struct UIVertex {
 
 struct RasterMeshUiBindings {
     Buf<UIVertex> verticies;
+    Buf<uint> indicies;
     Image2D<float> font_atlas;
 }
 
@@ -24,8 +25,8 @@ struct RasterMeshUiBindings {
 [shader("vertex")]
 VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
 {
-    
-    let vertex = b.verticies.val[vertex_index];
+    let index = b.indicies.val[vertex_index];
+    let vertex = b.verticies.val[index];
     VSOutput output;
     output.position = float4(vertex.pos.xy, 0.5, 1.0);
     output.color = vertex.color;

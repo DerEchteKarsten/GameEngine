@@ -102,6 +102,27 @@
                             "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
                         },
                         {
+                            "name": "indicies",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                        },
+                        {
                             "name": "font_atlas",
                             "type": {
                                 "kind": "struct",
@@ -125,7 +146,7 @@
                                     }
                                 ]
                             },
-                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
                         }
                     ]
                 },
@@ -197,6 +218,27 @@
                                 "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
                             },
                             {
+                                "name": "indicies",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "uint32"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                            },
+                            {
                                 "name": "font_atlas",
                                 "type": {
                                     "kind": "struct",
@@ -220,11 +262,11 @@
                                         }
                                     ]
                                 },
-                                "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 24, "elementStride": 0}
                 }
             }
         }

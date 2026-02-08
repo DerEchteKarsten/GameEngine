@@ -1,6 +1,6 @@
 #![feature(f16)]
 #![feature(random)]
-#![feature(async_drop)]
+#![feature(arc_is_unique)]
 use std::{
     any::type_name,
     mem::offset_of,
@@ -11,41 +11,51 @@ use std::{
 use ash::vk::{self, Format};
 #[cfg(feature = "bevy_window")]
 use bevy::a11y::AccessibilityPlugin;
-use bevy::{a11y::AccessibilityPlugin, app::{AppLabel, PanicHandlerPlugin}, diagnostic::{DiagnosticsPlugin, FrameCountPlugin}, ecs::{schedule::{ScheduleBuildSettings, ScheduleLabel}, system::NonSendMarker}, input::InputPlugin, log::LogPlugin, prelude::*, time::TimePlugin, window::{PrimaryWindow, WindowResized, WindowResolution}, winit::{WinitPlugin, WinitWindows}};
 use bevy::prelude::*;
+use bevy::{
+    a11y::AccessibilityPlugin,
+    app::{AppLabel, PanicHandlerPlugin},
+    diagnostic::{DiagnosticsPlugin, FrameCountPlugin},
+    ecs::{
+        schedule::{ScheduleBuildSettings, ScheduleLabel},
+        system::NonSendMarker,
+    },
+    input::InputPlugin,
+    log::LogPlugin,
+    prelude::*,
+    time::TimePlugin,
+    window::{PrimaryWindow, WindowResized, WindowResolution},
+    winit::{WinitPlugin, WinitWindows},
+};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
 use lava::{
-    FRAMES_IN_FLIGHT, command_buffer::RasterVertexDispatch, state::Ctx, vkobjects::{
-        buffer::{Buffer, BufferUsageFlags, GpuBuffer},
-        image::{Image, ImageSize},
-    }
+    FRAMES_IN_FLIGHT,
+    command_buffer::RasterVertexDispatch,
+    state::Ctx,
+    vkobjects::image::{Image, ImageSize},
 };
 
 mod bindings;
 
 use crate::{
-    assets::MeshAssets, bindings::{
+    assets::MeshAssets,
+    bindings::{
         BvhCull, BvhCullBindings, DispatchIndirectCommand, DispatchParams, DrawIndirectCommand,
         InstanceCull, InstanceCullBindings, InstancedOffset, Post, PostBindings, Raster,
         RasterBindings, RasterUi, RasterUiBindings,
-    }, components::camera::{Camera, CameraPlugin}, render::{PipelinedRenderingPlugin, RenderPlugin}, ui::{UiContext, UiPlugin, UiResources}
+    },
+    components::camera::{Camera, CameraPlugin},
+    render::{PipelinedRenderingPlugin, RenderPlugin},
+    ui::{UiContext, UiPlugin, UiResources},
 };
 
 pub mod assets;
 pub mod components;
-pub mod ui;
 pub mod render;
+pub mod ui;
 
 pub const INITIAL_WINDOW_SIZE: Vec2 = Vec2::new(2000.0, 2000.0 * 9.0 / 16.0);
-
-struct RenderResources {
-    depth_attachment: Image,
-    color_attachment: Image,
-    cluster_buffer: Buffer<InstancedOffset>,
-    dispatch_params: Buffer<DispatchParams>,
-    bvh_node_stack: Buffer<InstancedOffset>,
-}
 
 #[derive(Resource)]
 struct UiState {
@@ -96,51 +106,48 @@ impl Default for UiState {
 //     }
 // }
 
-
 #[allow(non_snake_case)]
 pub fn CorePlugin(app: &mut App) {
-    
-    app
-        .add_plugins((
-            AssetPlugin {
-                mode: AssetMode::Processed,
-                file_path: format!("/home/karsten/code/GameEngine/game/assets"),
-                processed_file_path: format!("/home/karsten/code/GameEngine/game/imported_assets"),
+    app.add_plugins((
+        AssetPlugin {
+            mode: AssetMode::Processed,
+            file_path: format!("/home/karsten/code/GameEngine/game/assets"),
+            processed_file_path: format!("/home/karsten/code/GameEngine/game/imported_assets"),
+            ..Default::default()
+        },
+        WindowPlugin {
+            primary_window: Some(Window {
+                resolution: WindowResolution::new(
+                    INITIAL_WINDOW_SIZE.x as u32,
+                    INITIAL_WINDOW_SIZE.y as u32,
+                ),
+                present_mode: bevy::window::PresentMode::AutoNoVsync,
+                title: "RayTracer".to_owned(),
+                resizable: true,
                 ..Default::default()
-            },
-            WindowPlugin {
-                primary_window: Some(Window {
-                    resolution: WindowResolution::new(
-                        INITIAL_WINDOW_SIZE.x as u32,
-                        INITIAL_WINDOW_SIZE.y as u32,
-                    ),
-                    present_mode: bevy::window::PresentMode::AutoNoVsync,
-                    title: "RayTracer".to_owned(),
-                    resizable: true,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            PanicHandlerPlugin,
-            LogPlugin::default(),
-            TaskPoolPlugin::default(),
-            FrameCountPlugin,
-            TimePlugin,
-            DiagnosticsPlugin,
-            InputPlugin,
-            AccessibilityPlugin,
-            WinitPlugin::default(),
-            CameraPlugin,
-            MeshAssets, 
-            UiPlugin, 
-            TransformPlugin::default(),
-        ))
-        .add_plugins((RenderPlugin::default(), PipelinedRenderingPlugin::default()))
-        // .add_systems(
-        //     Update,
-        //         ui
-        // )
-        .init_resource::<UiState>();
+            }),
+            ..Default::default()
+        },
+        PanicHandlerPlugin,
+        LogPlugin::default(),
+        TaskPoolPlugin::default(),
+        FrameCountPlugin,
+        TimePlugin,
+        DiagnosticsPlugin,
+        InputPlugin,
+        AccessibilityPlugin,
+        WinitPlugin::default(),
+        CameraPlugin,
+        MeshAssets,
+        UiPlugin,
+        TransformPlugin::default(),
+    ))
+    .add_plugins((RenderPlugin::default(), PipelinedRenderingPlugin::default()))
+    // .add_systems(
+    //     Update,
+    //         ui
+    // )
+    .init_resource::<UiState>();
     #[cfg(feature = "trace")]
     {
         app.add_systems(Last, tracy_client::frame_mark);

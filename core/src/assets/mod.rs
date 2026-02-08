@@ -1,9 +1,17 @@
-use std::collections::HashMap;
+use core::slice;
+use std::{collections::HashMap, mem::MaybeUninit};
 
 use anyhow::{Ok, Result};
-use bevy::{asset::{AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext, processor::LoadTransformAndSave, saver::AssetSaver, transformer::AssetTransformer}, prelude::*};
+use bevy::{
+    asset::{
+        AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext, processor::LoadTransformAndSave,
+        saver::AssetSaver, transformer::AssetTransformer,
+    },
+    prelude::*,
+};
 use bytemuck::Pod;
 use glam::{Mat4, Vec3};
+use std::sync::Arc;
 
 use crate::{
     assets::{material::Material, mesh::MeshletMesh},
@@ -30,12 +38,11 @@ impl Plugin for MeshAssets {
 
 #[derive(Asset, TypePath)]
 pub struct Mesh {
-    pub uploaded: bool,
-    pub meshes: Vec<MeshletMesh>,
-    pub instance_transforms: Vec<Mat4>,
-    pub materials: Vec<Material>,
-    pub instance_materials: Vec<u32>,
-    pub instance_mesh: Vec<u32>,
+    pub meshes: Arc<[MeshletMesh]>,
+    pub instance_transforms: Arc<[Mat4]>,
+    pub materials: Arc<[Material]>,
+    pub instance_materials: Arc<[u32]>,
+    pub instance_mesh: Arc<[u32]>,
 }
 
 #[derive(Asset, TypePath)]
@@ -156,11 +163,10 @@ impl AssetTransformer for MeshTransformer {
                         .unwrap_or(!0u32),
                 });
 
-                let Some(mesh) = remap
-                    .get(&(gltf_mesh.index(), primitive.index())) else {
+                let Some(mesh) = remap.get(&(gltf_mesh.index(), primitive.index())) else {
                     continue;
                 };
-                
+
                 instance_materials.push(material as u32);
                 instance_mesh.push(mesh.clone());
                 instance_transforms.push(Mat4::from_cols_array_2d(&transform));
@@ -168,12 +174,11 @@ impl AssetTransformer for MeshTransformer {
         }
 
         let mesh = Mesh {
-            instance_transforms,
-            instance_materials,
-            instance_mesh,
-            materials,
-            meshes,
-            uploaded: false,
+            instance_transforms: instance_transforms.into(),
+            instance_materials: instance_materials.into(),
+            instance_mesh: instance_mesh.into(),
+            materials: materials.into(),
+            meshes: meshes.into(),
         };
 
         let asset = asset.replace_asset(mesh);
@@ -194,17 +199,20 @@ async fn read_u64(reader: &mut dyn bevy::asset::io::Reader) -> Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-async fn read_slice<T: Pod>(reader: &mut dyn bevy::asset::io::Reader) -> Result<Vec<T>> {
+async fn read_slice<T: Pod>(reader: &mut dyn bevy::asset::io::Reader) -> Result<Arc<[T]>> {
     let len = read_u64(reader).await? as usize;
+    let mut data: Arc<[MaybeUninit<T>]> = Arc::new_uninit_slice(len);
 
-    let mut data = core::iter::repeat_with(T::zeroed)
-        .take(len)
-        .collect::<Vec<T>>();
-    reader
-        .read_exact(bytemuck::cast_slice_mut(&mut data))
-        .await?;
+    let buf = Arc::get_mut(&mut data).ok_or_else(|| anyhow::anyhow!("Arc unexpectedly shared"))?;
+    let byte_buf: &mut [u8] = unsafe {
+        slice::from_raw_parts_mut(
+            buf.as_mut_ptr() as *mut u8,
+            buf.len() * std::mem::size_of::<T>(),
+        )
+    };
+    reader.read_exact(byte_buf).await?;
 
-    Ok(data)
+    Ok(unsafe { data.assume_init() })
 }
 
 #[derive(TypePath)]
@@ -231,7 +239,7 @@ impl AssetSaver for MeshSaver {
             .write_all(&(mesh.meshes.len() as u64).to_le_bytes())
             .await?;
 
-        for mesh in &mesh.meshes {
+        for mesh in mesh.meshes.iter() {
             writer.write_all(&(mesh.bvh_depth.to_le_bytes())).await?;
             writer
                 .write_all(&bytemuck::cast_slice(&[mesh.aabb]))
@@ -291,8 +299,7 @@ impl AssetLoader for MeshLoader {
             instance_materials,
             instance_mesh: instance_meshlet_offsets,
             materials,
-            uploaded: false,
-            meshes,
+            meshes: meshes.into(),
         })
     }
     fn extensions(&self) -> &[&str] {

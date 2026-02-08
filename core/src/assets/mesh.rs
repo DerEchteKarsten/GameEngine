@@ -1,6 +1,8 @@
-use std::{collections::HashMap, ops::Range};
-
-use bevy::{math::bounding::{Aabb3d, BoundingVolume}, prelude::*, tasks::{AsyncComputeTaskPool, ParallelSlice}};
+use bevy::{
+    math::bounding::{Aabb3d, BoundingVolume},
+    prelude::*,
+    tasks::{AsyncComputeTaskPool, ParallelSlice},
+};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use itertools::Itertools;
@@ -10,6 +12,8 @@ use meshopt::{
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
+use std::sync::Arc;
+use std::{collections::HashMap, ops::Range};
 
 use crate::bindings::{Aabb, AabbErrorOffset, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
@@ -63,11 +67,11 @@ impl AabbErrorOffset {
 
 #[derive(Clone)]
 pub struct MeshletMesh {
-    pub vertices: Vec<Vertex>,
-    pub indices: Vec<u8>,
-    pub meshlets: Vec<Meshlet>,
-    pub bvh: Vec<BvhNode>,
-    pub cull_data: Vec<CullData>,
+    pub vertices: Arc<[Vertex]>,
+    pub indices: Arc<[u8]>,
+    pub meshlets: Arc<[Meshlet]>,
+    pub bvh: Arc<[BvhNode]>,
+    pub cull_data: Arc<[CullData]>,
 
     pub aabb: Aabb,
     pub bvh_depth: u32,
@@ -255,9 +259,9 @@ impl MeshletMesh {
             .collect::<Vec<_>>();
 
         Self {
-            vertices: duped_verticies,
+            vertices: duped_verticies.into(),
             indices: meshlets.triangles.into(),
-            bvh,
+            bvh: bvh.into(),
             meshlets: mmeshlets.into(),
             cull_data: cull_data
                 .into_iter()
@@ -934,7 +938,12 @@ fn verify_bvh(
             for m in 0..node.child_counts(i) as u32 {
                 let mid = (m + node.aabbs[i].offset()) as usize;
                 let meshlet = &cull_data[mid];
-                assert!(meshlet.error <= error || meshlet.error.is_infinite() || error.is_infinite(), "meshlet errors are not monotonic: {} <= {}", meshlet.error, error);
+                assert!(
+                    meshlet.error <= error || meshlet.error.is_infinite() || error.is_infinite(),
+                    "meshlet errors are not monotonic: {} <= {}",
+                    meshlet.error,
+                    error
+                );
                 let sphere_error = (sphere.xyz() - meshlet.lod_group_sphere.xyz()).length()
                     - (sphere.w - meshlet.lod_group_sphere.w);
                 assert!(

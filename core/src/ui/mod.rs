@@ -1,18 +1,44 @@
 use ash::vk::{self, Format, ImageUsageFlags, Rect2D};
-use bevy::{input::{ButtonState, keyboard::KeyboardInput, mouse::{MouseButtonInput, MouseWheel}}, prelude::*, window::WindowEvent};
+use bevy::{
+    app::{App, Update},
+    ecs::{
+        message::MessageReader,
+        resource::Resource,
+        system::{Commands, NonSendMut, Res, ResMut},
+    },
+    input::{
+        ButtonState,
+        keyboard::{KeyCode, KeyboardInput},
+        mouse::{MouseButton, MouseButtonInput, MouseWheel},
+    },
+    time::Time,
+    window::{CursorMoved, WindowEvent},
+};
 use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
 use imgui::{FontSource, Io};
-use lava::{FRAMES_IN_FLIGHT, bindless::BindlessHandle, command_buffer::CommandBuffer, state::Ctx, vkobjects::{buffer::{BufferUsageFlags, CpuBuffer, StorageBuffer}, image::{Image, ImageSize}}};
+use lava::{
+    FRAMES_IN_FLIGHT, bindless::BindlessHandle, command_buffer::CommandBuffer, state::Ctx,
+    vkobjects::image::ImageSize,
+};
+use lava::{buffer::CpuBuffer, vkobjects::image::Image};
 use std::{
-    collections::HashMap, ops::{Deref, DerefMut}, ptr::NonNull, random::{self, random}, sync::{Arc, Mutex}, time::Instant
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+    ptr::NonNull,
+    random::{self, random},
+    sync::{Arc, Mutex},
+    time::Instant,
 };
 
-use crate::{bindings::{self, UIVertex}, render::{self, ExtractSchedule, RenderStartup}};
+use crate::{
+    bindings::{self, UIVertex},
+    render::{self, ExtractSchedule, RenderStartup},
+};
 
 pub struct UiContext {
     ctx: imgui::Context,
-    ui: Option<NonNull<imgui::Ui>>
+    ui: Option<NonNull<imgui::Ui>>,
 }
 
 impl UiContext {
@@ -134,7 +160,6 @@ fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
     io.add_key_event(igkey, pressed);
 }
 
-
 fn read_input(
     mut events: MessageReader<WindowEvent>,
     mut resources: ResMut<UiResources>,
@@ -154,25 +179,31 @@ fn read_input(
                 text,
                 ..
             }) => {
-                if let Some(char) = text && *state == ButtonState::Pressed {
+                if let Some(char) = text
+                    && *state == ButtonState::Pressed
+                {
                     let char = char.as_bytes()[0].into();
                     io.add_input_character(char);
                 }
                 handle_key(io, key_code, *state == ButtonState::Pressed)
-            },
+            }
             WindowEvent::CursorMoved(CursorMoved {
                 position, delta, ..
             }) => io.add_mouse_pos_event([position.x, position.y]),
-            WindowEvent::MouseButtonInput(MouseButtonInput { button, state, .. }) => io.add_mouse_button_event(match button {
-                MouseButton::Forward => imgui::MouseButton::Extra1,
-                MouseButton::Back => imgui::MouseButton::Extra2,
-                MouseButton::Left => imgui::MouseButton::Left,
-                MouseButton::Right => imgui::MouseButton::Right,
-                MouseButton::Middle => imgui::MouseButton::Middle,
-                _=>imgui::MouseButton::Extra1
-            }, *state == ButtonState::Pressed),
+            WindowEvent::MouseButtonInput(MouseButtonInput { button, state, .. }) => io
+                .add_mouse_button_event(
+                    match button {
+                        MouseButton::Forward => imgui::MouseButton::Extra1,
+                        MouseButton::Back => imgui::MouseButton::Extra2,
+                        MouseButton::Left => imgui::MouseButton::Left,
+                        MouseButton::Right => imgui::MouseButton::Right,
+                        MouseButton::Middle => imgui::MouseButton::Middle,
+                        _ => imgui::MouseButton::Extra1,
+                    },
+                    *state == ButtonState::Pressed,
+                ),
             WindowEvent::MouseWheel(MouseWheel { unit, x, y, .. }) => {
-                io.add_mouse_wheel_event([*x,*y]);
+                io.add_mouse_wheel_event([*x, *y]);
             }
             _ => {}
         }
@@ -183,7 +214,11 @@ fn read_input(
     ctx.ui = Some(unsafe { NonNull::new_unchecked(ctx.ctx.new_frame()) });
 }
 
-fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>, mut queue: ResMut<UploadQueue>) {
+fn update_ui(
+    mut ctx: NonSendMut<UiContext>,
+    mut resources: ResMut<UiResources>,
+    mut queue: ResMut<UploadBuffer>,
+) {
     if ctx.ui.is_none() {
         return;
     }
@@ -191,12 +226,21 @@ fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>,
 
     if resources.font_atlas.is_none() {
         let atlas = ctx.ctx.fonts().build_alpha8_texture();
-        let image = Image::new_2d(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::TRANSFER_SRC, Format::R8_UNORM, ImageSize::XY(atlas.width, atlas.height)).unwrap();
+        let image = Image::new_2d(
+            ImageUsageFlags::SAMPLED
+                | ImageUsageFlags::TRANSFER_DST
+                | ImageUsageFlags::TRANSFER_SRC,
+            Format::R8_UNORM,
+            ImageSize::XY(atlas.width, atlas.height),
+        )
+        .unwrap();
         staging_buffer.copy_from_slice(atlas.data, 0).unwrap();
-        Ctx::transfer_queue().execute_command_wait(|cmd| {
-            cmd.copy_buffer_to_image(&staging_buffer, &image);
-            cmd.transition_layout(&image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-        }).unwrap();
+        Ctx::transfer_queue()
+            .execute_command_wait(|cmd| {
+                cmd.copy_buffer_to_image(&staging_buffer, &image);
+                cmd.transition_layout(&image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            })
+            .unwrap();
         resources.font_atlas = Some(image);
     }
 
@@ -205,8 +249,12 @@ fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>,
 
     resources.verticies[frame].clear();
     resources.indicies[frame].clear();
-    resources.verticies[frame].assert_size(draw_data.total_vtx_count as u64 * size_of::<UIVertex>() as u64).unwrap();
-    resources.indicies[frame].assert_size(draw_data.total_idx_count as u64 * size_of::<u32>() as u64).unwrap();
+    resources.verticies[frame]
+        .assert_size(draw_data.total_vtx_count as u64 * size_of::<UIVertex>() as u64)
+        .unwrap();
+    resources.indicies[frame]
+        .assert_size(draw_data.total_idx_count as u64 * size_of::<u32>() as u64)
+        .unwrap();
     let transform = Vec2::from(draw_data.display_pos);
     let scale = Vec2::from(draw_data.display_size);
     if draw_data.draw_lists_count() == 0 {
@@ -214,12 +262,26 @@ fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>,
     }
     for list in draw_data.draw_lists() {
         let vertex_offset = resources.verticies.len() as u32;
-        let indicies = list.idx_buffer().iter().map(|i| *i as u32 +vertex_offset).collect::<Vec<_>>();
-        let verticies = list.vtx_buffer().iter().map(|v| UIVertex {
-            color: Vec4::new(v.col[0]as f32 / 255.0, v.col[1]as f32 / 255.0, v.col[2]as f32 / 255.0, v.col[3]as f32 / 255.0 ),
-            pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0 - Vec2::splat(1.0)),
-            uv: Vec2::new(v.uv[0], v.uv[1])
-        }).collect::<Vec<_>>();
+        let indicies = list
+            .idx_buffer()
+            .iter()
+            .map(|i| *i as u32 + vertex_offset)
+            .collect::<Vec<_>>();
+        let verticies = list
+            .vtx_buffer()
+            .iter()
+            .map(|v| UIVertex {
+                color: Vec4::new(
+                    v.col[0] as f32 / 255.0,
+                    v.col[1] as f32 / 255.0,
+                    v.col[2] as f32 / 255.0,
+                    v.col[3] as f32 / 255.0,
+                ),
+                pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0
+                    - Vec2::splat(1.0)),
+                uv: Vec2::new(v.uv[0], v.uv[1]),
+            })
+            .collect::<Vec<_>>();
         resources.verticies[frame].push(&verticies);
         resources.indicies[frame].push(&indicies);
     }
@@ -227,8 +289,14 @@ fn update_ui(mut ctx: NonSendMut<UiContext>, mut resources: ResMut<UiResources>,
 
 fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
-        indicies: [StorageBuffer::with_capacity(BufferUsageFlags::INDEX, 1000*3).unwrap(), StorageBuffer::with_capacity(BufferUsageFlags::INDEX, 1000*3).unwrap()],
-        verticies: [StorageBuffer::with_capacity(BufferUsageFlags::STORAGE, 1000).unwrap(), StorageBuffer::with_capacity(BufferUsageFlags::STORAGE, 1000).unwrap()],
+        indicies: [
+            StorageBuffer::with_capacity(BufferUsageFlags::INDEX, 1000 * 3).unwrap(),
+            StorageBuffer::with_capacity(BufferUsageFlags::INDEX, 1000 * 3).unwrap(),
+        ],
+        verticies: [
+            StorageBuffer::with_capacity(BufferUsageFlags::STORAGE, 1000).unwrap(),
+            StorageBuffer::with_capacity(BufferUsageFlags::STORAGE, 1000).unwrap(),
+        ],
         font_atlas: None,
     });
 }
@@ -247,11 +315,8 @@ pub fn UiPlugin(app: &mut App) {
         .add_systems(ExtractSchedule, update_ui)
         .insert_non_send_resource({
             let mut ctx = imgui::Context::create();
-            ctx.fonts().add_font(&[
-                FontSource::DefaultFontData { config: None }
-            ]);
-        UiContext {
-            ctx,
-            ui: None,
-        }});
+            ctx.fonts()
+                .add_font(&[FontSource::DefaultFontData { config: None }]);
+            UiContext { ctx, ui: None }
+        });
 }

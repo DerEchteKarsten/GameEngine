@@ -1,7 +1,13 @@
-use std::f32::consts::PI;
 use glam::{Mat4, Vec3, vec3};
+use std::f32::consts::PI;
 
-use bevy::{input::{ButtonState, mouse::{MouseButtonInput, MouseMotion}}, prelude::*};
+use bevy::{
+    input::{
+        ButtonState,
+        mouse::{MouseButtonInput, MouseMotion},
+    },
+    prelude::*,
+};
 use lava::state::Ctx;
 
 const MOVE_SPEED: f32 = 1.0;
@@ -91,7 +97,10 @@ pub fn update_mouse_buttons(
         }
     }
 }
-pub fn update_mouse_move(mut controls: ResMut<Controls>, mut evr_motion: MessageReader<MouseMotion>) {
+pub fn update_mouse_move(
+    mut controls: ResMut<Controls>,
+    mut evr_motion: MessageReader<MouseMotion>,
+) {
     if !controls.look_around {
         return;
     }

@@ -183,16 +183,24 @@ pub fn gpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
     }
 }
 
-pub fn cpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
+pub fn cpu_type(
+    t: &TypeInfo,
+    structs: &mut HashMap<String, String>,
+    contains_image: &mut bool,
+) -> String {
     match t.kind.as_str() {
         "struct" => match t.name.as_ref().unwrap().as_str() {
-            "MutImage" | "Image" => "&'a lava::vkobjects::image::Image".into(),
+            "MutImage" | "Image" => {
+                *contains_image = true;
+                "&'a Image".into()
+            }
             "MutBuf" | "Buf" => {
                 let inner = cpu_type(
                     &t.fields[0].type_info.valueType.as_ref().unwrap().clone(),
                     structs,
+                    &mut false,
                 );
-                format!("&'a lava::vkobjects::buffer::BufferSlice<{}>", inner)
+                format!("BufferSlice<{}>", inner)
             }
             _ => rust_type(t, structs),
         },
@@ -215,10 +223,9 @@ pub fn resource(field: &Field, name: &str) -> Option<String> {
     }
 
     let access = if struct_name == "MutBuf" {
-        "ash::vk::AccessFlags2::SHADER_STORAGE_WRITE | ash::vk::AccessFlags2::SHADER_STORAGE_READ"
-            .into()
+        "vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ".into()
     } else if struct_name == "Buf" {
-        "ash::vk::AccessFlags2::SHADER_STORAGE_READ".into()
+        "vk::AccessFlags2::SHADER_STORAGE_READ".into()
     } else if struct_name == "MutImage" {
         format!("bindings.{field_name}.mut_access()")
     } else {
@@ -229,12 +236,12 @@ pub fn resource(field: &Field, name: &str) -> Option<String> {
     let layout_aspect = if is_image {
         format!(
             r#"    layout: bindings.{field_name}.prefered_layout(),
-    aspect: lava::vkobjects::image::get_aspects(bindings.{field_name}.format),"#
+    aspect: get_aspects(bindings.{field_name}.format),"#
         )
     } else {
         format!(
-            r#"    layout: ash::vk::ImageLayout::UNDEFINED,
-aspect: ash::vk::ImageAspectFlags::empty(), 
+            r#"    layout: vk::ImageLayout::UNDEFINED,
+aspect: vk::ImageAspectFlags::empty(), 
 "#
         )
     };
@@ -274,17 +281,31 @@ pub fn generate_push_constant(
         .collect::<Vec<_>>()
         .join("\n");
 
+    let mut contains_image = false;
     let cpu_fields = fields
         .iter()
-        .map(|f| format!("    pub {}: {},", f.name, cpu_type(&f.type_info, structs)))
+        .map(|f| {
+            format!(
+                "    pub {}: {},",
+                f.name,
+                cpu_type(&f.type_info, structs, &mut contains_image)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
+
+    let mut name = name.to_string();
+    if contains_image {
+        name.push_str("<'a>");
+    }
 
     let constructors = fields
         .iter()
         .map(
             |f| match f.type_info.name.as_ref().map(|e| e.as_str()).unwrap_or("") {
-                "MutBuf" | "Buf" => format!("{}: bindings.{}.address() as u64,", f.name, f.name),
+                "MutBuf" | "Buf" => {
+                    format!("{}: bindings.{}.gpu_address() as u64,", f.name, f.name)
+                }
                 "Image" | "MutImage" => {
                     format!("{}: bindings.{}.bindless_handle.unwrap(),", f.name, f.name)
                 }
@@ -308,15 +329,15 @@ pub struct {cname} {{
 {gpu_fields}
 }}
 
-pub struct {name}<'a> {{
+pub struct {name} {{
 {cpu_fields}
 }}
 
 unsafe impl bytemuck::Pod for {cname} {{}}
 unsafe impl bytemuck::Zeroable for {cname} {{}}
 
-impl lava::command_buffer::Binding for {cname} {{
-    type CpuBinding<'a> = {name}<'a>;
+impl Binding for {cname} {{
+    type CpuBinding<'a> = {name};
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {{
         Self {{
@@ -326,7 +347,7 @@ impl lava::command_buffer::Binding for {cname} {{
 
     fn resources<'a>(
         bindings: &Self::CpuBinding<'a>,
-        stages: ash::vk::PipelineStageFlags2,
+        stages: vk::PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {{
         vec![
             {resources}
@@ -371,21 +392,21 @@ pub fn generate_from_json_str(
             .0;
         out.push_str(&format!(r#"
 
-impl lava::command_buffer::RasterPass for {file_name} {{
+impl RasterPass for {file_name} {{
     type GpuBinding = C{pc_name};
 }}
 
-impl lava::command_buffer::RasterVertexShaderPass for {file_name} {{
+impl RasterVertexShaderPass for {file_name} {{
     const VERTEX: &'static str = "{vertex_entry}\0";
     const FRAGMENT: &'static str = "{fragment_entry}\0";
     const BYTES: &[u8] = include_bytes!("{file_path}");
     
-    fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {{
-        static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
+    fn module_cache() -> &'static OnceLock<vk::ShaderModule> {{
+        static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
         &CACHE
     }}
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> {{
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> {{
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
         &CACHE
     }}
 }}
@@ -406,23 +427,23 @@ impl lava::command_buffer::RasterVertexShaderPass for {file_name} {{
             } else {
                 "None"
             };
-        out.push_str(&format!(r#"impl lava::command_buffer::RasterPass for {file_name} {{
+        out.push_str(&format!(r#"impl RasterPass for {file_name} {{
     type GpuBinding = C{pc_name};
 }}
 
-impl lava::command_buffer::RasterMeshShaderPass for {file_name} {{
+impl RasterMeshShaderPass for {file_name} {{
     const MESH: &'static str = "{mesh_entry}\0";
     const FRAGMENT: &'static str = "{fragment_entry}\0";
     const BYTES: &[u8] = include_bytes!("{file_path}");
     const TASK: Option<&'static str> = {task_entry};
 
-    fn module_cache() -> &'static OnceLock<ash::vk::ShaderModule> {{
-        static CACHE: OnceLock<ash::vk::ShaderModule> = OnceLock::new();
+    fn module_cache() -> &'static OnceLock<vk::ShaderModule> {{
+        static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
         &CACHE
     }}
 
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> {{
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, ash::vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> {{
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
         &CACHE
     }}
 }}"#));
@@ -435,13 +456,13 @@ impl lava::command_buffer::RasterMeshShaderPass for {file_name} {{
         out.push_str(&format!(
             r#"
 
-impl lava::command_buffer::ComputePass for {file_name} {{
+impl ComputePass for {file_name} {{
     type GpuBinding = C{pc_name};
 
     const ENTRY: &'static str = "{entry}\0";
     const BYTES: &[u8] = include_bytes!("{file_path}");
-    fn cache() -> &'static OnceLock<ash::vk::Pipeline> {{
-        static CACHE: OnceLock<ash::vk::Pipeline> = OnceLock::new();
+    fn cache() -> &'static OnceLock<vk::Pipeline> {{
+        static CACHE: OnceLock<vk::Pipeline> = OnceLock::new();
         &CACHE
     }}
 }}"#
@@ -461,15 +482,15 @@ impl lava::command_buffer::ComputePass for {file_name} {{
         out.push_str(&format!(
             r#"
 
-impl lava::command_buffer::RaytracingPass for {file_name} {{
+impl RaytracingPass for {file_name} {{
     type GpuBinding = C{pc_name};
     const RAYGEN_HASH: &'static str = "{raygen}\0";
     const HIT_HASH: &'static str = "{hit}\0";
     const MISS_HASH: &'static str = "{miss}\0";
     const BYTES: &[u8] = include_bytes!("{file_path}");
 
-    fn cache() -> &'static OnceLock<lava::vkobjects::rt_pipeline::RaytracingPipeline> {{
-        static CACHE: OnceLock<lava::vkobjects::rt_pipeline::RaytracingPipeline> = OnceLock::new();
+    fn cache() -> &'static OnceLock<RaytracingPipeline> {{
+        static CACHE: OnceLock<RaytracingPipeline> = OnceLock::new();
         &CACHE
     }}
 }}
@@ -506,7 +527,19 @@ fn main() {
         .copied()
         .collect::<PathBuf>();
 
-    let mut bindings = "use std::collections::HashMap;\nuse std::sync::{OnceLock, Mutex}; use glam::*;\nuse bytemuck::{Pod, Zeroable};\nuse lava::command_buffer::{ResourceHandle, ResourceState, ShaderHash, RasterHash};\nuse lava::bindless::BindlessHandle;\nuse std::cell::{LazyCell};".to_string();
+    let mut bindings = r#"
+use std::collections::HashMap;
+use std::sync::{OnceLock, Mutex}; 
+use glam::*;
+use bytemuck::{Pod, Zeroable};
+use lava::command_buffer::{Binding, ResourceHandle, ResourceState, ShaderHash, RasterHash, ComputePass, RasterPass, RayTracingPass, RasterMeshShaderPass, RasterVertexShaderPass};
+use lava::bindless::BindlessHandle;
+use lava::vkobjects::image::Image;
+use lava::buffer::slice::BufferSlice;
+use std::cell::{LazyCell};
+use ash::vk;
+use lava::vkobjects::image::get_aspects;
+"#.to_string();
     let mut structs = HashMap::<String, String>::new();
     for entry in WalkDir::new(&shader_path)
         .into_iter()

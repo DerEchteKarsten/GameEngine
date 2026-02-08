@@ -1,23 +1,32 @@
 use std::ops::{DerefMut, Deref};
 use ash::vk::{self, Format};
-use async_channel::{Receiver, Sender};
+use async_std::channel::{Receiver, Sender};
 use bevy::{app::{App, AppExit, AppLabel, Plugin, SubApp}, asset::AssetServer, ecs::{change_detection::Mut, query::With, resource::Resource, schedule::{IntoScheduleConfigs, MainThreadExecutor, Schedule, ScheduleBuildSettings, ScheduleLabel, Schedules, SystemSet}, system::{Local, Query, Res, ResMut}, world::World}, tasks::ComputeTaskPool, time::Time, utils::default, window::{PrimaryWindow, RawHandleWrapperHolder}};
 use glam::Vec4;
-use lava::{FRAMES_IN_FLIGHT, command_buffer::RasterVertexDispatch, state::Ctx, vkobjects::{buffer::*, image::*}};
+use lava::{FRAMES_IN_FLIGHT, buffer::{AsBuffer, Buffer, BufferUsageFlags, GpuBuffer}, command_buffer::RasterVertexDispatch, state::Ctx, vkobjects::image::*};
 
-use crate::{INITIAL_WINDOW_SIZE, RenderResources, UiState, bindings::{DispatchIndirectCommand, DispatchParams, DrawIndirectCommand, Post, PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings}, components::camera::Camera, render::world::{RenderWorld, StagingBuffer, WorldPlugin, init_world}, ui::UiResources};
+use crate::{INITIAL_WINDOW_SIZE, bindings::{DispatchIndirectCommand, DispatchParams, DrawIndirectCommand, InstancedOffset, Post, PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings}, components::camera::Camera, render::world::{InstanceManager, MeshletManager, WorldPlugin, init_world}, ui::UiResources};
 
 mod world;
 mod extract_param;
+mod storage_buffer;
+
+
+struct RenderResources {
+    depth_attachment: Image,
+    color_attachment: Image,
+    cluster_buffer: Buffer<InstancedOffset>,
+    // dispatch_params: Buffer<DispatchParams>,
+    bvh_node_stack: Buffer<InstancedOffset>,
+}
 
 fn render(
     query: Query<&Camera>,
-    world: Res<RenderWorld>,
+    instances: Res<InstanceManager>,
+    meshlets: Res<MeshletManager>,
     mut resources: Local<Option<RenderResources>>,
-    mut staging_buffer: ResMut<StagingBuffer>,
     ui_resources: Res<UiResources>,
     time: Res<Time>,
-    ui_state: Res<UiState>,
 ) {
     let camera = query.single().unwrap();
 
@@ -35,24 +44,24 @@ fn render(
         )
         .unwrap(),
         cluster_buffer: Buffer::new(BufferUsageFlags::STORAGE, 1 << 14).unwrap(),
-        dispatch_params: Buffer::<_, GpuBuffer>::from_data(
-            BufferUsageFlags::INDIRECT_COMMAND | BufferUsageFlags::STORAGE,
-            &mut staging_buffer.0,
-            &[DispatchParams {
-                node_head: 0,
-                node_tail: 0,
-                done: 0,
-                meshlet_count: 0,
-                indirect_draw: DrawIndirectCommand {
-                    vertex_count: 128 * 3,
-                    instance_count: 0,
-                    first_instance: 0,
-                    first_vertex: 0,
-                },
-                indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
-            }],
-        )
-        .unwrap(),
+        // dispatch_params: Buffer::<_, GpuBuffer>::from_data(
+        //     BufferUsageFlags::INDIRECT_COMMAND | BufferUsageFlags::STORAGE,
+        //     &mut staging_buffer.0,
+        //     &[DispatchParams {
+        //         node_head: 0,
+        //         node_tail: 0,
+        //         done: 0,
+        //         meshlet_count: 0,
+        //         indirect_draw: DrawIndirectCommand {
+        //             vertex_count: 128 * 3,
+        //             instance_count: 0,
+        //             first_instance: 0,
+        //             first_vertex: 0,
+        //         },
+        //         indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
+        //     }],
+        // )
+        // .unwrap(),
         bvh_node_stack: Buffer::new(BufferUsageFlags::STORAGE, 10000).unwrap(),
     });
 
@@ -77,7 +86,7 @@ fn render(
 
         // cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
         // cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
-        if world.instance_bvh_root_nodes.len() > 0 {
+        if instances.bvh_root_nodes.len() > 0 {
             // cmd.compute::<InstanceCull>()
             //     .bind(InstanceCullBindings {
             //         num_instances: world.instance_bvh_root_nodes.len() as u64,
@@ -109,11 +118,11 @@ fn render(
 
             cmd.raster::<Raster>()
                 .bind(RasterBindings {
-                    indicies: &world.indecies,
-                    instance_offsets: resources.cluster_buffer,
-                    instance_transforms: &world.instance_transforms,
-                    meshlets: &world.meshlets,
-                    verticies: &world.vertices,
+                    instance_offsets: resources.cluster_buffer.whole(),
+                    instance_transforms: instances.transforms.whole(),
+                    indicies: meshlets.indices.whole(),
+                    meshlets: meshlets.meshlets.whole(),
+                    verticies: meshlets.vertices.whole(),
                     proj: camera.projection_matrix(),
                     view: camera.view_matrix(),
                 })
@@ -122,7 +131,7 @@ fn render(
                 .backface_culling(true)
                 .draw_fullscreen(RasterVertexDispatch::Draw {
                     vertex_count: 128 * 3,
-                    instance_count: world.meshlets.len() as u32,
+                    instance_count: meshlets.meshlets.len() as u32,
                 });
 
 
@@ -162,18 +171,18 @@ fn render(
 
         let frame = (Ctx::current_frame() + 1) as usize % FRAMES_IN_FLIGHT;
 
-        if let Some(atlas) = &ui_resources.font_atlas {
-            cmd.raster::<RasterUi>() 
-                .bind(RasterUiBindings {
-                    verticies: ui_resources.verticies[frame].as_ref(),
-                    font_atlas: atlas,
-                })
-                .color_attachment(&swapchain_image, None)
-                .backface_culling(false)
-                .wire_frame(false)
-                .index_buffer(&ui_resources.indicies[frame])
-                .draw_fullscreen(RasterVertexDispatch::indexed(ui_resources.indicies[frame].len() as u32 / 3, 1, 0));
-        }
+        // if let Some(atlas) = &ui_resources.font_atlas {
+        //     cmd.raster::<RasterUi>() 
+        //         .bind(RasterUiBindings {
+        //             verticies: ui_resources.verticies,
+        //             indicies: ui_resources.indicies,
+        //             font_atlas: atlas,
+        //         })
+        //         .color_attachment(&swapchain_image, None)
+        //         .backface_culling(false)
+        //         .wire_frame(false)
+        //         .draw_fullscreen(RasterVertexDispatch::Draw { vertex_count: , instance_count: () });
+        // }
 
         cmd.present(swapchain_image);
         Ok(())
@@ -185,9 +194,9 @@ fn render(
 #[derive(SystemSet, Hash, Debug, PartialEq, Eq, Clone)]
 enum RenderSystems {
     ApplyExtractCommands,
-    Upload,
     WaitFences,
     AquireSwapchainImage,
+    PreRender,
     Render,
     Submit,
 }
@@ -211,8 +220,8 @@ impl Render {
         schedule.configure_sets(
             (
                 RenderSystems::ApplyExtractCommands,
-                RenderSystems::Upload,
                 RenderSystems::WaitFences,
+                RenderSystems::PreRender,
                 RenderSystems::AquireSwapchainImage,
                 RenderSystems::Render,
                 RenderSystems::Submit,
@@ -342,8 +351,8 @@ impl Plugin for PipelinedRenderingPlugin {
             return;
         }
 
-        let (app_to_render_sender, app_to_render_receiver) = async_channel::bounded::<SubApp>(1);
-        let (render_to_app_sender, render_to_app_receiver) = async_channel::bounded::<SubApp>(1);
+        let (app_to_render_sender, app_to_render_receiver) = async_std::channel::bounded::<SubApp>(1);
+        let (render_to_app_sender, render_to_app_receiver) = async_std::channel::bounded::<SubApp>(1);
 
         let mut render_app = app
             .remove_sub_app(RenderApp)
