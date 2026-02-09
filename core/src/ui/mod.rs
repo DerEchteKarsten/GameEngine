@@ -18,7 +18,12 @@ use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
 use imgui::{FontSource, Io};
 use lava::{
-    FRAMES_IN_FLIGHT, bindless::BindlessHandle, buffer::{Buffer, BufferUsageFlags, allocator::QueueAllocated, slice::BufferSlice}, command_buffer::CommandBuffer, state::Ctx, vkobjects::image::ImageSize
+    FRAMES_IN_FLIGHT,
+    bindless::BindlessHandle,
+    buffer::{Buffer, BufferUsageFlags, allocator::QueueAllocated, slice::BufferSlice},
+    command_buffer::CommandBuffer,
+    state::Ctx,
+    vkobjects::image::ImageSize,
 };
 use lava::{buffer::CpuBuffer, vkobjects::image::Image};
 use std::{
@@ -32,7 +37,10 @@ use std::{
 
 use crate::{
     bindings::{self, UIVertex},
-    render::{self, ExtractSchedule, MainWorld, RenderStartup, extract_param::Extract, world::UploadBuffer},
+    render::{
+        self, ExtractSchedule, MainWorld, RenderStartup, extract_param::Extract,
+        world::UploadBuffer,
+    },
 };
 
 pub struct UiContext {
@@ -208,7 +216,6 @@ fn read_input(
     }
     io.font_global_scale = 1.0;
     io.display_size = [Ctx::window_width() as f32, Ctx::window_height() as f32];
-
 }
 
 fn extract_ui(
@@ -229,17 +236,19 @@ fn extract_ui(
         .unwrap();
         let allocator = queue.allocator.clone();
         let atlas_slice = BufferSlice::from(atlas.data);
-        bevy::tasks::AsyncComputeTaskPool::get().spawn_local(async move {
-            let mem = allocator.allocate_blocking(atlas.data.len() as u64).await;
-            atlas_slice.mem_copy_to(mem);
-            Ctx::transfer_queue()
-                .execute_command_async(|cmd| {
-                    cmd.copy_buffer_to_image(mem, &image);
-                    cmd.transition_layout(&image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-                })
-                .await
-                .unwrap();
-        }).detach();
+        bevy::tasks::AsyncComputeTaskPool::get()
+            .spawn_local(async move {
+                let mem = allocator.allocate_blocking(atlas.data.len() as u64).await;
+                atlas_slice.mem_copy_to(mem);
+                Ctx::transfer_queue()
+                    .execute_command_async(|cmd| {
+                        cmd.copy_buffer_to_image(mem, &image);
+                        cmd.transition_layout(&image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+                    })
+                    .await
+                    .unwrap();
+            })
+            .detach();
         resources.font_atlas = Some(image);
     }
     let draw_data = ctx.ctx.render();
@@ -251,41 +260,38 @@ fn extract_ui(
     }
     for list in draw_data.draw_lists() {
         let vertex_offset = resources.verticies.len() as u32;
-        let indicies = list
-            .idx_buffer()
-            .iter()
-            .map(|i| *i as u32 + vertex_offset);
-        let verticies = list
-            .vtx_buffer()
-            .iter()
-            .map(|v| UIVertex {
-                color: Vec4::new(
-                    v.col[0] as f32 / 255.0,
-                    v.col[1] as f32 / 255.0,
-                    v.col[2] as f32 / 255.0,
-                    v.col[3] as f32 / 255.0,
-                ),
-                pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0
-                    - Vec2::splat(1.0)),
-                uv: Vec2::new(v.uv[0], v.uv[1]),
-            });
+        let indicies = list.idx_buffer().iter().map(|i| *i as u32 + vertex_offset);
+        let verticies = list.vtx_buffer().iter().map(|v| UIVertex {
+            color: Vec4::new(
+                v.col[0] as f32 / 255.0,
+                v.col[1] as f32 / 255.0,
+                v.col[2] as f32 / 255.0,
+                v.col[3] as f32 / 255.0,
+            ),
+            pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0 - Vec2::splat(1.0)),
+            uv: Vec2::new(v.uv[0], v.uv[1]),
+        });
         resources.verticies.extend(verticies);
         resources.indicies.extend(indicies);
     }
 
     resources.verticies.assert_size();
     resources.indicies.assert_size();
-    
-    bevy::tasks::AsyncComputeTaskPool::get().spawn_local(async move {
 
-    });
+    bevy::tasks::AsyncComputeTaskPool::get().spawn_local(async move {});
     ctx.ui = unsafe { ctx.ctx.new_frame() as *mut _ };
 }
 
 fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
-        verticies: QueueAllocated::new([Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(), Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap()]),
-        indicies: QueueAllocated::new([Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(), Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap()]),
+        verticies: QueueAllocated::new([
+            Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(),
+            Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(),
+        ]),
+        indicies: QueueAllocated::new([
+            Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(),
+            Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(),
+        ]),
         font_atlas: None,
     });
 }
@@ -306,6 +312,9 @@ pub fn UiPlugin(app: &mut App) {
             let mut ctx = imgui::Context::create();
             ctx.fonts()
                 .add_font(&[FontSource::DefaultFontData { config: None }]);
-            UiContext { ctx, ui: std::ptr::null_mut() }
+            UiContext {
+                ctx,
+                ui: std::ptr::null_mut(),
+            }
         });
 }

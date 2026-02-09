@@ -4,8 +4,8 @@ struct PostBindings {
     column_major float4x4 inverse_proj;
     column_major float4x4 inverse_view;
     float4 window_size;
-    Image2D<float> depth;
-    Image2D<float4> color;
+    Tex2D<float> depth;
+    Tex2D<float4> color;
     MutImage2D<float4> out;
 }
 

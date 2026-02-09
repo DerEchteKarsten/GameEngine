@@ -33,11 +33,7 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
                 Instance {
                     model: model.clone(),
                 },
-                Transform::new_euler(
-                    Vec3::new(0.0, 0.0, 1.0),
-                    Vec3::new(10.0, 10.0, 10.0),
-                    Vec3::new(0.0, 0.0, PI),
-                ),
+                Transform::IDENTITY,
                 Model,
             ));
         }

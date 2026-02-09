@@ -29,12 +29,7 @@ use bevy::{
 };
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
-use lava::{
-    FRAMES_IN_FLIGHT,
-    command_buffer::RasterVertexDispatch,
-    state::Ctx,
-    vkobjects::image::{Image, ImageSize},
-};
+use lava::{FRAMES_IN_FLIGHT, command_buffer::RasterVertexDispatch, state::Ctx};
 
 mod bindings;
 

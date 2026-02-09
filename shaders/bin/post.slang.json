@@ -84,10 +84,10 @@
                             "name": "depth",
                             "type": {
                                 "kind": "struct",
-                                "name": "Image",
+                                "name": "Texture",
                                 "fields": [
                                     {
-                                        "name": "DescriptorSet",
+                                        "name": "DescriptorIndex",
                                         "type": {
                                             "kind": "scalar",
                                             "scalarType": "uint32"
@@ -95,7 +95,7 @@
                                         "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                                     },
                                     {
-                                        "name": "DescriptorIndex",
+                                        "name": "pad",
                                         "type": {
                                             "kind": "scalar",
                                             "scalarType": "uint32"
@@ -110,10 +110,10 @@
                             "name": "color",
                             "type": {
                                 "kind": "struct",
-                                "name": "Image",
+                                "name": "Texture",
                                 "fields": [
                                     {
-                                        "name": "DescriptorSet",
+                                        "name": "DescriptorIndex",
                                         "type": {
                                             "kind": "scalar",
                                             "scalarType": "uint32"
@@ -121,7 +121,7 @@
                                         "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                                     },
                                     {
-                                        "name": "DescriptorIndex",
+                                        "name": "pad",
                                         "type": {
                                             "kind": "scalar",
                                             "scalarType": "uint32"
@@ -139,7 +139,7 @@
                                 "name": "MutImage",
                                 "fields": [
                                     {
-                                        "name": "DescriptorSet",
+                                        "name": "pad",
                                         "type": {
                                             "kind": "scalar",
                                             "scalarType": "uint32"
@@ -210,10 +210,10 @@
                                 "name": "depth",
                                 "type": {
                                     "kind": "struct",
-                                    "name": "Image",
+                                    "name": "Texture",
                                     "fields": [
                                         {
-                                            "name": "DescriptorSet",
+                                            "name": "DescriptorIndex",
                                             "type": {
                                                 "kind": "scalar",
                                                 "scalarType": "uint32"
@@ -221,7 +221,7 @@
                                             "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                                         },
                                         {
-                                            "name": "DescriptorIndex",
+                                            "name": "pad",
                                             "type": {
                                                 "kind": "scalar",
                                                 "scalarType": "uint32"
@@ -236,10 +236,10 @@
                                 "name": "color",
                                 "type": {
                                     "kind": "struct",
-                                    "name": "Image",
+                                    "name": "Texture",
                                     "fields": [
                                         {
-                                            "name": "DescriptorSet",
+                                            "name": "DescriptorIndex",
                                             "type": {
                                                 "kind": "scalar",
                                                 "scalarType": "uint32"
@@ -247,7 +247,7 @@
                                             "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                                         },
                                         {
-                                            "name": "DescriptorIndex",
+                                            "name": "pad",
                                             "type": {
                                                 "kind": "scalar",
                                                 "scalarType": "uint32"
@@ -265,7 +265,7 @@
                                     "name": "MutImage",
                                     "fields": [
                                         {
-                                            "name": "DescriptorSet",
+                                            "name": "pad",
                                             "type": {
                                                 "kind": "scalar",
                                                 "scalarType": "uint32"
@@ -329,9 +329,5 @@
                 }
             ]
         }
-    ],
-    "hashedStrings": {
-        "Attempting to write to a readonly image!": 1258391195
-    }
-
+    ]
 }

@@ -1,20 +1,55 @@
-use std::ops::{DerefMut, Deref};
-use ash::vk::{self, Format};
+use crate::{
+    INITIAL_WINDOW_SIZE,
+    bindings::{
+        DispatchIndirectCommand, DispatchParams, DrawIndirectCommand, InstancedOffset, Post,
+        PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings,
+    },
+    components::camera::Camera,
+    render::world::{InstanceManager, MeshletManager, WorldPlugin, init_world},
+    ui::UiResources,
+};
 use async_std::channel::{Receiver, Sender};
-use bevy::{app::{App, AppExit, AppLabel, Plugin, SubApp}, asset::AssetServer, ecs::{change_detection::Mut, query::With, resource::Resource, schedule::{IntoScheduleConfigs, MainThreadExecutor, Schedule, ScheduleBuildSettings, ScheduleLabel, Schedules, SystemSet}, system::{Local, Query, Res, ResMut}, world::World}, tasks::ComputeTaskPool, time::Time, utils::default, window::{PrimaryWindow, RawHandleWrapperHolder}};
+use bevy::{
+    app::{App, AppExit, AppLabel, Plugin, SubApp},
+    asset::AssetServer,
+    ecs::{
+        change_detection::Mut,
+        query::With,
+        resource::Resource,
+        schedule::{
+            IntoScheduleConfigs, MainThreadExecutor, Schedule, ScheduleBuildSettings,
+            ScheduleLabel, Schedules, SystemSet,
+        },
+        system::{Local, Query, Res, ResMut},
+        world::World,
+    },
+    tasks::ComputeTaskPool,
+    time::Time,
+    utils::default,
+    window::{PrimaryWindow, RawHandleWrapperHolder},
+};
 use glam::Vec4;
-use lava::{FRAMES_IN_FLIGHT, buffer::{AsBuffer, Buffer, BufferUsageFlags, GpuBuffer}, command_buffer::RasterVertexDispatch, state::Ctx, vkobjects::image::*};
+use lava::{
+    FRAMES_IN_FLIGHT,
+    buffer::{AsBuffer, Buffer, BufferUsageFlags, GpuBuffer},
+    command_buffer::RasterVertexDispatch,
+    image::{
+        Image, ImageSize,
+        format::{D32Sfloat, R32G32B32A32Sfloat},
+        slice::{AsImage, ImageView},
+        usage::{ColorAttachmentSampled, DepthAttachmentSampled},
+    },
+    state::Ctx,
+};
+use std::ops::{Deref, DerefMut};
 
-use crate::{INITIAL_WINDOW_SIZE, bindings::{DispatchIndirectCommand, DispatchParams, DrawIndirectCommand, InstancedOffset, Post, PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings}, components::camera::Camera, render::world::{InstanceManager, MeshletManager, WorldPlugin, init_world}, ui::UiResources};
-
-pub mod world;
 pub mod extract_param;
 pub mod storage_buffer;
-
+pub mod world;
 
 struct RenderResources {
-    depth_attachment: Image,
-    color_attachment: Image,
+    depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
+    color_attachment: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
     cluster_buffer: Buffer<InstancedOffset>,
     // dispatch_params: Buffer<DispatchParams>,
     bvh_node_stack: Buffer<InstancedOffset>,
@@ -31,17 +66,15 @@ fn render(
     let camera = query.single().unwrap();
 
     let resources = resources.get_or_insert_with(|| RenderResources {
-        depth_attachment: Image::new_2d(
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-            Format::D32_SFLOAT,
-            ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32),
-        )
+        depth_attachment: Image::new(ImageSize::XY(
+            INITIAL_WINDOW_SIZE.x as u32,
+            INITIAL_WINDOW_SIZE.y as u32,
+        ))
         .unwrap(),
-        color_attachment: Image::new_2d(
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-            Format::R32G32B32A32_SFLOAT,
-            ImageSize::XY(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32),
-        )
+        color_attachment: Image::new(ImageSize::XY(
+            INITIAL_WINDOW_SIZE.x as u32,
+            INITIAL_WINDOW_SIZE.y as u32,
+        ))
         .unwrap(),
         cluster_buffer: Buffer::new(BufferUsageFlags::STORAGE, 1 << 14).unwrap(),
         // dispatch_params: Buffer::<_, GpuBuffer>::from_data(
@@ -126,15 +159,16 @@ fn render(
                     proj: camera.projection_matrix(),
                     view: camera.view_matrix(),
                 })
-                .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
-                .depth_attachment(&resources.depth_attachment)
+                .color_attachment(
+                    resources.color_attachment.view(),
+                    Some([0.2, 0.2, 0.4, 1.0]),
+                )
+                .depth_attachment(resources.depth_attachment.view())
                 .backface_culling(true)
                 .draw_fullscreen(RasterVertexDispatch::Draw {
                     vertex_count: 128 * 3,
                     instance_count: meshlets.meshlets.len() as u32,
                 });
-
-
 
             // cmd.raster()
             //     .mesh("meshshader", "mesh")
@@ -155,9 +189,9 @@ fn render(
 
         cmd.compute::<Post>()
             .bind(PostBindings {
-                color: &resources.color_attachment,
-                depth: &resources.depth_attachment,
-                out: &swapchain_image,
+                color: resources.color_attachment.as_sampled(),
+                depth: resources.depth_attachment.as_sampled(),
+                out: swapchain_image.as_storage(),
                 inverse_proj: camera.projection_matrix().inverse(),
                 inverse_view: camera.view_matrix().inverse(),
                 window_size: Vec4::new(
@@ -172,7 +206,7 @@ fn render(
         let frame = (Ctx::current_frame() + 1) as usize % FRAMES_IN_FLIGHT;
 
         // if let Some(atlas) = &ui_resources.font_atlas {
-        //     cmd.raster::<RasterUi>() 
+        //     cmd.raster::<RasterUi>()
         //         .bind(RasterUiBindings {
         //             verticies: ui_resources.verticies,
         //             indicies: ui_resources.indicies,
@@ -189,7 +223,6 @@ fn render(
     })
     .unwrap();
 }
-
 
 #[derive(SystemSet, Hash, Debug, PartialEq, Eq, Clone)]
 enum RenderSystems {
@@ -226,7 +259,7 @@ impl Render {
                 RenderSystems::Render,
                 RenderSystems::Submit,
             )
-            .chain(),
+                .chain(),
         );
         schedule
     }
@@ -242,7 +275,6 @@ fn apply_extract_commands(render_world: &mut World) {
 }
 #[derive(Resource, Default)]
 struct ScratchMainWorld(World);
-
 
 #[derive(Resource, Default)]
 pub struct MainWorld(World);
@@ -271,7 +303,6 @@ fn extract(main_world: &mut World, render_world: &mut World) {
     let scratch_world = core::mem::replace(main_world, inserted_world.0);
     main_world.insert_resource(ScratchMainWorld(scratch_world));
 }
-
 
 /// A Label for the sub app that runs the parts of pipelined rendering that need to run on the main thread.
 ///
@@ -346,13 +377,10 @@ impl Plugin for PipelinedRenderingPlugin {
 
     // Sets up the render thread and inserts resources into the main app used for controlling the render thread.
     fn cleanup(&self, app: &mut App) {
-        // skip setting up when headless
-        if app.get_sub_app(RenderExtractApp).is_none() {
-            return;
-        }
-
-        let (app_to_render_sender, app_to_render_receiver) = async_std::channel::bounded::<SubApp>(1);
-        let (render_to_app_sender, render_to_app_receiver) = async_std::channel::bounded::<SubApp>(1);
+        let (app_to_render_sender, app_to_render_receiver) =
+            async_std::channel::bounded::<SubApp>(1);
+        let (render_to_app_sender, render_to_app_receiver) =
+            async_std::channel::bounded::<SubApp>(1);
 
         let mut render_app = app
             .remove_sub_app(RenderApp)
@@ -444,7 +472,13 @@ impl Plugin for RenderPlugin {
         #[cfg(not(debug_assertions))]
         let validation = false;
 
-        lava::init(&window.get_display_handle(), &window.get_window_handle(), validation, false).unwrap();
+        lava::init(
+            &window.get_display_handle(),
+            &window.get_window_handle(),
+            validation,
+            false,
+        )
+        .unwrap();
 
         let mut render_app = SubApp::new();
         render_app.update_schedule = Some(Render.intern());
@@ -454,7 +488,7 @@ impl Plugin for RenderPlugin {
             ..default()
         });
         extract_schedule.set_apply_final_deferred(false);
-        
+
         let mut should_run_startup = true;
 
         render_app
@@ -466,8 +500,7 @@ impl Plugin for RenderPlugin {
                 (
                     apply_extract_commands.in_set(RenderSystems::ApplyExtractCommands),
                     Ctx::start_frame.in_set(RenderSystems::WaitFences),
-                    render
-                        .in_set(RenderSystems::Render),
+                    render.in_set(RenderSystems::Render),
                 ),
             )
             .set_extract(move |main_world, render_world| {

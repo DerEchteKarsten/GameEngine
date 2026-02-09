@@ -70,5 +70,6 @@
         "typeinfo": "cpp",
         "variant": "cpp"
     },
-    "cmake.sourceDirectory": "/home/karsten/code/GameEngine/slang/examples/mlp-training-coopvec"
+    "cmake.sourceDirectory": "/home/karsten/code/GameEngine/slang/examples/mlp-training-coopvec",
+    "C_Cpp.default.compilerPath": "/usr/bin/g++"
 }

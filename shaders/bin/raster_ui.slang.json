@@ -126,10 +126,10 @@
                             "name": "font_atlas",
                             "type": {
                                 "kind": "struct",
-                                "name": "Image",
+                                "name": "Texture",
                                 "fields": [
                                     {
-                                        "name": "DescriptorSet",
+                                        "name": "DescriptorIndex",
                                         "type": {
                                             "kind": "scalar",
                                             "scalarType": "uint32"
@@ -137,7 +137,7 @@
                                         "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                                     },
                                     {
-                                        "name": "DescriptorIndex",
+                                        "name": "pad",
                                         "type": {
                                             "kind": "scalar",
                                             "scalarType": "uint32"
@@ -242,10 +242,10 @@
                                 "name": "font_atlas",
                                 "type": {
                                     "kind": "struct",
-                                    "name": "Image",
+                                    "name": "Texture",
                                     "fields": [
                                         {
-                                            "name": "DescriptorSet",
+                                            "name": "DescriptorIndex",
                                             "type": {
                                                 "kind": "scalar",
                                                 "scalarType": "uint32"
@@ -253,7 +253,7 @@
                                             "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                                         },
                                         {
-                                            "name": "DescriptorIndex",
+                                            "name": "pad",
                                             "type": {
                                                 "kind": "scalar",
                                                 "scalarType": "uint32"
@@ -457,9 +457,5 @@
                 }
             ]
         }
-    ],
-    "hashedStrings": {
-        "Attempting to write to a readonly image!": 1258391195
-    }
-
+    ]
 }

@@ -647,9 +647,5 @@
                 }
             ]
         }
-    ],
-    "hashedStrings": {
-        "Attempting to write to a readonly image!": 1258391195
-    }
-
+    ]
 }

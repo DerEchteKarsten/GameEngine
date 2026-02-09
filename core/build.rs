@@ -175,7 +175,7 @@ pub fn rust_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String 
 pub fn gpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
     match t.kind.as_str() {
         "struct" => match t.name.as_ref().unwrap().as_str() {
-            "Image" | "MutImage" => "BindlessHandle".into(),
+            "Image" | "MutImage" | "Texture" => "BindlessHandle".into(),
             "MutBuf" | "Buf" => "u64".into(),
             _ => rust_type(t, structs),
         },
@@ -183,22 +183,15 @@ pub fn gpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
     }
 }
 
-pub fn cpu_type(
-    t: &TypeInfo,
-    structs: &mut HashMap<String, String>,
-    contains_image: &mut bool,
-) -> String {
+pub fn cpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
     match t.kind.as_str() {
         "struct" => match t.name.as_ref().unwrap().as_str() {
-            "MutImage" | "Image" => {
-                *contains_image = true;
-                "&'a Image".into()
-            }
+            "MutImage" | "Image" => "StorageImageViewBinding".into(),
+            "Texture" => "SampledImageViewBinding".into(),
             "MutBuf" | "Buf" => {
                 let inner = cpu_type(
                     &t.fields[0].type_info.valueType.as_ref().unwrap().clone(),
                     structs,
-                    &mut false,
                 );
                 format!("BufferSlice<{}>", inner)
             }
@@ -215,6 +208,7 @@ pub fn resource(field: &Field, name: &str) -> Option<String> {
     let field_name = field.name.clone();
     let struct_name = field.type_info.name.clone().unwrap();
     if struct_name != "MutImage"
+        && struct_name != "Texture"
         && struct_name != "Image"
         && struct_name != "Buf"
         && struct_name != "MutBuf"
@@ -223,20 +217,22 @@ pub fn resource(field: &Field, name: &str) -> Option<String> {
     }
 
     let access = if struct_name == "MutBuf" {
-        "vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ".into()
+        "vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ"
     } else if struct_name == "Buf" {
-        "vk::AccessFlags2::SHADER_STORAGE_READ".into()
+        "vk::AccessFlags2::SHADER_STORAGE_READ"
     } else if struct_name == "MutImage" {
-        format!("bindings.{field_name}.mut_access()")
+        "vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ"
+    } else if struct_name == "Image" {
+        "vk::AccessFlags2::SHADER_STORAGE_READ"
     } else {
-        format!("bindings.{field_name}.const_access()")
+        "vk::AccessFlags2::SHADER_SAMPLED_READ"
     };
 
-    let is_image = struct_name == "MutImage" || struct_name == "Image";
+    let is_image = struct_name == "MutImage" || struct_name == "Image" || struct_name == "Texture";
     let layout_aspect = if is_image {
         format!(
-            r#"    layout: bindings.{field_name}.prefered_layout(),
-    aspect: get_aspects(bindings.{field_name}.format),"#
+            r#"    layout: bindings.{field_name}.prefered_layout,
+    aspect: bindings.{field_name}.aspect,"#
         )
     } else {
         format!(
@@ -262,7 +258,7 @@ ResourceState {{
         ))
     } else {
         Some(format!(
-            "(ResourceHandle::Image((bindings.{}.view, bindings.{}.handle)),{}),",
+            "(ResourceHandle::Image((bindings.{}.view, bindings.{}.image)),{}),",
             field.name, field.name, resource_state
         ))
     }
@@ -281,23 +277,11 @@ pub fn generate_push_constant(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let mut contains_image = false;
     let cpu_fields = fields
         .iter()
-        .map(|f| {
-            format!(
-                "    pub {}: {},",
-                f.name,
-                cpu_type(&f.type_info, structs, &mut contains_image)
-            )
-        })
+        .map(|f| format!("    pub {}: {},", f.name, cpu_type(&f.type_info, structs)))
         .collect::<Vec<_>>()
         .join("\n");
-
-    let mut name = name.to_string();
-    if contains_image {
-        name.push_str("<'a>");
-    }
 
     let constructors = fields
         .iter()
@@ -306,8 +290,8 @@ pub fn generate_push_constant(
                 "MutBuf" | "Buf" => {
                     format!("{}: bindings.{}.gpu_address() as u64,", f.name, f.name)
                 }
-                "Image" | "MutImage" => {
-                    format!("{}: bindings.{}.bindless_handle.unwrap(),", f.name, f.name)
+                "Image" | "MutImage" | "Texture" => {
+                    format!("{}: bindings.{}.handle,", f.name, f.name)
                 }
                 _ => format!("{}: bindings.{},", f.name, f.name),
             },
@@ -337,16 +321,16 @@ unsafe impl bytemuck::Pod for {cname} {{}}
 unsafe impl bytemuck::Zeroable for {cname} {{}}
 
 impl Binding for {cname} {{
-    type CpuBinding<'a> = {name};
+    type CpuBinding = {name};
 
-    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {{
+    fn from_cpu_binding(bindings: &Self::CpuBinding) -> Self {{
         Self {{
             {constructors}
         }}
     }}
 
-    fn resources<'a>(
-        bindings: &Self::CpuBinding<'a>,
+    fn resources(
+        bindings: &Self::CpuBinding,
         stages: vk::PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {{
         vec![
@@ -534,11 +518,10 @@ use glam::*;
 use bytemuck::{Pod, Zeroable};
 use lava::command_buffer::{Binding, ResourceHandle, ResourceState, ShaderHash, RasterHash, ComputePass, RasterPass, RayTracingPass, RasterMeshShaderPass, RasterVertexShaderPass};
 use lava::bindless::BindlessHandle;
-use lava::vkobjects::image::Image;
 use lava::buffer::slice::BufferSlice;
 use std::cell::{LazyCell};
 use ash::vk;
-use lava::vkobjects::image::get_aspects;
+use lava::image::slice::{StorageImageViewBinding, SampledImageViewBinding};
 "#.to_string();
     let mut structs = HashMap::<String, String>::new();
     for entry in WalkDir::new(&shader_path)

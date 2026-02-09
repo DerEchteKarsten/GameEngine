@@ -17,7 +17,7 @@ struct UIVertex {
 struct RasterMeshUiBindings {
     Buf<UIVertex> verticies;
     Buf<uint> indicies;
-    Image2D<float> font_atlas;
+    Tex2D<float> font_atlas;
 }
 
 [[vk::push_constant]] RasterMeshUiBindings b;

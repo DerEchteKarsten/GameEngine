@@ -10,15 +10,17 @@ use bevy::ecs::entity::Entities;
 use bevy::ecs::system::SystemState;
 use bevy::prelude::*;
 
-use bevy::tasks::futures::{check_ready};
-use bevy::tasks::futures_lite::{future};
+use bevy::tasks::futures::check_ready;
+use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, Task, TaskPool, block_on};
 use bytemuck::Pod;
 use futures::join;
 use glam::Mat4;
 use lava::FRAMES_IN_FLIGHT;
 use lava::buffer::Buffer;
-use lava::buffer::allocator::{ArenaAllocator, AsyncSubAllocator, QueueAllocated, RangeAllocator, SubAllocated};
+use lava::buffer::allocator::{
+    ArenaAllocator, AsyncSubAllocator, QueueAllocated, RangeAllocator, SubAllocated,
+};
 use lava::buffer::slice::BufferSlice;
 use lava::buffer::{AsBuffer, BufferUsageFlags, CpuBuffer, GpuBuffer, Location};
 use lava::state::Ctx;
@@ -95,7 +97,10 @@ impl InstanceManager {
     }
 
     fn apply_writes(&mut self, buffer: &mut UploadBuffer) {
-        fn copy<T: Pod+ Copy + Send>(buff: &mut QueueAllocated<Buffer<T>>, allocator: AsyncSubAllocator<RangeAllocator>) -> Task<BufferSlice<T, CpuBuffer>>{
+        fn copy<T: Pod + Copy + Send>(
+            buff: &mut QueueAllocated<Buffer<T>>,
+            allocator: AsyncSubAllocator<RangeAllocator>,
+        ) -> Task<BufferSlice<T, CpuBuffer>> {
             buff.assert_size();
             let size = buff.queue_size();
             let queue = buff.clear();
@@ -106,19 +111,23 @@ impl InstanceManager {
             })
         }
 
-        let regions = block_on(async {join!(
-            copy(&mut self.transforms, buffer.allocator.clone()),
-            copy(&mut self.materials, buffer.allocator.clone()),
-            copy(&mut self.bvh_root_nodes, buffer.allocator.clone()),
-            copy(&mut self.aabbs, buffer.allocator.clone()),
-        )});
+        let regions = block_on(async {
+            join!(
+                copy(&mut self.transforms, buffer.allocator.clone()),
+                copy(&mut self.materials, buffer.allocator.clone()),
+                copy(&mut self.bvh_root_nodes, buffer.allocator.clone()),
+                copy(&mut self.aabbs, buffer.allocator.clone()),
+            )
+        });
 
-        Ctx::queue().execute_command_wait(|cmd| {
-            cmd.copy_buffer(regions.0, self.transforms.whole());
-            cmd.copy_buffer(regions.1, self.materials.whole());
-            cmd.copy_buffer(regions.2, self.bvh_root_nodes.whole());
-            cmd.copy_buffer(regions.3, self.aabbs.whole());
-        }).unwrap();
+        Ctx::queue()
+            .execute_command_wait(|cmd| {
+                cmd.copy_buffer(regions.0, self.transforms.whole());
+                cmd.copy_buffer(regions.1, self.materials.whole());
+                cmd.copy_buffer(regions.2, self.bvh_root_nodes.whole());
+                cmd.copy_buffer(regions.3, self.aabbs.whole());
+            })
+            .unwrap();
     }
 }
 
@@ -265,7 +274,6 @@ impl MeshletManager {
         self.meshlets.resolve_write(queue);
         self.vertices.resolve_write(queue);
     }
-
 }
 
 pub(super) fn init_world(mut cmd: Commands) {
@@ -330,5 +338,8 @@ pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
         .add_systems(ExtractSchedule, extract_meshlet_instances)
         .add_systems(Render, apply_writes)
-        .add_systems(Render, apply_instance_writes.in_set(RenderSystems::PreRender));
+        .add_systems(
+            Render,
+            apply_instance_writes.in_set(RenderSystems::PreRender),
+        );
 }
