@@ -110,7 +110,7 @@ impl ComputePass for BvhCull {
     type GpuBinding = CBvhCullBindings;
 
     const ENTRY: &'static str = "bvh_cull\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
     fn cache() -> &'static OnceLock<vk::Pipeline> {
         static CACHE: OnceLock<vk::Pipeline> = OnceLock::new();
         &CACHE
@@ -208,7 +208,7 @@ impl ComputePass for InstanceCull {
     type GpuBinding = CInstanceCullBindings;
 
     const ENTRY: &'static str = "instance_cull\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/instance_cull.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/instance_cull.slang.spv");
     fn cache() -> &'static OnceLock<vk::Pipeline> {
         static CACHE: OnceLock<vk::Pipeline> = OnceLock::new();
         &CACHE
@@ -291,7 +291,7 @@ impl RasterPass for Meshshader {
 impl RasterMeshShaderPass for Meshshader {
     const MESH: &'static str = "mesh\0";
     const FRAGMENT: &'static str = "mesh_fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/meshshader.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/meshshader.slang.spv");
     const TASK: Option<&'static str> = Some("amp\0");
 
     fn module_cache() -> &'static OnceLock<vk::ShaderModule> {
@@ -377,7 +377,7 @@ impl ComputePass for Post {
     type GpuBinding = CPostBindings;
 
     const ENTRY: &'static str = "post\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/post.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/post.slang.spv");
     fn cache() -> &'static OnceLock<vk::Pipeline> {
         static CACHE: OnceLock<vk::Pipeline> = OnceLock::new();
         &CACHE
@@ -481,7 +481,7 @@ impl RasterPass for Raster {
 impl RasterVertexShaderPass for Raster {
     const VERTEX: &'static str = "vertex\0";
     const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/raster.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/raster.slang.spv");
     
     fn module_cache() -> &'static OnceLock<vk::ShaderModule> {
         static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
@@ -562,7 +562,7 @@ impl RasterPass for RasterUi {
 impl RasterVertexShaderPass for RasterUi {
     const VERTEX: &'static str = "vertex\0";
     const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/raster_ui.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/raster_ui.slang.spv");
     
     fn module_cache() -> &'static OnceLock<vk::ShaderModule> {
         static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
@@ -576,9 +576,9 @@ impl RasterVertexShaderPass for RasterUi {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct AabbErrorOffset {
-    pub center_and_error: Vec4,
-    pub half_extent_and_offset: Vec4,
+pub struct InstancedOffset {
+    pub instance: u32,
+    pub offset: i32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -590,33 +590,9 @@ pub struct BvhNode {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CullData {
-    pub aabb: AabbErrorOffset,
-    pub lod_group_sphere: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DispatchParams {
-    pub node_head: u32,
-    pub node_tail: u32,
-    pub done: u32,
-    pub meshlet_count: u32,
-    pub indirect_draw: DrawIndirectCommand,
-    pub indirect_dispatch: DispatchIndirectCommand,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Vertex {
-    pub position_and_uv1: Vec4,
-    pub normal_and_uv2: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Meshlet {
-    pub vertex_count: u32,
-    pub vertex_index: u32,
-    pub triangle_count: u32,
-    pub triangle_index: u32,
+pub struct AabbErrorOffset {
+    pub center_and_error: Vec4,
+    pub half_extent_and_offset: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -634,13 +610,6 @@ pub struct Aabb {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct DispatchIndirectCommand {
-    pub x: u32,
-    pub y: u32,
-    pub z: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
 pub struct UIVertex {
     pub pos: Vec2,
     pub uv: Vec2,
@@ -648,7 +617,38 @@ pub struct UIVertex {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstancedOffset {
-    pub instance: u32,
-    pub offset: i32,
+pub struct Vertex {
+    pub position_and_uv1: Vec4,
+    pub normal_and_uv2: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct CullData {
+    pub aabb: AabbErrorOffset,
+    pub lod_group_sphere: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct DispatchIndirectCommand {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct DispatchParams {
+    pub node_head: u32,
+    pub node_tail: u32,
+    pub done: u32,
+    pub meshlet_count: u32,
+    pub indirect_draw: DrawIndirectCommand,
+    pub indirect_dispatch: DispatchIndirectCommand,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Meshlet {
+    pub vertex_count: u32,
+    pub vertex_index: u32,
+    pub triangle_count: u32,
+    pub triangle_index: u32,
 }
