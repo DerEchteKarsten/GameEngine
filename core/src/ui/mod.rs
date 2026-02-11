@@ -23,9 +23,8 @@ use lava::{
     buffer::{Buffer, BufferUsageFlags, allocator::QueueAllocated, slice::BufferSlice},
     command_buffer::CommandBuffer,
     state::Ctx,
-    vkobjects::image::ImageSize,
 };
-use lava::{buffer::CpuBuffer, vkobjects::image::Image};
+use lava::{buffer::CpuBuffer};
 use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},

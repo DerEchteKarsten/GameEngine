@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use bevy::tasks::futures::check_ready;
 use bevy::tasks::futures_lite::future;
-use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, Task, TaskPool, block_on};
+use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, Scope, Task, TaskPool, block_on};
 use bytemuck::Pod;
 use futures::join;
 use glam::Mat4;
@@ -23,8 +23,10 @@ use lava::buffer::allocator::{
 };
 use lava::buffer::slice::BufferSlice;
 use lava::buffer::{AsBuffer, BufferUsageFlags, CpuBuffer, GpuBuffer, Location};
+use lava::command_buffer::CommandBuffer;
 use lava::state::Ctx;
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
+use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence};
 use rand::random;
 
 use crate::assets::mesh::MeshletMesh;
@@ -48,9 +50,11 @@ impl AsAssetId for Model {
 }
 
 const STAGING_BUFFER_SIZE: u64 = 16 * 1024 * 1024;
+const RING_BUFFER_SIZE: u64 = 1024 * 1024;
 
 #[derive(Resource)]
 pub struct UploadBuffer {
+    pub ring_buffer: SubAllocated<Buffer<u8, CpuBuffer>, RingAllocator>,
     pub staging_buffer: Buffer<u8, CpuBuffer>,
     pub allocator: AsyncSubAllocator<RangeAllocator>,
 }
@@ -58,8 +62,9 @@ pub struct UploadBuffer {
 impl UploadBuffer {
     pub fn new() -> Self {
         let staging_buffer =
-            Buffer::new(BufferUsageFlags::STORAGE, STAGING_BUFFER_SIZE as usize).unwrap();
+            Buffer::new(STAGING_BUFFER_SIZE as usize).unwrap();
         Self {
+            ring_buffer: Buffer::new(RING_BUFFER_SIZE as usize).unwrap(),
             allocator: AsyncSubAllocator::new(
                 staging_buffer.whole(),
                 RangeAllocator::new(STAGING_BUFFER_SIZE),
@@ -69,8 +74,10 @@ impl UploadBuffer {
     }
 }
 
-#[derive(Resource)]
 pub struct InstanceManager {
+    pub fence: Fence,
+    pub command_pool: CommandPool,
+    pub cmd_buffer: CommandBufferMemory,
     pub transforms: QueueAllocated<Buffer<Mat4>>,
     pub materials: QueueAllocated<Buffer<u32>>,
     pub bvh_root_nodes: QueueAllocated<Buffer<u32>>,
@@ -97,37 +104,40 @@ impl InstanceManager {
     }
 
     fn apply_writes(&mut self, buffer: &mut UploadBuffer) {
-        fn copy<T: Pod + Copy + Send>(
+        fn copy<'scope, 'env, T: Pod + Copy + Send>(
+            scope: &'scope Scope<'scope, 'env, BufferSlice<u8, CpuBuffer>>,
             buff: &mut QueueAllocated<Buffer<T>>,
             allocator: AsyncSubAllocator<RangeAllocator>,
-        ) -> Task<BufferSlice<T, CpuBuffer>> {
+        ) {
             buff.assert_size();
             let size = buff.queue_size();
             let queue = buff.clear();
-            AsyncComputeTaskPool::get().spawn(async move {
+            scope.spawn(async move {
                 let mut mem = allocator.allocate_blocking(size).await;
                 mem.mem_copy_from(BufferSlice::from(queue.as_slice()));
-                mem
-            })
+                mem.cast_owned()
+            });
         }
 
-        let regions = block_on(async {
-            join!(
-                copy(&mut self.transforms, buffer.allocator.clone()),
-                copy(&mut self.materials, buffer.allocator.clone()),
-                copy(&mut self.bvh_root_nodes, buffer.allocator.clone()),
-                copy(&mut self.aabbs, buffer.allocator.clone()),
-            )
+        let regions = ComputeTaskPool::get().scope(|s| {            
+            copy(s, &mut self.transforms, buffer.allocator.clone());
+            copy(s, &mut self.materials, buffer.allocator.clone());
+            copy(s, &mut self.bvh_root_nodes, buffer.allocator.clone());
+            copy(s, &mut self.aabbs, buffer.allocator.clone());
         });
 
-        Ctx::queue()
-            .execute_command_wait(|cmd| {
-                cmd.copy_buffer(regions.0, self.transforms.whole());
-                cmd.copy_buffer(regions.1, self.materials.whole());
-                cmd.copy_buffer(regions.2, self.bvh_root_nodes.whole());
-                cmd.copy_buffer(regions.3, self.aabbs.whole());
-            })
-            .unwrap();
+        self.fence.reset();
+        self.command_pool.reset();
+        Ctx::queue(|queue| {
+            queue.execute_command(&self.cmd_buffer, Some(&self.fence), &[], &[], |cmd| {
+                cmd.copy_buffer(regions[0].cast_owned(), self.transforms.whole());
+                cmd.copy_buffer(regions[1].cast_owned(), self.materials.whole());
+                cmd.copy_buffer(regions[2].cast_owned(), self.bvh_root_nodes.whole());
+                cmd.copy_buffer(regions[3].cast_owned(), self.aabbs.whole());
+            });
+        });
+        self.fence.wait();
+
     }
 }
 
@@ -281,7 +291,7 @@ pub(super) fn init_world(mut cmd: Commands) {
 }
 
 fn extract_meshlet_instances(
-    mut instance_manager: ResMut<InstanceManager>,
+    mut instance_manager: NonSendMut<InstanceManager>,
     mut meshlet_manager: ResMut<MeshletManager>,
     mut main_world: ResMut<MainWorld>,
     mut system_state: Local<
@@ -330,7 +340,7 @@ fn apply_writes(mut buffer: ResMut<UploadBuffer>, mut meshes: ResMut<MeshletMana
     meshes.apply_writes(&mut buffer);
 }
 
-fn apply_instance_writes(mut buffer: ResMut<UploadBuffer>, mut instances: ResMut<InstanceManager>) {
+fn apply_instance_writes(mut buffer: ResMut<UploadBuffer>, mut instances: NonSendMut<InstanceManager>) {
     instances.apply_writes(&mut buffer);
 }
 
