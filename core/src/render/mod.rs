@@ -10,9 +10,7 @@ use crate::{
 };
 use async_std::channel::{Receiver, Sender};
 use bevy::{
-    app::{App, AppExit, AppLabel, Plugin, SubApp},
-    asset::AssetServer,
-    ecs::{
+    app::{App, AppExit, AppLabel, Plugin, SubApp}, asset::AssetServer, ecs::{
         change_detection::Mut,
         query::With,
         resource::Resource,
@@ -22,11 +20,7 @@ use bevy::{
         },
         system::{Local, Query, Res, ResMut},
         world::World,
-    },
-    tasks::ComputeTaskPool,
-    time::Time,
-    utils::default,
-    window::{PrimaryWindow, RawHandleWrapperHolder},
+    }, tasks::ComputeTaskPool, time::Time, utils::default, window::{PrimaryWindow, RawHandleWrapperHolder}
 };
 use glam::Vec4;
 use lava::{
@@ -39,190 +33,17 @@ use lava::{
         slice::{AsImage, ImageView},
         usage::{ColorAttachmentSampled, DepthAttachmentSampled},
     },
-    state::Ctx,
+    state::Ctx, vkobjects::queue::{Binary, CommandBufferMemory, CommandPool, Semaphore, Timeline},
 };
 use std::ops::{Deref, DerefMut};
 
 pub mod extract_param;
 pub mod storage_buffer;
 pub mod world;
+pub mod systems;
 
-struct RenderResources {
-    depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
-    color_attachment: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
-    cluster_buffer: Buffer<InstancedOffset>,
-    // dispatch_params: Buffer<DispatchParams>,
-    bvh_node_stack: Buffer<InstancedOffset>,
-}
+pub const FRAMES_IN_FLIGHT: usize = 2;
 
-fn render(
-    query: Query<&Camera>,
-    instances: Res<InstanceManager>,
-    meshlets: Res<MeshletManager>,
-    mut resources: Local<Option<RenderResources>>,
-    ui_resources: Res<UiResources>,
-    time: Res<Time>,
-) {
-    let camera = query.single().unwrap();
-
-    let resources = resources.get_or_insert_with(|| RenderResources {
-        depth_attachment: Image::new(ImageSize::XY(
-            INITIAL_WINDOW_SIZE.x as u32,
-            INITIAL_WINDOW_SIZE.y as u32,
-        ))
-        .unwrap(),
-        color_attachment: Image::new(ImageSize::XY(
-            INITIAL_WINDOW_SIZE.x as u32,
-            INITIAL_WINDOW_SIZE.y as u32,
-        ))
-        .unwrap(),
-        cluster_buffer: Buffer::new(BufferUsageFlags::STORAGE, 1 << 14).unwrap(),
-        // dispatch_params: Buffer::<_, GpuBuffer>::from_data(
-        //     BufferUsageFlags::INDIRECT_COMMAND | BufferUsageFlags::STORAGE,
-        //     &mut staging_buffer.0,
-        //     &[DispatchParams {
-        //         node_head: 0,
-        //         node_tail: 0,
-        //         done: 0,
-        //         meshlet_count: 0,
-        //         indirect_draw: DrawIndirectCommand {
-        //             vertex_count: 128 * 3,
-        //             instance_count: 0,
-        //             first_instance: 0,
-        //             first_vertex: 0,
-        //         },
-        //         indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
-        //     }],
-        // )
-        // .unwrap(),
-        bvh_node_stack: Buffer::new(BufferUsageFlags::STORAGE, 10000).unwrap(),
-    });
-
-    Ctx::record_frame(&mut |cmd, swapchain_image| {
-        // cmd.update_buffer_element(
-        //     &resources.dispatch_params,
-        //     0,
-        //     &DispatchParams {
-        //         node_head: 0,
-        //         node_tail: 0,
-        //         done: 0,
-        //         meshlet_count: 0,
-        //         indirect_draw: DrawIndirectCommand {
-        //             vertex_count: 128 * 3,
-        //             instance_count: 0,
-        //             first_instance: 0,
-        //             first_vertex: 0,
-        //         },
-        //         indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
-        //     },
-        // );
-
-        // cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
-        // cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
-        if instances.bvh_root_nodes.len() > 0 {
-            // cmd.compute::<InstanceCull>()
-            //     .bind(InstanceCullBindings {
-            //         num_instances: world.instance_bvh_root_nodes.len() as u64,
-            //         aabbs: &world.instance_aabbs,
-            //         instance_bvh_root_nodes: &world.instance_bvh_root_nodes,
-            //         bvh_node_stack: &resources.bvh_node_stack,
-            //         dp: &resources.dispatch_params,
-            //         instance_transforms: &world.instance_transforms,
-            //     })
-            //     .dispatch(
-            //         world.instance_bvh_root_nodes.len().div_ceil(64) as u32,
-            //         1,
-            //         1,
-            //     );
-
-            // cmd.compute::<BvhCull>()
-            //     .bind(BvhCullBindings {
-            //         bvh_node_stack: &resources.bvh_node_stack,
-            //         bvh_nodes: &world.bvh_nodes,
-            //         clusters: &resources.cluster_buffer,
-            //         cull_data: &world.cull_data,
-            //         dp: &resources.dispatch_params,
-            //         instance_transforms: &world.instance_transforms,
-            //     })
-            //     .dispatch(4, 1, 1);
-
-            // let params =
-            //     cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
-
-            cmd.raster::<Raster>()
-                .bind(RasterBindings {
-                    instance_offsets: resources.cluster_buffer.whole(),
-                    instance_transforms: instances.transforms.whole(),
-                    indicies: meshlets.indices.whole(),
-                    meshlets: meshlets.meshlets.whole(),
-                    verticies: meshlets.vertices.whole(),
-                    proj: camera.projection_matrix(),
-                    view: camera.view_matrix(),
-                })
-                .color_attachment(
-                    resources.color_attachment.view(),
-                    Some([0.2, 0.2, 0.4, 1.0]),
-                )
-                .depth_attachment(resources.depth_attachment.view())
-                .backface_culling(true)
-                .draw_fullscreen(RasterVertexDispatch::Draw {
-                    vertex_count: 128 * 3,
-                    instance_count: meshlets.meshlets.len() as u32,
-                });
-
-            // cmd.raster()
-            //     .mesh("meshshader", "mesh")
-            //     .fragment("meshshader", "fragment")
-            //     .constants(c!(
-            //         camera.projection_matrix(),
-            //         camera.view_matrix(),
-            //         Mat4::from_scale_rotation_translation(Vec3::splat(2.0), Quat::from_euler(glam::EulerRot::XYZ, PI/2.0, 0.0, 0.0), Vec3::ZERO),
-            //     ))
-            //     .read(&world.vertices)
-            //     .read(&world.indecies)
-            //     .read(&world.meshlets)
-            //     .color_attachment(&resources.color_attachment, Some([0.2, 0.2, 0.4, 1.0]))
-            //     .depth_attachment(&resources.depth_attachment)
-            //     .backface_culling(false)
-            //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
-        }
-
-        cmd.compute::<Post>()
-            .bind(PostBindings {
-                color: resources.color_attachment.as_sampled(),
-                depth: resources.depth_attachment.as_sampled(),
-                out: swapchain_image.as_storage(),
-                inverse_proj: camera.projection_matrix().inverse(),
-                inverse_view: camera.view_matrix().inverse(),
-                window_size: Vec4::new(
-                    Ctx::window_width() as f32,
-                    Ctx::window_height() as f32,
-                    0.0,
-                    0.0,
-                ),
-            })
-            .dispatch_fullscreen();
-
-        let frame = (Ctx::current_frame() + 1) as usize % FRAMES_IN_FLIGHT;
-
-        // if let Some(atlas) = &ui_resources.font_atlas {
-        //     cmd.raster::<RasterUi>()
-        //         .bind(RasterUiBindings {
-        //             verticies: ui_resources.verticies,
-        //             indicies: ui_resources.indicies,
-        //             font_atlas: atlas,
-        //         })
-        //         .color_attachment(&swapchain_image, None)
-        //         .backface_culling(false)
-        //         .wire_frame(false)
-        //         .draw_fullscreen(RasterVertexDispatch::Draw { vertex_count: , instance_count: () });
-        // }
-
-        cmd.present(swapchain_image);
-        Ok(())
-    })
-    .unwrap();
-}
 
 #[derive(SystemSet, Hash, Debug, PartialEq, Eq, Clone)]
 enum RenderSystems {
@@ -499,7 +320,7 @@ impl Plugin for RenderPlugin {
                 Render,
                 (
                     apply_extract_commands.in_set(RenderSystems::ApplyExtractCommands),
-                    Ctx::start_frame.in_set(RenderSystems::WaitFences),
+                    wait_frames_in_flight.in_set(RenderSystems::WaitFences),
                     render.in_set(RenderSystems::Render),
                 ),
             )

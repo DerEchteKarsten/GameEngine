@@ -8,7 +8,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ash::vk::{self, Format};
 #[cfg(feature = "bevy_window")]
 use bevy::a11y::AccessibilityPlugin;
 use bevy::prelude::*;
@@ -29,7 +28,7 @@ use bevy::{
 };
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
-use lava::{FRAMES_IN_FLIGHT, command_buffer::RasterVertexDispatch, state::Ctx};
+use lava::{command_buffer::RasterVertexDispatch, state::Ctx};
 
 mod bindings;
 
@@ -126,7 +125,6 @@ pub fn CorePlugin(app: &mut App) {
         PanicHandlerPlugin,
         LogPlugin::default(),
         TaskPoolPlugin::default(),
-        FrameCountPlugin,
         TimePlugin,
         DiagnosticsPlugin,
         InputPlugin,

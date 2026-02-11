@@ -17,6 +17,7 @@ use bevy::{
 use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
 use imgui::{FontSource, Io};
+use lava::buffer::CpuBuffer;
 use lava::{
     FRAMES_IN_FLIGHT,
     bindless::BindlessHandle,
@@ -24,7 +25,6 @@ use lava::{
     command_buffer::CommandBuffer,
     state::Ctx,
 };
-use lava::{buffer::CpuBuffer};
 use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
@@ -284,12 +284,12 @@ fn extract_ui(
 fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
         verticies: QueueAllocated::new([
-            Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(),
-            Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(),
+            Buffer::new(1000).unwrap(),
+            Buffer::new(1000).unwrap(),
         ]),
         indicies: QueueAllocated::new([
-            Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(),
-            Buffer::new(BufferUsageFlags::STORAGE, 1000).unwrap(),
+            Buffer::new(1000).unwrap(),
+            Buffer::new(1000).unwrap(),
         ]),
         font_atlas: None,
     });

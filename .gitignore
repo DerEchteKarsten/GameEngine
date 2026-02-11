@@ -1,6 +1,6 @@
 /target
-/core/minecraft
-/shaders/target
+/core/src/bindings.rs
+/shaders/bin/*
 /shaders/Cargo.lock
 /game/assets
 /game/imported_assets
