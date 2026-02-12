@@ -62,10 +62,10 @@
                                             "kind": "pointer",
                                             "valueType": {
                                                 "kind": "struct",
-                                                "name": "Aabb",
+                                                "name": "AabbError",
                                                 "fields": [
                                                     {
-                                                        "name": "center",
+                                                        "name": "center_and_error",
                                                         "type": {
                                                             "kind": "vector",
                                                             "elementCount": 4,
@@ -344,10 +344,10 @@
                                                 "kind": "pointer",
                                                 "valueType": {
                                                     "kind": "struct",
-                                                    "name": "Aabb",
+                                                    "name": "AabbError",
                                                     "fields": [
                                                         {
-                                                            "name": "center",
+                                                            "name": "center_and_error",
                                                             "type": {
                                                                 "kind": "vector",
                                                                 "elementCount": 4,

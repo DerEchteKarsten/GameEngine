@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::{
     assets::{material::Material, mesh::MeshletMesh},
-    bindings::Aabb,
+    bindings::AabbError,
 };
 
 pub mod material;
@@ -276,7 +276,7 @@ impl AssetLoader for MeshLoader {
 
         let mut meshes = Vec::new();
         for _ in 0..num_meshes {
-            let mut buffer = [0u8; size_of::<Aabb>()];
+            let mut buffer = [0u8; size_of::<AabbError>()];
             reader.read(&mut buffer).await?;
             let aabb = bytemuck::cast_slice(&buffer)[0];
             reader.read(&mut buffer[0..4]).await?;

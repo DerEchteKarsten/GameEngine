@@ -1,19 +1,12 @@
 use core::{
     CorePlugin,
     assets::Mesh,
-    components::{
-        camera::{Camera, Controls},
-        transform::Transform,
-    },
-    world::Instance,
+    components::camera::{Camera, Controls}, render::world::Model,
 };
-use std::f32::consts::PI;
 
 use bevy::prelude::*;
 use glam::{Vec3, vec3};
 
-#[derive(Component)]
-struct Model;
 
 fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
     let controles = Controls {
@@ -30,37 +23,36 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
     for _x in 0..1 {
         for _y in 0..1 {
             cmd.spawn((
-                Instance {
+                Model {
                     model: model.clone(),
                 },
                 Transform::IDENTITY,
-                Model,
             ));
         }
     }
 }
 
-fn update(
-    _cmd: Commands,
-    _model: Query<(&Transform, &Children), With<Model>>,
-    _qchildren: Query<&Transform>,
-    _time: Res<Time>,
-) {
-    // if let Some((transform, children)) = model.iter().last() {
+// fn update(
+//     _cmd: Commands,
+//     _model: Query<(&Transform, &Children), With<Model>>,
+//     _qchildren: Query<&Transform>,
+//     _time: Res<Time>,
+// ) {
+//     // if let Some((transform, children)) = model.iter().last() {
 
-    //     // transform.position.z = time.elapsed_secs_wrapped().sin() * 2.0;
-    // log::info!("{:?}", time.delta());
+//     //     // transform.position.z = time.elapsed_secs_wrapped().sin() * 2.0;
+//     // log::info!("{:?}", time.delta());
 
-    //     for i in children.iter() {
-    //         log::debug!("parent: {:?}, child: {:?}", transform, qchildren.get(*i).unwrap().as_matrix());
-    //     }
-    // }
-}
+//     //     for i in children.iter() {
+//     //         log::debug!("parent: {:?}, child: {:?}", transform, qchildren.get(*i).unwrap().as_matrix());
+//     //     }
+//     // }
+// }
 
 fn main() {
     App::new()
         .add_plugins(CorePlugin)
         .add_systems(Startup, init)
-        .add_systems(Update, update)
+        // .add_systems(Update, update)
         .run();
 }

@@ -25,8 +25,6 @@ struct MeshShaderBindings {
     column_major float4x4 proj;
     column_major float4x4 view;
     column_major float4x4 model;
-    Buf<Vertex> vertices;
-    Buf<uint8_t> indecies;
     Buf<Meshlet> meshlets;
 }
 
@@ -120,16 +118,16 @@ void mesh( out indices uint3 triangles[MAX_PRIMITIVES], out primitives Primitive
 
     if (gtid < meshlet.triangle_count)
     {
-        triangles[gtid] = uint3((uint32_t)b.indecies.val[meshlet.triangle_index + uint32_t(gtid * 3 + 0)],
-                               (uint32_t)b.indecies.val[meshlet.triangle_index + uint32_t(gtid * 3 + 1)],
-                               (uint32_t)b.indecies.val[meshlet.triangle_index + uint32_t(gtid * 3 + 2)]);
+        triangles[gtid] = uint3((uint32_t)meshlet.triangle_index[gtid * 3 + 0],
+                               (uint32_t)meshlet.triangle_index[gtid * 3 + 1],
+                               (uint32_t)meshlet.triangle_index[gtid * 3 + 2]);
         primitives[gtid] = Primitive(dtid_liniar, gid_liniar, float3(1.0));
     }
 
     for (int i = 0; i < 2; i++) {
         if (gtid*i < meshlet.vertex_count)
         {
-            let position = b.vertices.val[meshlet.vertex_index + gtid * i].position_and_uv1.xyz;
+            let position = meshlet.vertex_index[gtid * i].position_and_uv1.xyz;
             let world_space = mul(b.model, float4(position, 1.0f));
             let view_space = mul(b.view, world_space);
             let clip_space = mul(b.proj, view_space);

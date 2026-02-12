@@ -3,7 +3,7 @@
 
 struct InstanceCullBindings {
     uint64_t num_instances;
-    Buf<Aabb> aabbs;
+    Buf<AabbError> aabbs;
     Buf<uint> instance_bvh_root_nodes;
     Buf<float4x4> instance_transforms;
     MutBuf<DispatchParams> dp;

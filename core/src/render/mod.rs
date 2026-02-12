@@ -5,7 +5,10 @@ use crate::{
         PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings,
     },
     components::camera::Camera,
-    render::world::{InstanceManager, MeshletManager, WorldPlugin, init_world},
+    render::{
+        systems::{aquire_swapchain_image, render, wait_frames_in_flight},
+        world::{InstanceManager, MeshletManager, WorldPlugin, init_world},
+    },
     ui::UiResources,
 };
 use async_std::channel::{Receiver, Sender};
@@ -30,13 +33,12 @@ use bevy::{
 };
 use glam::Vec4;
 use lava::{
-    FRAMES_IN_FLIGHT,
     buffer::{AsBuffer, Buffer, BufferUsageFlags, GpuBuffer},
     command_buffer::RasterVertexDispatch,
     image::{
-        Image, ImageSize,
+        Image,
         format::{D32Sfloat, R32G32B32A32Sfloat},
-        slice::{AsImage, ImageView},
+        slice::{AsImage, ImageSlice},
         usage::{ColorAttachmentSampled, DepthAttachmentSampled},
     },
     state::Ctx,
@@ -45,7 +47,6 @@ use lava::{
 use std::ops::{Deref, DerefMut};
 
 pub mod extract_param;
-pub mod storage_buffer;
 pub mod systems;
 pub mod world;
 
@@ -289,9 +290,8 @@ impl Plugin for RenderPlugin {
             .single(app.world())
             .ok()
             .cloned()
-            .unwrap()
-            .0;
-        let mutex = primary_window.lock();
+            .unwrap();
+        let mutex = primary_window.0.lock();
         let window = mutex.as_ref().unwrap().as_ref().unwrap();
         #[cfg(debug_assertions)]
         let validation = true;
@@ -327,6 +327,7 @@ impl Plugin for RenderPlugin {
                 (
                     apply_extract_commands.in_set(RenderSystems::ApplyExtractCommands),
                     wait_frames_in_flight.in_set(RenderSystems::WaitFences),
+                    aquire_swapchain_image.in_set(RenderSystems::AquireSwapchainImage),
                     render.in_set(RenderSystems::Render),
                 ),
             )

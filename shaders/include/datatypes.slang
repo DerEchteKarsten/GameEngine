@@ -9,14 +9,18 @@ struct RayPayload {
     uint primitiveId;
 }
 
-struct AabbOffset {
+struct AabbPtr {
     float4 center_and_offset_high;
     float4 half_extent_and_offset_low;
 }
 
+BvhNode *get_ptr(AabbPtr aabb) {
+    return (__asuint64(uint2(asuint(aabb.center_and_offset_high.w), asuint(aabb.half_extent_and_offset_low.w))) as BvhNode*).value; 
+}
 
 struct BvhNode {
-    AabbOffset aabbs[8];
+    AabbPtr aabb_and_offsets[8];
+    float errors[8];
     float4 lod_bounds[8];
     uint64_t child_counts;
     uint64_t pad;
@@ -27,14 +31,14 @@ uint8_t get_byte(uint i, uint64_t value) {
 }
 
 struct Meshlet {
-    uint vertex_count;
     Vertex* vertex_index;
-    uint triangle_count;
     uint8_t* triangle_index;
+    uint vertex_count;
+    uint triangle_count;
 }
 
-struct Aabb {
-    float4 center;
+struct AabbError {
+    float4 center_and_error;
     float4 half_extent;
 }
 
@@ -49,7 +53,7 @@ struct InstancedOffset {
 }
 
 struct CullData {
-    AabbOffset aabb;
+    AabbError aabb;
     float4 lod_group_sphere;
 }
 

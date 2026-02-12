@@ -17,13 +17,15 @@ use bevy::{
 use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
 use imgui::{FontSource, Io};
-use lava::buffer::CpuBuffer;
 use lava::{
-    FRAMES_IN_FLIGHT,
     bindless::BindlessHandle,
-    buffer::{Buffer, BufferUsageFlags, allocator::QueueAllocated, slice::BufferSlice},
+    buffer::{Buffer, BufferUsageFlags, slice::BufferSlice},
     command_buffer::CommandBuffer,
     state::Ctx,
+};
+use lava::{
+    buffer::{AsBuffer, CpuBuffer},
+    image::{Image, format::R8Unorm, usage::Sampled},
 };
 use std::{
     collections::HashMap,
@@ -37,8 +39,10 @@ use std::{
 use crate::{
     bindings::{self, UIVertex},
     render::{
-        self, ExtractSchedule, MainWorld, RenderStartup, extract_param::Extract,
-        world::UploadBuffer,
+        self, ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, RenderStartup,
+        extract_param::Extract,
+        systems::{FrameCount, Swapchain},
+        world::UploadQueue,
     },
 };
 
@@ -169,6 +173,7 @@ fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
 fn read_input(
     mut events: MessageReader<WindowEvent>,
     mut ctx: NonSendMut<UiContext>,
+    swapchain: Res<Swapchain>,
     time: Res<Time>,
 ) {
     let io = ctx.ctx.io_mut();
@@ -214,40 +219,20 @@ fn read_input(
         }
     }
     io.font_global_scale = 1.0;
-    io.display_size = [Ctx::window_width() as f32, Ctx::window_height() as f32];
+    io.display_size = [swapchain.size[0] as f32, swapchain.size[1] as f32];
 }
 
 fn extract_ui(
     mut world: ResMut<MainWorld>,
     mut resources: ResMut<UiResources>,
-    mut queue: ResMut<UploadBuffer>,
+    mut queue: ResMut<UploadQueue>,
+    frame: Res<FrameCount>,
 ) {
     let mut ctx = world.get_non_send_resource_mut::<UiContext>().unwrap();
     if resources.font_atlas.is_none() {
         let atlas = ctx.ctx.fonts().build_alpha8_texture();
-        let image = Image::new_2d(
-            ImageUsageFlags::SAMPLED
-                | ImageUsageFlags::TRANSFER_DST
-                | ImageUsageFlags::TRANSFER_SRC,
-            Format::R8_UNORM,
-            ImageSize::XY(atlas.width, atlas.height),
-        )
-        .unwrap();
-        let allocator = queue.allocator.clone();
-        let atlas_slice = BufferSlice::from(atlas.data);
-        bevy::tasks::AsyncComputeTaskPool::get()
-            .spawn_local(async move {
-                let mem = allocator.allocate_blocking(atlas.data.len() as u64).await;
-                atlas_slice.mem_copy_to(mem);
-                Ctx::transfer_queue()
-                    .execute_command_async(|cmd| {
-                        cmd.copy_buffer_to_image(mem, &image);
-                        cmd.transition_layout(&image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-                    })
-                    .await
-                    .unwrap();
-            })
-            .detach();
+        let image = Image::new(atlas.width, atlas.height).unwrap();
+
         resources.font_atlas = Some(image);
     }
     let draw_data = ctx.ctx.render();
@@ -257,43 +242,50 @@ fn extract_ui(
     if draw_data.draw_lists_count() == 0 {
         return;
     }
+    let mut vertex_slice = resources.verticies[frame.frame_in_flight()].whole();
+    let mut index_slice = resources.indicies[frame.frame_in_flight()].whole();
     for list in draw_data.draw_lists() {
         let vertex_offset = resources.verticies.len() as u32;
-        let indicies = list.idx_buffer().iter().map(|i| *i as u32 + vertex_offset);
-        let verticies = list.vtx_buffer().iter().map(|v| UIVertex {
-            color: Vec4::new(
-                v.col[0] as f32 / 255.0,
-                v.col[1] as f32 / 255.0,
-                v.col[2] as f32 / 255.0,
-                v.col[3] as f32 / 255.0,
-            ),
-            pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0 - Vec2::splat(1.0)),
-            uv: Vec2::new(v.uv[0], v.uv[1]),
-        });
-        resources.verticies.extend(verticies);
-        resources.indicies.extend(indicies);
+        let indicies = list
+            .idx_buffer()
+            .iter()
+            .map(|i| *i as u32 + vertex_offset)
+            .collect::<Vec<_>>();
+        let verticies = list
+            .vtx_buffer()
+            .iter()
+            .map(|v| UIVertex {
+                color: Vec4::new(
+                    v.col[0] as f32 / 255.0,
+                    v.col[1] as f32 / 255.0,
+                    v.col[2] as f32 / 255.0,
+                    v.col[3] as f32 / 255.0,
+                ),
+                pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0
+                    - Vec2::splat(1.0)),
+                uv: Vec2::new(v.uv[0], v.uv[1]),
+            })
+            .collect::<Vec<_>>();
+        vertex_slice.push(BufferSlice::from(verticies.as_slice()));
+        index_slice.push(BufferSlice::from(indicies.as_slice()));
     }
 
-    resources.verticies.assert_size();
-    resources.indicies.assert_size();
-
-    bevy::tasks::AsyncComputeTaskPool::get().spawn_local(async move {});
     ctx.ui = unsafe { ctx.ctx.new_frame() as *mut _ };
 }
 
 fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
-        verticies: QueueAllocated::new([Buffer::new(1000).unwrap(), Buffer::new(1000).unwrap()]),
-        indicies: QueueAllocated::new([Buffer::new(1000).unwrap(), Buffer::new(1000).unwrap()]),
+        verticies: [Buffer::new(1000).unwrap(), Buffer::new(1000).unwrap()],
+        indicies: [Buffer::new(1000).unwrap(), Buffer::new(1000).unwrap()],
         font_atlas: None,
     });
 }
 
 #[derive(Resource)]
 pub struct UiResources {
-    pub verticies: QueueAllocated<Buffer<UIVertex, CpuBuffer>>,
-    pub indicies: QueueAllocated<Buffer<u32, CpuBuffer>>,
-    pub font_atlas: Option<Image>,
+    pub verticies: [Buffer<UIVertex, CpuBuffer>; FRAMES_IN_FLIGHT],
+    pub indicies: [Buffer<u32, CpuBuffer>; FRAMES_IN_FLIGHT],
+    pub font_atlas: Option<Image<R8Unorm, Sampled>>,
 }
 
 #[allow(non_snake_case)]

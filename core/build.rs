@@ -167,7 +167,10 @@ pub fn rust_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String 
 
             name
         }
-        "pointer" => "u64".to_string(),
+        "pointer" => {
+            rust_type(&t.valueType.as_ref().unwrap(), structs);
+            "u64".to_string()
+        }
         other => format!("compile_error!(\"Unsupported Type {}\")", other),
     }
 }
@@ -229,37 +232,34 @@ pub fn resource(field: &Field, name: &str) -> Option<String> {
     };
 
     let is_image = struct_name == "MutImage" || struct_name == "Image" || struct_name == "Texture";
-    let layout_aspect = if is_image {
-        format!(
-            r#"    layout: bindings.{field_name}.prefered_layout,
-    aspect: bindings.{field_name}.aspect,"#
-        )
-    } else {
-        format!(
-            r#"    layout: vk::ImageLayout::UNDEFINED,
-aspect: vk::ImageAspectFlags::empty(), 
-"#
-        )
-    };
-
-    let resource_state = format!(
+    
+   
+    let mut resource_state = format!(
         r#"
 ResourceState {{
     stages,
     access: {access},
-{layout_aspect}
-}}"#
+"#
     );
+
+    if is_image {
+        resource_state.push_str(&format!(
+            r#"    layout: bindings.{}.prefered_layout,"#,
+        field.name));
+    }
+    resource_state.push_str(r#"
+    ..Default::default()
+}"#);
 
     if !is_image {
         Some(format!(
-            "(ResourceHandle::Buffer(bindings.{}.handle),{}),",
+            "(ResourceHandle::Buffer(bindings.{}.into()),{}),",
             field.name, resource_state
         ))
     } else {
         Some(format!(
-            "(ResourceHandle::Image((bindings.{}.view, bindings.{}.image)),{}),",
-            field.name, field.name, resource_state
+            "(ResourceHandle::Image(bindings.{}.into()),{}),",
+            field.name, resource_state
         ))
     }
 }

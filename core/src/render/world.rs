@@ -33,9 +33,8 @@ use smallvec::SmallVec;
 
 use crate::assets::mesh::MeshletMesh;
 use crate::assets::{Mesh, material::Material};
-use crate::bindings::{Aabb, BvhNode, CullData, Meshlet, Vertex};
+use crate::bindings::{AabbError, BvhNode, CullData, Meshlet, Vertex};
 use crate::render::extract_param::Extract;
-use crate::render::storage_buffer::StorageBuffer;
 use crate::render::{ExtractSchedule, MainWorld, Render, RenderStartup, RenderSystems};
 use crate::ui::UiContext;
 
@@ -51,11 +50,12 @@ impl AsAssetId for Model {
     }
 }
 
+#[derive(Resource)]
 pub struct InstanceManager {
     pub transforms: Buffer<Mat4, CpuBuffer>,
     pub materials: Buffer<u32, CpuBuffer>,
     pub bvh_root_nodes: Buffer<u64, CpuBuffer>,
-    pub aabbs: Buffer<Aabb, CpuBuffer>,
+    pub aabbs: Buffer<AabbError, CpuBuffer>,
     pub max_bvh_depth: u32,
     pub max_instance_count: usize,
 }
@@ -65,7 +65,7 @@ struct Instance {
     transform: Mat4,
     material: u32,
     bvh_root: u64,
-    aabb: Aabb,
+    aabb: AabbError,
 }
 
 impl InstanceManager {
@@ -89,15 +89,6 @@ impl InstanceManager {
 
 const STAGING_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
-struct UploadItem {
-    pub vertices: Arc<[Vertex]>,
-    pub indices: Arc<[u8]>,
-    pub meshlets: Arc<[Meshlet]>,
-    pub bvh: Arc<[BvhNode]>,
-    pub cull_data: Arc<[CullData]>,
-    pub dst: BufferSlice<u8>,
-}
-
 struct CopyRegion {
     src: BufferSlice<u8, CpuBuffer>,
     dst: BufferSlice<u8, GpuBuffer>,
@@ -109,7 +100,7 @@ pub struct UploadQueue {
     fence: Fence,
     cmd: CommandBufferMemory,
     buffer: Buffer<u8, CpuBuffer>,
-    queue: Vec<UploadItem>,
+    queue: Vec<CopyRegion>,
     task: Option<Task<()>>,
 }
 
@@ -126,64 +117,55 @@ impl UploadQueue {
             task: None,
         }
     }
-
     fn resolve_writes(&mut self) {
-        let Some(task) = &mut self.task else {
-            return;
-        };
-        if self.queue.is_empty() {
+        if self.task.is_none() || self.queue.is_empty() {
             return;
         }
 
-        let queue = std::mem::take(&mut self.queue);
+        if check_ready(self.task.as_mut().unwrap()).is_some() {
+            self.task = None;
+        }
+
+        let mut queue = std::mem::take(&mut self.queue);
         let whole = self.buffer.whole();
         let fence = self.fence.clone();
         let cmd = self.cmd.clone();
+
         self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
-            let mut slices = queue
-                .iter()
-                .flat_map(|e| {
-                    let bvh = BufferSlice::from(Arc::clone(&e.bvh)).cast_owned();
-                    let vertices = BufferSlice::from(Arc::clone(&e.vertices)).cast_owned();
-                    let indices = BufferSlice::from(Arc::clone(&e.indices)).cast_owned();
-                    let meshlets = BufferSlice::from(Arc::clone(&e.meshlets)).cast_owned();
-                    let cull_data = BufferSlice::from(Arc::clone(&e.cull_data)).cast_owned();
-                    [
-                        (bvh, e.dst.add_byte_offset(0)),
-                        (vertices, e.dst.add_byte_offset(bvh.size)),
-                        (indices, e.dst.add_byte_offset(bvh.size + vertices.size)),
-                        (
-                            meshlets,
-                            e.dst
-                                .add_byte_offset(bvh.size + vertices.size + indices.size),
-                        ),
-                        (
-                            cull_data,
-                            e.dst.add_byte_offset(
-                                bvh.size + vertices.size + indices.size + meshlets.size,
-                            ),
-                        ),
-                    ]
-                })
-                .collect::<Vec<_>>();
+            let mut staging = whole.clone();
+            let mut slice_start = 0;
 
-            let mut write = whole.clone();
-            let mut num_slices = 0;
-            for i in 0..slices.len() {
-                while let Err(_) = write.push(slices[i].0) {
-                    write.mem_copy_from(slices[i].0.num_bytes(write.size));
-                    slices[i].0.size -= write.size;
+            async fn flush(
+                queue: &[CopyRegion],
+                fence: Fence,
+                cmd: CommandBufferMemory,
+                range: std::ops::Range<usize>,
+            ) {
+                fence.reset();
+                Ctx::transfer_queue().execute_command(cmd.clone(), Some(fence), &[], &[], |cmd| {
+                    for entry in &queue[range] {
+                        cmd.copy_buffer(entry.src, entry.dst);
+                    }
+                });
+                fence.wait_async().await;
+            }
 
-                    fence.reset();
-                    Ctx::transfer_queue().execute_command(cmd, Some(fence), &[], &[], |cmd| {
-                        for j in num_slices..(i + 1) {
-                            cmd.copy_buffer(slices[j].0, slices[j].1);
-                        }
-                    });
-                    fence.wait_async().await;
-                    write = whole.clone();
-                    num_slices = i;
+            for i in 0..queue.len() {
+                while staging.push(queue[i].src).is_err() {
+                    let remaining = staging.size;
+                    staging.mem_copy_from(queue[i].src.num_bytes(remaining));
+                    queue[i].src.size -= remaining;
+                    queue[i].src.offset += remaining;
+
+                    flush(&queue, fence, cmd, slice_start..(i + 1)).await;
+
+                    staging = whole.clone();
+                    slice_start = i;
                 }
+            }
+
+            if slice_start < queue.len() {
+                flush(&queue, fence, cmd, slice_start..queue.len()).await;
             }
         }));
     }
@@ -191,15 +173,15 @@ impl UploadQueue {
 
 #[derive(Resource, Default)]
 pub struct MeshletManager {
-    mesh_buffers: Vec<Buffer<u8>>,
-    asset_instance_aabbs: Vec<Aabb>,
-    asset_instance_transforms: Vec<Mat4>,
-    asset_instance_meshes: Vec<u32>,
-    asset_instance_materials: Vec<u32>,
-    assets: HashMap<AssetId<Mesh>, (u32, u32)>,
-    _acceleration_structure_scratch_memory: Option<Buffer<u8>>,
-    _acceleration_structure_memory: Option<Buffer<u8>>,
-    _tlas: Option<AccelerationStructure>,
+    pub mesh_buffers: Vec<Buffer<u8>>,
+    pub asset_instance_aabbs: Vec<AabbError>,
+    pub asset_instance_transforms: Vec<Mat4>,
+    pub asset_instance_meshes: Vec<u32>,
+    pub asset_instance_materials: Vec<u32>,
+    pub assets: HashMap<AssetId<Mesh>, (u32, u32)>,
+    pub _acceleration_structure_scratch_memory: Option<Buffer<u8>>,
+    pub _acceleration_structure_memory: Option<Buffer<u8>>,
+    pub _tlas: Option<AccelerationStructure>,
 }
 
 impl MeshletManager {
@@ -243,27 +225,27 @@ impl MeshletManager {
                     let bvh_ptr = mesh.bvh.as_ptr().cast_mut();
                     for i in 0..bvh_count {
                         let n = unsafe { bvh_ptr.add(i).as_mut().unwrap() };
-                        n.aabbs.iter_mut().enumerate().for_each(|(i, aabb)| {
-                            let offset = aabb.offset();
-                            aabb.set_offset(
-                                offset
-                                    + if ((n.child_counts >> (i * 8)) & 0xFF) as u8 == 255 {
-                                        address
-                                    } else {
-                                        meshlets_offset as u64 + address
-                                    },
-                            );
-                        });
+                        n.aabb_and_offsets
+                            .iter_mut()
+                            .enumerate()
+                            .for_each(|(i, aabb)| {
+                                let offset = aabb.offset();
+                                aabb.set_offset(
+                                    offset
+                                        + if ((n.child_counts >> (i * 8)) & 0xFF) as u8 == 255 {
+                                            address
+                                        } else {
+                                            meshlets_offset as u64 + address
+                                        },
+                                );
+                            });
                     }
 
-                    upload_queue.queue.push(UploadItem {
-                        vertices: mesh.vertices,
-                        indices: mesh.indices,
-                        meshlets: mesh.meshlets,
-                        bvh: mesh.bvh,
-                        cull_data: mesh.cull_data,
-                        dst: buffer.whole(),
-                    });
+                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.bvh)).cast(), dst: buffer.whole() });
+                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.vertices)).cast(), dst: buffer.whole() });
+                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.indices)).cast(), dst: buffer.whole() });
+                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.meshlets)).cast(), dst: buffer.whole() });
+                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.cull_data)).cast(), dst: buffer.whole() });
 
                     buffer
                 }));
@@ -275,13 +257,18 @@ impl MeshletManager {
                 meshlet_mesh
                     .instance_materials
                     .iter()
-                    .map(|e| e  + material_offset),
+                    .map(|e| e + material_offset),
             );
             self.asset_instance_meshes
                 .extend(meshlet_mesh.instance_mesh.iter().map(|e| e + mesh_offset));
             self.asset_instance_transforms
                 .extend_from_slice(&meshlet_mesh.instance_transforms);
-            self.asset_instance_aabbs.extend(meshlet_mesh.instance_mesh.iter().map(|e| meshlet_mesh.meshes[*e as usize].aabb));
+            self.asset_instance_aabbs.extend(
+                meshlet_mesh
+                    .instance_mesh
+                    .iter()
+                    .map(|e| meshlet_mesh.meshes[*e as usize].aabb),
+            );
             (instance_offset, instance_count)
         };
 
@@ -308,7 +295,7 @@ pub(super) fn init_world(mut cmd: Commands) {
 }
 
 fn extract_meshlet_instances(
-    mut instance_manager: NonSendMut<InstanceManager>,
+    mut instance_manager: ResMut<InstanceManager>,
     mut meshlet_manager: ResMut<MeshletManager>,
     mut main_world: ResMut<MainWorld>,
     mut upload_queue: ResMut<UploadQueue>,
