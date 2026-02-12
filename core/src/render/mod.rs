@@ -10,7 +10,9 @@ use crate::{
 };
 use async_std::channel::{Receiver, Sender};
 use bevy::{
-    app::{App, AppExit, AppLabel, Plugin, SubApp}, asset::AssetServer, ecs::{
+    app::{App, AppExit, AppLabel, Plugin, SubApp},
+    asset::AssetServer,
+    ecs::{
         change_detection::Mut,
         query::With,
         resource::Resource,
@@ -20,7 +22,11 @@ use bevy::{
         },
         system::{Local, Query, Res, ResMut},
         world::World,
-    }, tasks::ComputeTaskPool, time::Time, utils::default, window::{PrimaryWindow, RawHandleWrapperHolder}
+    },
+    tasks::ComputeTaskPool,
+    time::Time,
+    utils::default,
+    window::{PrimaryWindow, RawHandleWrapperHolder},
 };
 use glam::Vec4;
 use lava::{
@@ -33,17 +39,17 @@ use lava::{
         slice::{AsImage, ImageView},
         usage::{ColorAttachmentSampled, DepthAttachmentSampled},
     },
-    state::Ctx, vkobjects::queue::{Binary, CommandBufferMemory, CommandPool, Semaphore, Timeline},
+    state::Ctx,
+    vkobjects::queue::{Binary, CommandBufferMemory, CommandPool, Semaphore, Timeline},
 };
 use std::ops::{Deref, DerefMut};
 
 pub mod extract_param;
 pub mod storage_buffer;
-pub mod world;
 pub mod systems;
+pub mod world;
 
 pub const FRAMES_IN_FLIGHT: usize = 2;
-
 
 #[derive(SystemSet, Hash, Debug, PartialEq, Eq, Clone)]
 enum RenderSystems {

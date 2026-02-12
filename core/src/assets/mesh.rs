@@ -15,13 +15,13 @@ use smallvec::SmallVec;
 use std::sync::Arc;
 use std::{collections::HashMap, ops::Range};
 
-use crate::bindings::{Aabb, AabbErrorOffset, BvhNode, CullData, Meshlet, Vertex};
+use crate::bindings::{Aabb, AabbOffset, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 
-impl Default for AabbErrorOffset {
+impl Default for AabbOffset {
     fn default() -> Self {
-        AabbErrorOffset {
+        AabbOffset {
             center_and_error: Default::default(),
             half_extent_and_offset: Default::default(),
         }
@@ -50,18 +50,12 @@ impl BvhNode {
     }
 }
 
-impl AabbErrorOffset {
-    pub fn error(&self) -> f32 {
-        self.center_and_error.w
-    }
+impl AabbOffset {
     pub fn offset(&self) -> u32 {
-        self.half_extent_and_offset.w.to_bits()
+        self.half_extent_and_offset.w.to_bits() | 
     }
     pub fn set_offset(&mut self, value: u32) {
         self.half_extent_and_offset.w = f32::from_bits(value);
-    }
-    pub fn set_error(&mut self, error: f32) {
-        self.center_and_error.w = error;
     }
 }
 
@@ -963,8 +957,8 @@ fn aabb_default() -> Aabb3d {
     }
 }
 
-fn aabb_to_meshlet(aabb: Aabb3d, error: f32, child_offset: u32) -> AabbErrorOffset {
-    AabbErrorOffset {
+fn aabb_to_meshlet(aabb: Aabb3d, error: f32, child_offset: u32) -> AabbOffset {
+    AabbOffset {
         center_and_error: aabb.center().to_vec3().extend(error),
         half_extent_and_offset: aabb
             .half_size()

@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
+use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut, Range};
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use ash::vk;
 use async_std::sync::Mutex;
 use bevy::asset::{AsAssetId, LoadState};
 use bevy::ecs::entity::Entities;
@@ -16,6 +19,7 @@ use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, Scope, Task, TaskPool, 
 use bytemuck::Pod;
 use futures::join;
 use glam::Mat4;
+use gpu_allocator::vulkan::Allocation;
 use lava::buffer::Buffer;
 
 use lava::buffer::slice::BufferSlice;
@@ -25,6 +29,7 @@ use lava::state::Ctx;
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
 use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence};
 use rand::random;
+use smallvec::SmallVec;
 
 use crate::assets::mesh::MeshletMesh;
 use crate::assets::{Mesh, material::Material};
@@ -46,109 +51,150 @@ impl AsAssetId for Model {
     }
 }
 
-#[derive(Resource)]
-pub struct UploadBuffer {
-    pub buffer: Buffer<u8, CpuBuffer>,
-    pub ring: RingBuffer<u8, CpuBuffer>,
-}
-
-impl UploadBuffer {
-    pub fn new() -> Self {
-        let buffer = Buffer::new().unwrap();
-        Self {
-            ring: RingBuffer::new(buffer.whole()),
-            buffer,
-        }
-    }
-}
-
 pub struct InstanceManager {
-    pub fence: Fence,
-    pub transforms: Buffer<Mat4>,
-    pub materials: Buffer<u32>,
-    pub bvh_root_nodes: Buffer<u32>,
-    pub aabbs: Buffer<Aabb>,
+    pub transforms: Buffer<Mat4, CpuBuffer>,
+    pub materials: Buffer<u32, CpuBuffer>,
+    pub bvh_root_nodes: Buffer<u64, CpuBuffer>,
+    pub aabbs: Buffer<Aabb, CpuBuffer>,
     pub max_bvh_depth: u32,
-    pub max_instance_count: usize
+    pub max_instance_count: usize,
 }
 
 #[derive(Clone, Copy)]
 struct Instance {
     transform: Mat4,
     material: u32,
-    bvh_root: u32,
+    bvh_root: u64,
     aabb: Aabb,
-    max_bvh_depth: u32,
 }
 
 impl InstanceManager {
     fn add_instance(&mut self, instance: Instance) {
-        self.transforms.push(instance.transform);
-        self.materials.push(instance.material);
-        self.bvh_root_nodes.push(instance.bvh_root);
-        self.aabbs.push(instance.aabb);
-        self.max_bvh_depth = self.max_bvh_depth.max(instance.max_bvh_depth);
-    }
-
-    fn apply_writes(&mut self, buffer: &mut UploadBuffer) {
-        fn copy<'scope, 'env, T: Pod + Copy + Send>(
-            scope: &'scope Scope<'scope, 'env, BufferSlice<u8, CpuBuffer>>,
-            buff: &mut QueueAllocated<Buffer<T>>,
-            allocator: AsyncSubAllocator<RangeAllocator>,
-        ) {
-            buff.assert_size();
-            let size = buff.queue_size();
-            let queue = buff.clear();
-            scope.spawn(async move {
-                let mut mem = allocator.allocate_blocking(size).await;
-                mem.mem_copy_from(BufferSlice::from(queue.as_slice()));
-                mem.cast_owned()
-            });
-        }
-
-        let regions = ComputeTaskPool::get().scope(|s| {
-            copy(s, &mut self.transforms, buffer.allocator.clone());
-            copy(s, &mut self.materials, buffer.allocator.clone());
-            copy(s, &mut self.bvh_root_nodes, buffer.allocator.clone());
-            copy(s, &mut self.aabbs, buffer.allocator.clone());
-        });
-
-        self.fence.reset();
-        self.command_pool.reset();
-        
-        self.fence.wait();
+        let slot = self.max_instance_count;
+        self.max_instance_count += 1;
+        self.transforms
+            .whole()
+            .mem_copy_from(BufferSlice::from(&[instance.transform]));
+        self.materials
+            .whole()
+            .mem_copy_from(BufferSlice::from(&[instance.material]));
+        self.bvh_root_nodes
+            .whole()
+            .mem_copy_from(BufferSlice::from(&[instance.bvh_root]));
+        self.aabbs
+            .whole()
+            .mem_copy_from(BufferSlice::from(&[instance.aabb]));
     }
 }
 
-#[derive(Clone, Copy)]
-struct MeshSlices {
-    vertex_offset: u32,
-    vertex_count: u32,
-    index_offset: u32,
-    index_count: u32,
-    meshlet_offset: u32,
-    meshlet_count: u32,
-    cull_data_offset: u32,
-    cull_data_count: u32,
-    bvh_count: u32,
+const STAGING_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
-    aabb: Aabb,
-    bvh_root: u32,
-    max_bvh_depth: u32,
+struct UploadItem {
+    pub vertices: Arc<[Vertex]>,
+    pub indices: Arc<[u8]>,
+    pub meshlets: Arc<[Meshlet]>,
+    pub bvh: Arc<[BvhNode]>,
+    pub cull_data: Arc<[CullData]>,
+    pub dst: BufferSlice<u8>,
+}
+
+struct CopyRegion {
+    src: BufferSlice<u8, CpuBuffer>,
+    dst: BufferSlice<u8, GpuBuffer>,
+}
+
+#[derive(Resource)]
+pub struct UploadQueue {
+    pool: CommandPool,
+    fence: Fence,
+    cmd: CommandBufferMemory,
+    buffer: Buffer<u8, CpuBuffer>,
+    queue: Vec<UploadItem>,
+    task: Option<Task<()>>,
+}
+
+impl UploadQueue {
+    fn new() -> Self {
+        let buffer = Buffer::new(STAGING_BUFFER_SIZE).unwrap();
+        let pool = Ctx::transfer_queue().create_pool();
+        Self {
+            queue: Vec::new(),
+            buffer,
+            cmd: pool.create_command_buffer(),
+            pool: pool,
+            fence: Fence::new(),
+            task: None,
+        }
+    }
+
+    fn resolve_writes(&mut self) {
+        let Some(task) = &mut self.task else {
+            return;
+        };
+        if self.queue.is_empty() {
+            return;
+        }
+
+        let queue = std::mem::take(&mut self.queue);
+        let whole = self.buffer.whole();
+        let fence = self.fence.clone();
+        let cmd = self.cmd.clone();
+        self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
+            let mut slices = queue
+                .iter()
+                .flat_map(|e| {
+                    let bvh = BufferSlice::from(Arc::clone(&e.bvh)).cast_owned();
+                    let vertices = BufferSlice::from(Arc::clone(&e.vertices)).cast_owned();
+                    let indices = BufferSlice::from(Arc::clone(&e.indices)).cast_owned();
+                    let meshlets = BufferSlice::from(Arc::clone(&e.meshlets)).cast_owned();
+                    let cull_data = BufferSlice::from(Arc::clone(&e.cull_data)).cast_owned();
+                    [
+                        (bvh, e.dst.add_byte_offset(0)),
+                        (vertices, e.dst.add_byte_offset(bvh.size)),
+                        (indices, e.dst.add_byte_offset(bvh.size + vertices.size)),
+                        (
+                            meshlets,
+                            e.dst
+                                .add_byte_offset(bvh.size + vertices.size + indices.size),
+                        ),
+                        (
+                            cull_data,
+                            e.dst.add_byte_offset(
+                                bvh.size + vertices.size + indices.size + meshlets.size,
+                            ),
+                        ),
+                    ]
+                })
+                .collect::<Vec<_>>();
+
+            let mut write = whole.clone();
+            let mut num_slices = 0;
+            for i in 0..slices.len() {
+                while let Err(_) = write.push(slices[i].0) {
+                    write.mem_copy_from(slices[i].0.num_bytes(write.size));
+                    slices[i].0.size -= write.size;
+
+                    fence.reset();
+                    Ctx::transfer_queue().execute_command(cmd, Some(fence), &[], &[], |cmd| {
+                        for j in num_slices..(i + 1) {
+                            cmd.copy_buffer(slices[j].0, slices[j].1);
+                        }
+                    });
+                    fence.wait_async().await;
+                    write = whole.clone();
+                    num_slices = i;
+                }
+            }
+        }));
+    }
 }
 
 #[derive(Resource, Default)]
 pub struct MeshletManager {
-    pub vertices: StorageBuffer<Vertex>,
-    pub indices: StorageBuffer<u8>,
-    pub meshlets: StorageBuffer<Meshlet>,
-    pub cull_data: StorageBuffer<CullData>,
-    pub bvh_nodes: StorageBuffer<BvhNode>,
-    pub materials: StorageBuffer<Material>,
-
-    mesh_slices: Vec<MeshSlices>,
-    asset_instance_meshes: Vec<u32>,
+    mesh_buffers: Vec<Buffer<u8>>,
+    asset_instance_aabbs: Vec<Aabb>,
     asset_instance_transforms: Vec<Mat4>,
+    asset_instance_meshes: Vec<u32>,
     asset_instance_materials: Vec<u32>,
     assets: HashMap<AssetId<Mesh>, (u32, u32)>,
     _acceleration_structure_scratch_memory: Option<Buffer<u8>>,
@@ -162,35 +208,39 @@ impl MeshletManager {
         id: AssetId<Mesh>,
         assets: &mut Assets<Mesh>,
         instance_manager: &mut InstanceManager,
+        upload_queue: &mut UploadQueue,
     ) {
         let queue_meshlet_mesh = |asset_id: &AssetId<Mesh>| {
             let meshlet_mesh = assets.remove_untracked(*asset_id).expect(
                 "MeshletMesh asset was already unloaded but is not registered with MeshletManager",
             );
 
-            let mesh_offset = self.mesh_slices.len() as u32;
-            self.mesh_slices
+            self.mesh_buffers
                 .extend(meshlet_mesh.meshes.iter().map(|mesh| {
-                    let vertex_offset =
-                        self.vertices.queue_wirte(Arc::clone(&mesh.vertices)) as u32;
-                    let index_offset = self.indices.queue_wirte(Arc::clone(&mesh.indices)) as u32;
+                    let vertices_offset = mesh.bvh.len() * size_of::<BvhNode>();
+                    let indices_offset =
+                        mesh.vertices.len() * size_of::<Vertex>() + vertices_offset;
+                    let meshlets_offset = mesh.indices.len() * size_of::<u8>() + indices_offset;
+                    let cull_data_offset =
+                        mesh.meshlets.len() * size_of::<Meshlet>() + meshlets_offset;
+                    let buffer = Buffer::new(
+                        cull_data_offset + mesh.cull_data.len() * size_of::<CullData>(),
+                    )
+                    .unwrap();
+                    let address = buffer.address;
 
                     assert!(Arc::is_unique(&mesh.meshlets));
                     let meshlet_count = mesh.meshlets.len();
                     let meshlet_ptr = mesh.meshlets.as_ptr().cast_mut();
                     for i in 0..meshlet_count {
                         let m = unsafe { meshlet_ptr.add(i).as_mut().unwrap() };
-                        m.triangle_index += index_offset;
-                        m.vertex_index += vertex_offset;
+                        m.triangle_index += indices_offset as u64 + address;
+                        m.vertex_index += vertices_offset as u64 + address;
                     }
-
-                    let meshlet_offset =
-                        self.meshlets.queue_wirte(Arc::clone(&mesh.meshlets)) as u32;
 
                     assert!(Arc::is_unique(&mesh.bvh));
                     let bvh_count = mesh.bvh.len();
                     let bvh_ptr = mesh.bvh.as_ptr().cast_mut();
-                    let bvh_root = self.bvh_nodes.queue_size as u32;
                     for i in 0..bvh_count {
                         let n = unsafe { bvh_ptr.add(i).as_mut().unwrap() };
                         n.aabbs.iter_mut().enumerate().for_each(|(i, aabb)| {
@@ -198,42 +248,40 @@ impl MeshletManager {
                             aabb.set_offset(
                                 offset
                                     + if ((n.child_counts >> (i * 8)) & 0xFF) as u8 == 255 {
-                                        bvh_root
+                                        address
                                     } else {
-                                        meshlet_offset
+                                        meshlets_offset as u64 + address
                                     },
                             );
                         });
                     }
 
-                    MeshSlices {
-                        cull_data_count: mesh.cull_data.len() as u32,
-                        cull_data_offset: self.cull_data.queue_wirte(Arc::clone(&mesh.cull_data))
-                            as u32,
-                        bvh_count: mesh.bvh.len() as u32,
-                        bvh_root: self.bvh_nodes.queue_wirte(Arc::clone(&mesh.bvh)) as u32,
-                        vertex_count: mesh.vertices.len() as u32,
-                        index_count: mesh.indices.len() as u32,
-                        meshlet_count: mesh.meshlets.len() as u32,
-                        meshlet_offset,
-                        index_offset,
-                        vertex_offset,
-                        aabb: mesh.aabb,
-                        max_bvh_depth: mesh.bvh_depth,
-                    }
+                    upload_queue.queue.push(UploadItem {
+                        vertices: mesh.vertices,
+                        indices: mesh.indices,
+                        meshlets: mesh.meshlets,
+                        bvh: mesh.bvh,
+                        cull_data: mesh.cull_data,
+                        dst: buffer.whole(),
+                    });
+
+                    buffer
                 }));
             let instance_offset = self.asset_instance_meshes.len() as u32;
             let instance_count = meshlet_mesh.instance_mesh.len() as u32;
+            let material_offset = 0; //TODO
+            let mesh_offset = self.mesh_buffers.len() as u32;
             self.asset_instance_materials.extend(
                 meshlet_mesh
                     .instance_materials
                     .iter()
-                    .map(|e| e + mesh_offset),
+                    .map(|e| e  + material_offset),
             );
             self.asset_instance_meshes
                 .extend(meshlet_mesh.instance_mesh.iter().map(|e| e + mesh_offset));
             self.asset_instance_transforms
                 .extend_from_slice(&meshlet_mesh.instance_transforms);
+            self.asset_instance_aabbs.extend(meshlet_mesh.instance_mesh.iter().map(|e| meshlet_mesh.meshes[*e as usize].aabb));
             (instance_offset, instance_count)
         };
 
@@ -244,24 +292,14 @@ impl MeshletManager {
             .clone();
         (instance_offset as usize..instance_count as usize).for_each(|i| {
             let mesh = self.asset_instance_meshes[i] as usize;
-            let slice = &self.mesh_slices[mesh];
+
             instance_manager.add_instance(Instance {
-                aabb: slice.aabb,
-                bvh_root: slice.bvh_root,
-                max_bvh_depth: slice.max_bvh_depth,
+                aabb: self.asset_instance_aabbs[mesh],
+                bvh_root: self.mesh_buffers[mesh].address,
                 transform: self.asset_instance_transforms[i],
                 material: self.asset_instance_materials[i],
             });
         });
-    }
-
-    fn apply_writes(&mut self, queue: &mut UploadBuffer) {
-        self.bvh_nodes.resolve_write(queue);
-        self.cull_data.resolve_write(queue);
-        self.indices.resolve_write(queue);
-        self.materials.resolve_write(queue);
-        self.meshlets.resolve_write(queue);
-        self.vertices.resolve_write(queue);
     }
 }
 
@@ -273,6 +311,7 @@ fn extract_meshlet_instances(
     mut instance_manager: NonSendMut<InstanceManager>,
     mut meshlet_manager: ResMut<MeshletManager>,
     mut main_world: ResMut<MainWorld>,
+    mut upload_queue: ResMut<UploadQueue>,
     mut system_state: Local<
         Option<
             SystemState<(
@@ -311,27 +350,17 @@ fn extract_meshlet_instances(
             instance.model.id(),
             &mut assets,
             &mut instance_manager,
+            &mut upload_queue,
         );
     }
 }
 
-fn apply_writes(mut buffer: ResMut<UploadBuffer>, mut meshes: ResMut<MeshletManager>) {
-    meshes.apply_writes(&mut buffer);
-}
-
-fn apply_instance_writes(
-    mut buffer: ResMut<UploadBuffer>,
-    mut instances: NonSendMut<InstanceManager>,
-) {
-    instances.apply_writes(&mut buffer);
+fn apply_writes(mut buffer: ResMut<UploadQueue>) {
+    buffer.resolve_writes();
 }
 
 pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
         .add_systems(ExtractSchedule, extract_meshlet_instances)
-        .add_systems(Render, apply_writes)
-        .add_systems(
-            Render,
-            apply_instance_writes.in_set(RenderSystems::PreRender),
-        );
+        .add_systems(Render, apply_writes);
 }

@@ -283,14 +283,8 @@ fn extract_ui(
 
 fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
-        verticies: QueueAllocated::new([
-            Buffer::new(1000).unwrap(),
-            Buffer::new(1000).unwrap(),
-        ]),
-        indicies: QueueAllocated::new([
-            Buffer::new(1000).unwrap(),
-            Buffer::new(1000).unwrap(),
-        ]),
+        verticies: QueueAllocated::new([Buffer::new(1000).unwrap(), Buffer::new(1000).unwrap()]),
+        indicies: QueueAllocated::new([Buffer::new(1000).unwrap(), Buffer::new(1000).unwrap()]),
         font_atlas: None,
     });
 }

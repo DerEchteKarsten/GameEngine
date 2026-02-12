@@ -34,8 +34,11 @@ impl FrameCount {
 #[derive(Resource)]
 pub struct SwapchainImage(pub ImageView<format::Swapchain, ColorAttachmentStorage>);
 
-
-pub fn wait_frames_in_flight(sync: Res<SynchronizationResources>, mut command_pools: ResMut<CommandPools>, mut frame: ResMut<FrameCount>) {
+pub fn wait_frames_in_flight(
+    sync: Res<SynchronizationResources>,
+    mut command_pools: ResMut<CommandPools>,
+    mut frame: ResMut<FrameCount>,
+) {
     let next_frame = frame.0 + 1;
     let next_frame_in_flight = next_frame as usize % FRAMES_IN_FLIGHT;
 
@@ -45,9 +48,12 @@ pub fn wait_frames_in_flight(sync: Res<SynchronizationResources>, mut command_po
     frame.0 += 1;
 }
 
-pub fn aquire_swapchain_image(sync: Res<SynchronizationResources>, frame: Res<FrameCount>, swapchain_image: ResMut<SwapchainImage>) {
-    let image_index =
-        Swapchain::aquire_image(&sync.image_available[frame.frame_in_flight()]);
+pub fn aquire_swapchain_image(
+    sync: Res<SynchronizationResources>,
+    frame: Res<FrameCount>,
+    swapchain_image: ResMut<SwapchainImage>,
+) {
+    let image_index = Swapchain::aquire_image(&sync.image_available[frame.frame_in_flight()]);
     swapchain_image.0 = Ctx::get_swapchain_image(image_index);
 }
 
@@ -68,7 +74,7 @@ pub fn render(
     time: Res<Time>,
     mut cmds: ResMut<CommandPools>,
     frame: Res<FrameCount>,
-    sync: Res<SynchronizationResources>
+    sync: Res<SynchronizationResources>,
 ) {
     let camera = query.single().unwrap();
 
@@ -109,14 +115,12 @@ pub fn render(
         .execute_command(
             &mut cmds.command_buffers[frame.frame_in_flight()],
             None,
+            &[sync.image_avalible[frame.frame_in_flight()]],
             &[
-                sync.image_avalible[frame.frame_in_flight()]
-            ],
-            &[
-                sync.timeline.info(frame.frame_in_flight()+1),
+                sync.timeline.info(frame.frame_in_flight() + 1),
                 sync.render_finished[frame.frame_in_flight()].info(),
             ],
-            |cmd| {                
+            |cmd| {
                 // cmd.update_buffer_element(
                 //     &resources.dispatch_params,
                 //     0,
@@ -134,7 +138,7 @@ pub fn render(
                 //         indirect_dispatch: DispatchIndirectCommand { x: 0, y: 1, z: 1 },
                 //     },
                 // );
-        
+
                 // cmd.fill_buffer(&resources.bvh_node_stack, 0, 0);
                 // cmd.fill_buffer(&resources.cluster_buffer, 0, 0);
                 if instances.bvh_root_nodes.len() > 0 {
@@ -152,7 +156,7 @@ pub fn render(
                     //         1,
                     //         1,
                     //     );
-        
+
                     // cmd.compute::<BvhCull>()
                     //     .bind(BvhCullBindings {
                     //         bvh_node_stack: &resources.bvh_node_stack,
@@ -163,10 +167,10 @@ pub fn render(
                     //         instance_transforms: &world.instance_transforms,
                     //     })
                     //     .dispatch(4, 1, 1);
-        
+
                     // let params =
                     //     cmd.read_buffer(&resources.dispatch_params, &(**staging_buffer).cast(), 1, 0);
-        
+
                     cmd.raster::<Raster>()
                         .bind(RasterBindings {
                             instance_offsets: resources.cluster_buffer.whole(),
@@ -187,7 +191,7 @@ pub fn render(
                             vertex_count: 128 * 3,
                             instance_count: meshlets.meshlets.len() as u32,
                         });
-        
+
                     // cmd.raster()
                     //     .mesh("meshshader", "mesh")
                     //     .fragment("meshshader", "fragment")
@@ -204,7 +208,7 @@ pub fn render(
                     //     .backface_culling(false)
                     //     .draw_fullscreen(RasterDispatch::launch_mesh(world.meshlets.len() as u32, 1, 1));
                 }
-        
+
                 cmd.compute::<Post>()
                     .bind(PostBindings {
                         color: resources.color_attachment.as_sampled(),
@@ -220,9 +224,9 @@ pub fn render(
                         ),
                     })
                     .dispatch_fullscreen();
-        
+
                 let frame = (Ctx::current_frame() + 1) as usize % FRAMES_IN_FLIGHT;
-        
+
                 // if let Some(atlas) = &ui_resources.font_atlas {
                 //     cmd.raster::<RasterUi>()
                 //         .bind(RasterUiBindings {
@@ -235,15 +239,12 @@ pub fn render(
                 //         .wire_frame(false)
                 //         .draw_fullscreen(RasterVertexDispatch::Draw { vertex_count: , instance_count: () });
                 // }
-        
+
                 cmd.present(swapchain_image);
             },
         )
         .unwrap();
     Ctx::present_queue()
-            .present(
-                image_index,
-                &present_sem,
-            )
-            .unwrap()
+        .present(image_index, &present_sem)
+        .unwrap()
 }
