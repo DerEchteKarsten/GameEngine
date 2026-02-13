@@ -1,6 +1,7 @@
 #![feature(f16)]
 #![feature(random)]
 #![feature(arc_is_unique)]
+
 use std::{
     any::type_name,
     mem::offset_of,
@@ -10,7 +11,7 @@ use std::{
 
 #[cfg(feature = "bevy_window")]
 use bevy::a11y::AccessibilityPlugin;
-use bevy::prelude::*;
+use bevy::{prelude::*, window::RawHandleWrapperHolder};
 use bevy::{
     a11y::AccessibilityPlugin,
     app::{AppLabel, PanicHandlerPlugin},
@@ -97,13 +98,15 @@ impl Default for UiState {
 
 #[allow(non_snake_case)]
 pub fn CorePlugin(app: &mut App) {
-    app.add_plugins((
+    app
+    .add_plugins((
         AssetPlugin {
             mode: AssetMode::Processed,
-            file_path: format!("/home/karsten/code/GameEngine/game/assets"),
-            processed_file_path: format!("/home/karsten/code/GameEngine/game/imported_assets"),
+            file_path: format!("/home/karsten/Documents/code/GameEngine/game/assets"),
+            processed_file_path: format!("/home/karsten/Documents/code/GameEngine/game/imported_assets"),
             ..Default::default()
         },
+        WinitPlugin::default(),
         WindowPlugin {
             primary_window: Some(Window {
                 resolution: WindowResolution::new(
@@ -124,7 +127,6 @@ pub fn CorePlugin(app: &mut App) {
         DiagnosticsPlugin,
         InputPlugin,
         AccessibilityPlugin,
-        WinitPlugin::default(),
         CameraPlugin,
         MeshAssets,
         UiPlugin,

@@ -6,16 +6,14 @@ use crate::{
     },
     components::camera::Camera,
     render::{
-        systems::{aquire_swapchain_image, render, wait_frames_in_flight},
-        world::{InstanceManager, MeshletManager, WorldPlugin, init_world},
+        render::{CommandPools, Swapchain, SynchronizationResources, aquire_swapchain_image, init_render, render, wait_frames_in_flight},
+        world::{InstanceManager, MeshletManager, UploadQueue, WorldPlugin, init_world},
     },
     ui::UiResources,
 };
 use async_std::channel::{Receiver, Sender};
 use bevy::{
-    app::{App, AppExit, AppLabel, Plugin, SubApp},
-    asset::AssetServer,
-    ecs::{
+    app::{App, AppExit, AppLabel, Plugin, PreStartup, SubApp}, asset::AssetServer, ecs::{
         change_detection::Mut,
         query::With,
         resource::Resource,
@@ -23,13 +21,9 @@ use bevy::{
             IntoScheduleConfigs, MainThreadExecutor, Schedule, ScheduleBuildSettings,
             ScheduleLabel, Schedules, SystemSet,
         },
-        system::{Local, Query, Res, ResMut},
+        system::{Commands, Local, Query, Res, ResMut, Single},
         world::World,
-    },
-    tasks::ComputeTaskPool,
-    time::Time,
-    utils::default,
-    window::{PrimaryWindow, RawHandleWrapperHolder},
+    }, log, tasks::ComputeTaskPool, time::Time, utils::default, window::{PrimaryWindow, RawHandleWrapperHolder}
 };
 use glam::Vec4;
 use lava::{
@@ -42,12 +36,12 @@ use lava::{
         usage::{ColorAttachmentSampled, DepthAttachmentSampled},
     },
     state::Ctx,
-    vkobjects::queue::{Binary, CommandBufferMemory, CommandPool, Semaphore, Timeline},
+    vkobjects::{self, queue::{Binary, CommandBufferMemory, CommandPool, Semaphore, Timeline}},
 };
 use std::ops::{Deref, DerefMut};
 
 pub mod extract_param;
-pub mod systems;
+pub mod render;
 pub mod world;
 
 pub const FRAMES_IN_FLIGHT: usize = 2;
@@ -59,7 +53,6 @@ enum RenderSystems {
     AquireSwapchainImage,
     PreRender,
     Render,
-    Submit,
 }
 
 #[derive(ScheduleLabel, PartialEq, Eq, Debug, Clone, Hash, Default)]
@@ -85,7 +78,6 @@ impl Render {
                 RenderSystems::PreRender,
                 RenderSystems::AquireSwapchainImage,
                 RenderSystems::Render,
-                RenderSystems::Submit,
             )
                 .chain(),
         );
@@ -187,6 +179,7 @@ impl Drop for RenderAppChannels {
     }
 }
 
+
 #[derive(Default)]
 pub struct PipelinedRenderingPlugin;
 
@@ -227,7 +220,7 @@ impl Plugin for PipelinedRenderingPlugin {
 
         std::thread::spawn(move || {
             #[cfg(feature = "trace")]
-            let _span = bevy_log::info_span!("render thread").entered();
+            let _span = log::info_span!("render thread").entered();
 
             let compute_task_pool = ComputeTaskPool::get();
             loop {
@@ -244,7 +237,7 @@ impl Plugin for PipelinedRenderingPlugin {
                 {
                     #[cfg(feature = "trace")]
                     let _sub_app_span =
-                        bevy_log::info_span!("sub app", name = ?RenderApp).entered();
+                        log::info_span!("sub app", name = ?RenderApp).entered();
                     render_app.update();
                 }
 
@@ -279,33 +272,34 @@ fn renderer_extract(app_world: &mut World, _world: &mut World) {
     });
 }
 
+
+fn init(
+    window: Single<&RawHandleWrapperHolder, With<PrimaryWindow>>,
+) {
+    #[cfg(debug_assertions)]
+    let validation = true;
+
+    #[cfg(not(debug_assertions))]
+    let validation = false;
+
+    let mutex = window.0.lock().unwrap();
+    let handle = mutex.as_ref().unwrap();
+    lava::init(
+            &handle.get_display_handle(),
+            &handle.get_window_handle(),
+            validation,
+            true,
+        )
+        .unwrap();
+}
+
 #[derive(Default, Debug)]
 pub struct RenderPlugin;
 
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
-        let primary_window = app
-            .world_mut()
-            .query_filtered::<&RawHandleWrapperHolder, With<PrimaryWindow>>()
-            .single(app.world())
-            .ok()
-            .cloned()
-            .unwrap();
-        let mutex = primary_window.0.lock();
-        let window = mutex.as_ref().unwrap().as_ref().unwrap();
-        #[cfg(debug_assertions)]
-        let validation = true;
-
-        #[cfg(not(debug_assertions))]
-        let validation = false;
-
-        lava::init(
-            &window.get_display_handle(),
-            &window.get_window_handle(),
-            validation,
-            false,
-        )
-        .unwrap();
+        app.add_systems(PreStartup, init);
+        app.init_resource::<ScratchMainWorld>();
 
         let mut render_app = SubApp::new();
         render_app.update_schedule = Some(Render.intern());
@@ -319,7 +313,7 @@ impl Plugin for RenderPlugin {
         let mut should_run_startup = true;
 
         render_app
-            .add_systems(RenderStartup, init_world)
+            .add_systems(RenderStartup, init_render)
             .add_schedule(extract_schedule)
             .add_schedule(Render::base_schedule())
             .add_systems(
@@ -342,9 +336,5 @@ impl Plugin for RenderPlugin {
             .add_plugins(WorldPlugin);
 
         app.insert_sub_app(RenderApp, render_app);
-        app.add_plugins(PipelinedRenderingPlugin);
-    }
-    fn ready(&self, _app: &App) -> bool {
-        lava::is_init()
     }
 }

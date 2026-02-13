@@ -2,9 +2,7 @@ use ash::vk::{self, Format, ImageUsageFlags, Rect2D};
 use bevy::{
     app::{App, Update},
     ecs::{
-        message::MessageReader,
-        resource::Resource,
-        system::{Commands, NonSendMut, Res, ResMut},
+        message::MessageReader, query::With, resource::Resource, system::{Commands, NonSendMut, Res, ResMut, Single}
     },
     input::{
         ButtonState,
@@ -12,7 +10,7 @@ use bevy::{
         mouse::{MouseButton, MouseButtonInput, MouseWheel},
     },
     time::Time,
-    window::{CursorMoved, WindowEvent},
+    window::{CursorMoved, PrimaryWindow, Window, WindowEvent},
 };
 use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
@@ -25,7 +23,7 @@ use lava::{
 };
 use lava::{
     buffer::{AsBuffer, CpuBuffer},
-    image::{Image, format::R8Unorm, usage::Sampled},
+    image::{Image, format::R8Unorm, usage::Sampled, slice::AsImage},
 };
 use std::{
     collections::HashMap,
@@ -41,7 +39,7 @@ use crate::{
     render::{
         self, ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, RenderStartup,
         extract_param::Extract,
-        systems::{FrameCount, Swapchain},
+        render::{FrameCount, Swapchain},
         world::UploadQueue,
     },
 };
@@ -173,9 +171,10 @@ fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
 fn read_input(
     mut events: MessageReader<WindowEvent>,
     mut ctx: NonSendMut<UiContext>,
-    swapchain: Res<Swapchain>,
+    window: Single<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
 ) {
+    let size = window.size();
     let io = ctx.ctx.io_mut();
     io.update_delta_time(time.delta());
 
@@ -219,7 +218,7 @@ fn read_input(
         }
     }
     io.font_global_scale = 1.0;
-    io.display_size = [swapchain.size[0] as f32, swapchain.size[1] as f32];
+    io.display_size = size.to_array();
 }
 
 fn extract_ui(
@@ -232,7 +231,8 @@ fn extract_ui(
     if resources.font_atlas.is_none() {
         let atlas = ctx.ctx.fonts().build_alpha8_texture();
         let image = Image::new(atlas.width, atlas.height).unwrap();
-
+        let data: Arc<[u8]> = Arc::from(atlas.data);
+        queue.push_image(&data, image.whole());
         resources.font_atlas = Some(image);
     }
     let draw_data = ctx.ctx.render();
@@ -266,8 +266,8 @@ fn extract_ui(
                 uv: Vec2::new(v.uv[0], v.uv[1]),
             })
             .collect::<Vec<_>>();
-        vertex_slice.push(BufferSlice::from(verticies.as_slice()));
-        index_slice.push(BufferSlice::from(indicies.as_slice()));
+        vertex_slice.push(BufferSlice::from(verticies.as_slice())).unwrap();
+        index_slice.push(BufferSlice::from(indicies.as_slice())).unwrap();
     }
 
     ctx.ui = unsafe { ctx.ctx.new_frame() as *mut _ };

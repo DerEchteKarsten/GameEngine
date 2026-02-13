@@ -15,7 +15,7 @@ const SENSITIVITY: f32 = 0.5;
 
 const UP: Vec3 = vec3(0.0, 1.0, 0.0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Component)]
+#[derive(Debug, Clone, Copy, PartialEq, Component, Resource)]
 pub struct Camera {
     pub position: Vec3,
     pub direction: Vec3,

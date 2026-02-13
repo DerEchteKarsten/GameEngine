@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
 use std::num::NonZeroU64;
@@ -22,10 +23,14 @@ use glam::Mat4;
 use gpu_allocator::vulkan::Allocation;
 use lava::buffer::Buffer;
 
-use lava::buffer::slice::BufferSlice;
+use lava::buffer::slice::{BufferSlice, BufferView};
 use lava::buffer::{AsBuffer, BufferUsageFlags, CpuBuffer, GpuBuffer, Location};
 use lava::command_buffer::CommandBuffer;
+use lava::image::format::R8Uint;
+use lava::image::slice::{ImageSlice, TypeLessImageView};
+use lava::image::usage::UsageSet;
 use lava::state::Ctx;
+use lava::vkobjects;
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
 use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence};
 use rand::random;
@@ -35,7 +40,8 @@ use crate::assets::mesh::MeshletMesh;
 use crate::assets::{Mesh, material::Material};
 use crate::bindings::{AabbError, BvhNode, CullData, Meshlet, Vertex};
 use crate::render::extract_param::Extract;
-use crate::render::{ExtractSchedule, MainWorld, Render, RenderStartup, RenderSystems};
+use crate::render::render::{CommandPools, FrameCount, Swapchain, SynchronizationResources, extract_camera};
+use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderStartup, RenderSystems};
 use crate::ui::UiContext;
 
 #[derive(Component, Clone)]
@@ -89,9 +95,14 @@ impl InstanceManager {
 
 const STAGING_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
+
+enum Dst {
+    Buffer(BufferSlice),
+    Image(ImageSlice)
+}
 struct CopyRegion {
     src: BufferSlice<u8, CpuBuffer>,
-    dst: BufferSlice<u8, GpuBuffer>,
+    dst: Dst,
 }
 
 #[derive(Resource)]
@@ -105,7 +116,7 @@ pub struct UploadQueue {
 }
 
 impl UploadQueue {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let buffer = Buffer::new(STAGING_BUFFER_SIZE).unwrap();
         let pool = Ctx::transfer_queue().create_pool();
         Self {
@@ -130,7 +141,7 @@ impl UploadQueue {
         let whole = self.buffer.whole();
         let fence = self.fence.clone();
         let cmd = self.cmd.clone();
-
+        let pool = self.pool.clone();
         self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let mut staging = whole.clone();
             let mut slice_start = 0;
@@ -139,14 +150,24 @@ impl UploadQueue {
                 queue: &[CopyRegion],
                 fence: Fence,
                 cmd: CommandBufferMemory,
+                pool: CommandPool,
                 range: std::ops::Range<usize>,
             ) {
+                pool.reset();
                 fence.reset();
                 Ctx::transfer_queue().execute_command(cmd.clone(), Some(fence), &[], &[], |cmd| {
                     for entry in &queue[range] {
-                        cmd.copy_buffer(entry.src, entry.dst);
+                        match entry.dst {
+                            Dst::Buffer(buff) => {
+                                cmd.copy_buffer(entry.src, buff);
+                                cmd.release_buffer(buff, Ctx::gfx_queue_index());
+                            },
+                            Dst::Image(img) => {
+                                cmd.copy_buffer_to_image(entry.src, img);
+                            }
+                        }
                     }
-                });
+                }).unwrap();
                 fence.wait_async().await;
             }
 
@@ -157,7 +178,7 @@ impl UploadQueue {
                     queue[i].src.size -= remaining;
                     queue[i].src.offset += remaining;
 
-                    flush(&queue, fence, cmd, slice_start..(i + 1)).await;
+                    flush(&queue, fence, cmd, pool, slice_start..(i + 1)).await;
 
                     staging = whole.clone();
                     slice_start = i;
@@ -165,9 +186,21 @@ impl UploadQueue {
             }
 
             if slice_start < queue.len() {
-                flush(&queue, fence, cmd, slice_start..queue.len()).await;
+                flush(&queue, fence, cmd, pool, slice_start..queue.len()).await;
+            }
+            for e in queue {
+                unsafe { Arc::decrement_strong_count(e.src.cpu_base_ptr as *const u32) };
             }
         }));
+    }
+
+    pub fn push_buffer<T: Copy+Pod+Send+Sync>(&mut self, src: &Arc<[T]>, buffer: BufferSlice<T, GpuBuffer>) {
+        unsafe { Arc::increment_strong_count(Arc::as_ptr(src)) };
+        self.queue.push(CopyRegion { src: BufferSlice::from(src).cast(), dst: Dst::Buffer(buffer.cast()) });
+    }
+    pub fn push_image<F: lava::image::format::Format, U: UsageSet>(&mut self, src: &Arc<[u8]>, image: ImageSlice<F, U>) {
+        unsafe { Arc::increment_strong_count(Arc::as_ptr(src)) };
+        self.queue.push(CopyRegion { src: BufferSlice::from(src).cast(), dst: Dst::Image(image.cast()) });
     }
 }
 
@@ -184,6 +217,10 @@ pub struct MeshletManager {
     pub _tlas: Option<AccelerationStructure>,
 }
 
+fn size<T>(t: &Arc<[T]>) -> u64 {
+    (t.len() * size_of::<T>()) as u64
+}
+
 impl MeshletManager {
     fn queue_upload_if_needed(
         &mut self,
@@ -196,17 +233,22 @@ impl MeshletManager {
             let meshlet_mesh = assets.remove_untracked(*asset_id).expect(
                 "MeshletMesh asset was already unloaded but is not registered with MeshletManager",
             );
-
+            let mesh_offset = self.mesh_buffers.len() as u32;
             self.mesh_buffers
                 .extend(meshlet_mesh.meshes.iter().map(|mesh| {
-                    let vertices_offset = mesh.bvh.len() * size_of::<BvhNode>();
-                    let indices_offset =
-                        mesh.vertices.len() * size_of::<Vertex>() + vertices_offset;
-                    let meshlets_offset = mesh.indices.len() * size_of::<u8>() + indices_offset;
-                    let cull_data_offset =
-                        mesh.meshlets.len() * size_of::<Meshlet>() + meshlets_offset;
-                    let buffer = Buffer::new(
-                        cull_data_offset + mesh.cull_data.len() * size_of::<CullData>(),
+                    let vert_size = size(&mesh.vertices);
+                    let ind_size = size(&mesh.indices);
+                    let meshlet_size = size(&mesh.meshlets);
+                    let bvh_size = size(&mesh.bvh);
+                    let cull_size = size(&mesh.cull_data);
+
+                    let vertices_offset = bvh_size;
+                    let indices_offset = vert_size + vertices_offset;
+                    let meshlets_offset = ind_size + indices_offset;
+                    let cull_data_offset = meshlet_size + meshlets_offset;
+
+                    let buffer: Buffer<u8> = Buffer::new(
+                        (cull_data_offset + cull_size) as usize,
                     )
                     .unwrap();
                     let address = buffer.address;
@@ -241,18 +283,17 @@ impl MeshletManager {
                             });
                     }
 
-                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.bvh)).cast(), dst: buffer.whole() });
-                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.vertices)).cast(), dst: buffer.whole() });
-                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.indices)).cast(), dst: buffer.whole() });
-                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.meshlets)).cast(), dst: buffer.whole() });
-                    upload_queue.queue.push(CopyRegion { src: BufferSlice::from(Arc::clone(&mesh.cull_data)).cast(), dst: buffer.whole() });
+                    upload_queue.push_buffer(&mesh.bvh, buffer.whole().num_bytes(bvh_size).cast());
+                    upload_queue.push_buffer(&mesh.vertices, buffer.whole().num_bytes(vert_size).byte_offset(vertices_offset as u64).cast());
+                    upload_queue.push_buffer(&mesh.indices, buffer.whole().num_bytes(ind_size).byte_offset(indices_offset as u64).cast());
+                    upload_queue.push_buffer(&mesh.meshlets, buffer.whole().num.byte_offset(meshlets_offset as u64).cast());
+                    upload_queue.push_buffer(&mesh.cull_data, buffer.whole().byte_offset(cull_data_offset as u64).cast());
 
                     buffer
                 }));
             let instance_offset = self.asset_instance_meshes.len() as u32;
             let instance_count = meshlet_mesh.instance_mesh.len() as u32;
             let material_offset = 0; //TODO
-            let mesh_offset = self.mesh_buffers.len() as u32;
             self.asset_instance_materials.extend(
                 meshlet_mesh
                     .instance_materials
@@ -291,7 +332,15 @@ impl MeshletManager {
 }
 
 pub(super) fn init_world(mut cmd: Commands) {
-    cmd.insert_resource(MeshletManager::default());
+    cmd.insert_resource(InstanceManager {
+        aabbs: Buffer::new(1024 * 10).unwrap(),
+        transforms: Buffer::new(1024 * 10).unwrap(),
+        bvh_root_nodes: Buffer::new(1024 * 10).unwrap(),
+        materials: Buffer::new(1024 * 10).unwrap(),
+        max_bvh_depth: 5,
+        max_instance_count: 1024 * 10,
+    });
+    cmd.init_resource::<FrameCount>();
 }
 
 fn extract_meshlet_instances(
@@ -348,6 +397,6 @@ fn apply_writes(mut buffer: ResMut<UploadQueue>) {
 
 pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
-        .add_systems(ExtractSchedule, extract_meshlet_instances)
+        .add_systems(ExtractSchedule, (extract_meshlet_instances, extract_camera))
         .add_systems(Render, apply_writes);
 }
