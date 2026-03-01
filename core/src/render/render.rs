@@ -271,25 +271,25 @@ pub fn render(
                     let view = camera.view_matrix();
 
                     if instances.instance_count > 0 {
-                        // cmd.raster::<Raster>()
-                        //     .bind(RasterBindings {
-                        //         // instances: instances.bvh_root_nodes.whole().cast(),
-                        //         proj: proj.clone(),
-                        //         view: view.clone(),
-                        //         instance: 0,
-                        //         offset: 864,
-                        //     })
-                        //     .color_attachment(resources.color_attachment.view(), None)
-                        //     // .depth_attachment(resources.depth_attachment.view())
-                        //     .backface_culling(false)
-                        //     .draw(
-                        //         swapchain.size[0],
-                        //         swapchain.size[1],
-                        //         RasterVertexDispatch::Draw {
-                        //             vertex_count: 128,
-                        //             instance_count: 1,
-                        //         },
-                        //     );
+                        cmd.raster::<Raster>()
+                            .bind(RasterBindings {
+                                instances: instances.bvh_root_nodes.whole().cast(),
+                                proj: proj.clone(),
+                                view: view.clone(),
+                                instance: 0,
+                                offset: 864,
+                            })
+                            .color_attachment(resources.color_attachment.view(), None)
+                            .depth_attachment(resources.depth_attachment.view())
+                            .backface_culling(false)
+                            .draw(
+                                swapchain.size[0],
+                                swapchain.size[1],
+                                RasterVertexDispatch::Draw {
+                                    vertex_count: 255,
+                                    instance_count: 84,
+                                },
+                            );
                     }
 
                     cmd.compute::<Post>()
@@ -312,21 +312,21 @@ pub fn render(
                             1,
                         );
 
-                    if instances.instance_count > 0 {
-                        let num_verticies = 4000;
-                        cmd.compute::<bindings::DrawVerticies>()
-                            .bind(bindings::DrawVerticiesBindings {
-                                instance: 0,
-                                instances: instances.bvh_root_nodes.whole().cast(),
-                                num_verticies,
-                                offset: 3552,
-                                out: swapchain.image().as_storage(),
-                                proj: proj.clone(),
-                                view: view.clone(),
-                                window_size: UVec2::new(swapchain.size[0], swapchain.size[1]),
-                            })
-                            .dispatch(num_verticies.div_ceil(64), 1, 1);
-                    }
+                    // if instances.instance_count > 0 {
+                    //     let num_verticies = 6705;
+                    //     cmd.compute::<bindings::DrawVerticies>()
+                    //         .bind(bindings::DrawVerticiesBindings {
+                    //             instance: 0,
+                    //             instances: instances.bvh_root_nodes.whole().cast(),
+                    //             num_verticies,
+                    //             offset: 3552,
+                    //             out: swapchain.image().as_storage(),
+                    //             proj: proj.clone(),
+                    //             view: view.clone(),
+                    //             window_size: UVec2::new(swapchain.size[0], swapchain.size[1]),
+                    //         })
+                    //         .dispatch(num_verticies.div_ceil(64), 1, 1);
+                    // }
 
                     if let Some(font_atlas) = &ui_resources.font_atlas {
                         cmd.raster::<RasterUi>()

@@ -155,13 +155,13 @@ pub struct UploadQueue {
 static UPLOAD_QUEUE: OnceLock<UploadQueue> = OnceLock::new();
 
 impl UploadQueue {
-    fn flush(res: &NonRebarResources, regions: &Vec<(BufferSlice<u8, CpuBuffer>, Dst)>) {
+    fn flush(res: &NonRebarResources, regions: &mut Vec<(BufferSlice<u8, CpuBuffer>, Dst, Option<oneshot::Sender<()>>,)>) {
         res.pool.reset();
         res.fence.reset();
         res.queue.with(|queue| {
             queue
                 .execute_command(None, &res.cmd, Some(&res.fence), &[], &[], |cmd| {
-                    for entry in regions {
+                    for entry in regions.iter_mut() {
                         match entry.1 {
                             Dst::Buffer(buff) => {
                                 cmd.copy_buffer(entry.0, buff);
@@ -198,7 +198,13 @@ impl UploadQueue {
                 })
                 .unwrap();
             res.fence.wait();
+            for entry in regions.iter_mut() {
+                if let Err(_) = entry.2.take().unwrap().send(()) {
+                    log::warn!("Asset completion receiver was dropped")
+                }
+            }
         });
+        regions.clear();
     }
     pub fn init(queues: &Queues) {
         let (sender, receiver) = std::sync::mpsc::channel::<CopyRegion>();
@@ -241,7 +247,7 @@ impl UploadQueue {
                         item
                     } else {
                         if !regions.is_empty() {
-                            Self::flush(&res, &regions);
+                            Self::flush(&res, &mut regions);
                         }
                         receiver.recv().unwrap()
                     };
@@ -258,17 +264,16 @@ impl UploadQueue {
                             staging_slice
                                 .num_bytes(src_remaining_bytes.min(staging_remaining_bytes)),
                             item.dst.clone(),
+                            item.completed.take(),
                         ));
                         staging_slice = staging_slice.add_byte_offset(src_remaining_bytes);
                         src_remaining_bytes =
                             src_remaining_bytes.saturating_sub(staging_remaining_bytes);
                         staging_slice.size == 0
                     } {
-                        Self::flush(&res, &regions);
-                        regions.clear();
+                        Self::flush(&res, &mut regions);
                         staging_slice = res.staging.whole();
                     }
-                    let _ = item.completed.take().unwrap().send(());
                 }
             })
         } else {
@@ -365,9 +370,7 @@ fn extract_meshlet_instances(
         Option<
             SystemState<(
                 Query<(&Model, &GlobalTransform)>,
-                Res<AssetServer>,
-                ResMut<Assets<Mesh>>,
-                MessageReader<AssetEvent<Mesh>>,
+                Res<Assets<Mesh>>,
             )>,
         >,
     >,
@@ -377,14 +380,8 @@ fn extract_meshlet_instances(
         *system_state = Some(SystemState::new(&mut main_world));
     }
     let system_state = system_state.as_mut().unwrap();
-    let (instances_query, asset_server, mut assets, mut asset_events) =
+    let (instances_query, assets) =
         system_state.get_mut(&mut main_world);
-
-    for asset_event in asset_events.read() {
-        if let AssetEvent::Unused { id } | AssetEvent::Modified { id } = asset_event {
-            todo!();
-        }
-    }
 
     for (instance, transform) in &instances_query {
         if let Some(mesh) = assets.get(&instance.model) {

@@ -14,12 +14,13 @@ use bevy::{
     prelude::*,
 };
 use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut, try_cast_vec};
+use futures::future::join_all;
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
 
 use crate::{
     assets::{material::Material, mesh::MeshletMesh},
-    bindings::{AabbError, BvhNode, Meshlet},
+    bindings::{AabbError, BvhNode, Meshlet, Vertex},
     render::world::UploadQueue,
 };
 
@@ -46,7 +47,7 @@ impl Plugin for MeshAssets {
     }
 }
 
-#[derive(Pod, Zeroable, Clone, Copy)]
+#[derive(Pod, Zeroable, Clone, Copy, Debug)]
 #[repr(C)]
 struct MeshHeader {
     meshlet_offset: u32,
@@ -56,7 +57,7 @@ struct MeshHeader {
     aabb: Aabb,
 }
 
-#[derive(Pod, Zeroable, Clone, Copy)]
+#[derive(Pod, Zeroable, Clone, Copy, Debug)]
 #[repr(C)]
 struct Aabb {
     center: [f32; 3],
@@ -154,7 +155,7 @@ impl AssetTransformer for MeshTransformer {
                 let verticies = reader
                     .read_positions()
                     .unwrap()
-                    .map(|e| Vec3::from(e).extend(0.0))
+                    .map(|e| Vec3::from(e))
                     .collect::<Vec<_>>();
 
                 assert_eq!(verticies.len() * 3, normals.len());
@@ -288,7 +289,6 @@ impl AssetSaver for MeshSaver {
         write_slice(&mesh.materials, writer).await?;
         write_slice(&mesh.instance_mesh, writer).await?;
         write_slice(&mesh.instance_materials, writer).await?;
-
         writer.write_all(&len.to_le_bytes()).await?;
         for mesh in mesh.meshes.iter() {
             writer
@@ -328,16 +328,13 @@ impl AssetLoader for MeshLoader {
         let instance_materials = read_slice(reader, None).await?;
 
         let num_meshes = read_u64(reader).await?;
+        let mut futures = Vec::with_capacity(num_meshes as usize);
         let mut meshes = Vec::with_capacity(num_meshes as usize);
         for i in 0..num_meshes {
             let mut header = MeshHeader::zeroed();
             reader.read_exact(bytes_of_mut(&mut header)).await?;
 
-            log::info!(
-                "offset of {i}: meshlets: {}, vertex offset: {}",
-                header.meshlet_offset,
-                header.vertex_offset
-            );
+            log::info!("offset of {i}: header: {:#?}, num verticies: {}", header, (header.index_offset - header.vertex_offset) as usize / size_of::<Vertex>());
             let len = read_u64(reader).await? as usize;
 
             let buffer = Buffer::new(len).unwrap();
@@ -380,8 +377,8 @@ impl AssetLoader for MeshLoader {
             for _ in 0..header.meshlet_count as usize {
                 let mut meshlet = Meshlet::zeroed();
                 reader.read_exact(bytes_of_mut(&mut meshlet)).await?;
-                meshlet.triangle_index += header.index_offset as u64 + address;
-                meshlet.vertex_index += header.vertex_offset as u64 + address;
+                meshlet.triangle_index = meshlet.triangle_index + header.index_offset as u64 + address;
+                meshlet.vertex_index = meshlet.vertex_index * size_of::<Vertex>() as u64 + header.vertex_offset as u64 + address;
                 push_data(meshlet, &mut data, &mut slice);
             }
 
@@ -392,6 +389,7 @@ impl AssetLoader for MeshLoader {
                     slice::from_raw_parts_mut(data.as_mut_ptr().add(read_so_far), len - read_so_far)
                 };
                 reader.read_exact(&mut slice).await?;
+                unsafe { data.set_len(len) };
             } else {
                 let mut mem_slice =
                     unsafe { slice::from_raw_parts_mut(slice.cpu_ptr(), slice.len()) };
@@ -399,7 +397,7 @@ impl AssetLoader for MeshLoader {
             }
 
             if let Some(data) = data {
-                UploadQueue::push_buffer(data, buffer.whole()).await?;
+                futures.push(UploadQueue::push_buffer(data, buffer.whole()));
             }
 
             meshes.push(GpuMeshletMesh {
@@ -409,6 +407,10 @@ impl AssetLoader for MeshLoader {
                 },
                 buffer,
             });
+        }
+
+        for f in futures {
+            f.await?;
         }
 
         Ok(Mesh {

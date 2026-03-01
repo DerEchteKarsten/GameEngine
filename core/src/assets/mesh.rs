@@ -1,5 +1,5 @@
 use bevy::{
-    math::bounding::{Aabb3d, BoundingVolume},
+    math::bounding::{Aabb3d, BoundingSphere, BoundingVolume},
     prelude::*,
     tasks::{AsyncComputeTaskPool, ParallelSlice},
 };
@@ -7,8 +7,7 @@ use bytemuck::{Pod, Zeroable, try_cast_vec};
 use glam::{Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use itertools::Itertools;
 use meshopt::{
-    SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_vertex_remap_multi,
-    simplify_with_attributes_and_locks,
+    SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_position_remap, generate_vertex_remap_multi, simplify_with_attributes_and_locks
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
@@ -89,28 +88,20 @@ fn cast_vec_trust_me_bro<A>(a: Vec<A>) -> Vec<u8> {
 impl MeshletMesh {
     pub fn new(
         indices: &[u32],
-        vertices: &[Vec4],
+        vertices: &[Vec3],
         vertex_normals: &[f32],
         vertex_uvs: &[f32],
     ) -> Self {
-        let vertex_stride = size_of::<Vec4>();
-        let (position_only_vertex_count, position_only_vertex_remap) = generate_vertex_remap_multi(
-            vertices.len(),
-            &[VertexStream::new_with_stride::<Vec4, _>(
-                vertices.as_ptr(),
-                vertex_stride,
-            )],
-            Some(&indices),
-        );
+        let vertex_stride = size_of::<Vec3>();
         let vertex_adapter =
             VertexDataAdapter::new(bytemuck::cast_slice(vertices), vertex_stride, 0).unwrap();
+        let position_only_vertex_remap = generate_position_remap(&vertex_adapter);
 
         // Split the mesh into an initial list of meshlets (LOD 0)
         let (mut meshlets, mut cull_data) = compute_meshlets(
             &indices,
             &vertex_adapter,
             &position_only_vertex_remap,
-            position_only_vertex_count,
             None,
         );
 
@@ -130,7 +121,6 @@ impl MeshletMesh {
                 &simplification_queue,
                 &meshlets,
                 &position_only_vertex_remap,
-                position_only_vertex_count,
             );
 
             // Group meshlets into roughly groups of size TARGET_MESHLETS_PER_GROUP,
@@ -148,7 +138,6 @@ impl MeshletMesh {
                 &groups,
                 &meshlets,
                 &position_only_vertex_remap,
-                position_only_vertex_count,
             );
 
             let simplified = groups.par_chunk_map(AsyncComputeTaskPool::get(), 1, |_, groups| {
@@ -187,8 +176,7 @@ impl MeshletMesh {
                     &simplified_group_indices,
                     &vertex_adapter,
                     &position_only_vertex_remap,
-                    position_only_vertex_count,
-                    Some((group.lod_bounds, group.parent_error)),
+                    Some((BoundingSphere::new(group.lod_bounds.xyz(), group.lod_bounds.z), group.parent_error)),
                 );
 
                 Ok((group, new_meshlets))
@@ -246,7 +234,6 @@ impl MeshletMesh {
                 pad: UVec2 { x: 0, y: 0 },
             });
         }
-
         let verticies = vertices
             .iter()
             .enumerate()
@@ -316,11 +303,10 @@ fn compute_meshlets(
     indices: &[u32],
     vertices: &VertexDataAdapter,
     position_only_vertex_remap: &[u32],
-    position_only_vertex_count: usize,
-    prev_lod_data: Option<(Vec4, f32)>,
+    prev_lod_data: Option<(BoundingSphere, f32)>,
 ) -> (meshopt::Meshlets, Vec<TempMeshletCullData>) {
     // For each vertex, build a list of all triangles that use it
-    let mut vertices_to_triangles = vec![Vec::new(); position_only_vertex_count];
+    let mut vertices_to_triangles = vec![Vec::new(); position_only_vertex_remap.len()];
     for (i, index) in indices.iter().enumerate() {
         let vertex_id = position_only_vertex_remap[*index as usize];
         let vertex_to_triangles = &mut vertices_to_triangles[vertex_id as usize];
@@ -404,11 +390,11 @@ fn compute_meshlets(
         )
     };
     for meshlet_indices in &indices_per_meshlet {
-        let meshlet = build_meshlets(meshlet_indices, vertices, 255, 128, 0.0);
+        let meshlet = build_meshlets(meshlet_indices, vertices, 256, 128, 0.0);
         for meshlet in meshlet.iter() {
             let (lod_group_sphere, error) = prev_lod_data.unwrap_or_else(|| {
                 let bounds = meshopt::compute_meshlet_bounds(meshlet, vertices);
-                (Vec3::from_array(bounds.center).extend(bounds.radius), 0.0)
+                (BoundingSphere::new(bounds.center, bounds.radius), 0.0)
             });
 
             cull_data.push(TempMeshletCullData {
@@ -416,7 +402,7 @@ fn compute_meshlets(
                     Isometry3d::IDENTITY,
                     meshlet.vertices.iter().map(get_vertex),
                 ),
-                lod_group_sphere,
+                lod_group_sphere: lod_group_sphere.center.extend(lod_group_sphere.radius()),
                 error,
             });
         }
@@ -429,10 +415,9 @@ fn find_connected_meshlets(
     simplification_queue: &[u32],
     meshlets: &meshopt::Meshlets,
     position_only_vertex_remap: &[u32],
-    position_only_vertex_count: usize,
 ) -> Vec<Vec<(usize, usize)>> {
     // For each vertex, build a list of all meshlets that use it
-    let mut vertices_to_meshlets = vec![Vec::new(); position_only_vertex_count];
+    let mut vertices_to_meshlets = vec![Vec::new(); position_only_vertex_remap.len()];
     for (id_index, &meshlet_id) in simplification_queue.iter().enumerate() {
         let meshlet = meshlets.get(meshlet_id as _);
         for index in meshlet.triangles {
@@ -526,9 +511,8 @@ fn lock_group_borders(
     groups: &[TempMeshletGroup],
     meshlets: &meshopt::Meshlets,
     position_only_vertex_remap: &[u32],
-    position_only_vertex_count: usize,
 ) {
-    let mut position_only_locks = vec![-1; position_only_vertex_count];
+    let mut position_only_locks = vec![-1; position_only_vertex_remap.len()];
 
     // Iterate over position-only based vertices of all meshlets in all groups
     for (group_id, group) in groups.iter().enumerate() {
@@ -556,6 +540,7 @@ fn lock_group_borders(
         vertex_locks[i] = position_only_locks[vertex_id] == -2;
     }
 }
+
 
 fn simplify_meshlet_group(
     group: &TempMeshletGroup,

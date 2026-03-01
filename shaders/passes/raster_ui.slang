@@ -25,7 +25,6 @@ struct RasterMeshUiBindings {
 [shader("vertex")]
 VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
 {
-    printf("test");
     let index = b.indicies.val[vertex_index];
     let vertex = b.verticies.val[index];
     VSOutput output;
