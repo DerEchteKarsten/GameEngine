@@ -11,7 +11,6 @@ use std::{
 
 #[cfg(feature = "bevy_window")]
 use bevy::a11y::AccessibilityPlugin;
-use bevy::{prelude::*, window::RawHandleWrapperHolder};
 use bevy::{
     a11y::AccessibilityPlugin,
     app::{AppLabel, PanicHandlerPlugin},
@@ -21,12 +20,13 @@ use bevy::{
         system::NonSendMarker,
     },
     input::InputPlugin,
-    log::LogPlugin,
+    log::{Level, LogPlugin},
     prelude::*,
     time::TimePlugin,
     window::{PrimaryWindow, WindowResized, WindowResolution},
     winit::{WinitPlugin, WinitWindows},
 };
+use bevy::{prelude::*, window::RawHandleWrapperHolder};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
 use lava::{command_buffer::RasterVertexDispatch, state::Ctx};
@@ -60,50 +60,63 @@ impl Default for UiState {
     }
 }
 
-// fn ui(
-//     mut ui: NonSendMut<UiContext>,
-//     mut state: ResMut<UiState>,
-//     world: Res<RenderWorld>,
-//     time: Res<Time>,
-// ) {
-//     state.delta_time_histogram.rotate_left(1);
-//     state.delta_time_histogram[299] = time.delta_secs() * 1000.0;
-//     let average = state.delta_time_histogram.iter().cloned().reduce(|acc, e| acc + e).unwrap_or(0.0) / state.delta_time_histogram.len() as f32;
-//     if let Some(ui) = ui.ui() {
-//         if let Some(window) = ui.window("Frame Stats")
-//             .size([100.0, 300.0], imgui::Condition::FirstUseEver)
-//             .begin() {
-//                 ui.plot_histogram(format!("Frame Time: {:?}", average), &state.delta_time_histogram)
-//                     .scale_max(16.0)
-//                     .scale_min(0.0)
-//                     .build();
-//                 ui.text(format!("Verticies: {}, capacity: {}Kb", world.vertices.len(), world.vertices.buffer.size / 1000));
-//                 ui.text(format!("Indicies: {}, capacity: {}Kb", world.indecies.len(), world.indecies.buffer.size / 1000));
-//                 ui.text(format!("Meshlets: {}, capacity: {}Kb", world.meshlets.len(), world.meshlets.buffer.size / 1000));
-//                 ui.text(format!("Materials: {}, capacity: {}Kb", world.materials.len(), world.materials.buffer.size / 1000));
-//                 ui.text(format!("Bvh Nodes: {}, capacity: {}Kb", world.bvh_nodes.len(), world.bvh_nodes.buffer.size / 1000));
-//                 ui.text(format!("Cull Data: {}, capacity: {}Kb", world.cull_data.len(), world.cull_data.buffer.size / 1000));
-//                 ui.text(format!("Instance AABBs: {}, capacity: {}Kb", world.instance_aabbs.len(), world.instance_aabbs.buffer.size / 1000));
-//                 ui.text(format!("Instance Bvh Root nodes: {}, capacity: {}Kb", world.instance_bvh_root_nodes.len(), world.instance_bvh_root_nodes.buffer.size / 1000));
-//                 ui.text(format!("Instance Materials: {}, capacity: {}Kb", world.instance_materials.len(), world.instance_materials.buffer.size / 1000));
-//                 ui.text(format!("Instance Transforms: {}, capacity: {}Kb", world.instance_transforms.len(), world.instance_transforms.buffer.size / 1000));
-//                 ui.text(format!("Bvh Depth: {}", world.max_bvh_depth));
-//                 if let Some(_cb) = ui.begin_combo("Queue", "") {
-//                     world.upload_queue.iter().for_each(|e| ui.text(format!("{:#?}", e)));
-//                 }
-//             window.end();
-//         }
-//     }
-// }
+fn ui(mut ui: ResMut<UiContext>, mut state: ResMut<UiState>, time: Res<Time>) {
+    state.delta_time_histogram.rotate_left(1);
+    state.delta_time_histogram[299] = time.delta_secs() * 1000.0;
+    let average = state
+        .delta_time_histogram
+        .iter()
+        .cloned()
+        .reduce(|acc, e| acc + e)
+        .unwrap_or(0.0)
+        / state.delta_time_histogram.len() as f32;
+    if let Some(ui) = ui.ui() {
+        if let Some(window) = ui
+            .window("Frame Stats")
+            .size([100.0, 300.0], imgui::Condition::FirstUseEver)
+            .begin()
+        {
+            ui.plot_histogram(
+                format!("Frame Time: {:?}", average),
+                &state.delta_time_histogram,
+            )
+            .scale_max(16.0)
+            .scale_min(0.0)
+            .build()
+        }
+    }
+    //     if let Some(window) = ui.window("Frame Stats")
+    //         .size([100.0, 300.0], imgui::Condition::FirstUseEver)
+    //         .begin() {
+    //             ui.plot_histogram(format!("Frame Time: {:?}", average), &state.delta_time_histogram)
+    //                 .scale_max(16.0)
+    //                 .scale_min(0.0)
+    //                 .build();
+    //             ui.text(format!("Verticies: {}, capacity: {}Kb", world.vertices.len(), world.vertices.buffer.size / 1000));
+    //             ui.text(format!("Indicies: {}, capacity: {}Kb", world.indecies.len(), world.indecies.buffer.size / 1000));
+    //             ui.text(format!("Meshlets: {}, capacity: {}Kb", world.meshlets.len(), world.meshlets.buffer.size / 1000));
+    //             ui.text(format!("Materials: {}, capacity: {}Kb", world.materials.len(), world.materials.buffer.size / 1000));
+    //             ui.text(format!("Bvh Nodes: {}, capacity: {}Kb", world.bvh_nodes.len(), world.bvh_nodes.buffer.size / 1000));
+    //             ui.text(format!("Cull Data: {}, capacity: {}Kb", world.cull_data.len(), world.cull_data.buffer.size / 1000));
+    //             ui.text(format!("Instance AABBs: {}, capacity: {}Kb", world.instance_aabbs.len(), world.instance_aabbs.buffer.size / 1000));
+    //             ui.text(format!("Instance Bvh Root nodes: {}, capacity: {}Kb", world.instance_bvh_root_nodes.len(), world.instance_bvh_root_nodes.buffer.size / 1000));
+    //             ui.text(format!("Instance Materials: {}, capacity: {}Kb", world.instance_materials.len(), world.instance_materials.buffer.size / 1000));
+    //             ui.text(format!("Instance Transforms: {}, capacity: {}Kb", world.instance_transforms.len(), world.instance_transforms.buffer.size / 1000));
+    //             ui.text(format!("Bvh Depth: {}", world.max_bvh_depth));
+    //             if let Some(_cb) = ui.begin_combo("Queue", "") {
+    //                 world.upload_queue.iter().for_each(|e| ui.text(format!("{:#?}", e)));
+    //             }
+    //         window.end();
+    //     }
+}
 
 #[allow(non_snake_case)]
 pub fn CorePlugin(app: &mut App) {
-    app
-    .add_plugins((
+    app.add_plugins((
         AssetPlugin {
             mode: AssetMode::Processed,
-            file_path: format!("/home/karsten/Documents/code/GameEngine/game/assets"),
-            processed_file_path: format!("/home/karsten/Documents/code/GameEngine/game/imported_assets"),
+            file_path: format!("/home/karsten/code/GameEngine/game/assets"),
+            processed_file_path: format!("/home/karsten/code/GameEngine/game/imported_assets"),
             ..Default::default()
         },
         WinitPlugin::default(),
@@ -121,7 +134,10 @@ pub fn CorePlugin(app: &mut App) {
             ..Default::default()
         },
         PanicHandlerPlugin,
-        LogPlugin::default(),
+        LogPlugin {
+            level: Level::DEBUG,
+            ..Default::default()
+        },
         TaskPoolPlugin::default(),
         TimePlugin,
         DiagnosticsPlugin,
@@ -129,14 +145,14 @@ pub fn CorePlugin(app: &mut App) {
         AccessibilityPlugin,
         CameraPlugin,
         MeshAssets,
-        UiPlugin,
         TransformPlugin::default(),
     ))
-    .add_plugins((RenderPlugin::default(), PipelinedRenderingPlugin::default()))
-    // .add_systems(
-    //     Update,
-    //         ui
-    // )
+    .add_plugins((
+        RenderPlugin::default(),
+        PipelinedRenderingPlugin::default(),
+        UiPlugin,
+    ))
+    .add_systems(Update, ui)
     .init_resource::<UiState>();
     #[cfg(feature = "trace")]
     {

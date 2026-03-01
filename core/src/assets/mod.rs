@@ -1,5 +1,9 @@
 use core::slice;
-use std::{collections::HashMap, mem::MaybeUninit};
+use std::{
+    alloc::Layout,
+    collections::HashMap,
+    mem::{ManuallyDrop, MaybeUninit},
+};
 
 use anyhow::{Ok, Result};
 use bevy::{
@@ -9,13 +13,19 @@ use bevy::{
     },
     prelude::*,
 };
-use bytemuck::Pod;
+use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut, try_cast_vec};
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
 
 use crate::{
     assets::{material::Material, mesh::MeshletMesh},
-    bindings::AabbError,
+    bindings::{AabbError, BvhNode, Meshlet},
+    render::world::UploadQueue,
+};
+
+use lava::{
+    buffer::{AsBuffer, Buffer, slice::BufferSlice},
+    state::Ctx,
 };
 
 pub mod material;
@@ -36,13 +46,44 @@ impl Plugin for MeshAssets {
     }
 }
 
+#[derive(Pod, Zeroable, Clone, Copy)]
+#[repr(C)]
+struct MeshHeader {
+    meshlet_offset: u32,
+    meshlet_count: u32,
+    vertex_offset: u32,
+    index_offset: u32,
+    aabb: Aabb,
+}
+
+#[derive(Pod, Zeroable, Clone, Copy)]
+#[repr(C)]
+struct Aabb {
+    center: [f32; 3],
+    half_extend: [f32; 3],
+}
+
+pub struct GpuMeshletMesh {
+    pub buffer: Buffer<u8>,
+    pub aabb: AabbError,
+}
+
 #[derive(Asset, TypePath)]
 pub struct Mesh {
-    pub meshes: Arc<[MeshletMesh]>,
-    pub instance_transforms: Arc<[Mat4]>,
-    pub materials: Arc<[Material]>,
-    pub instance_materials: Arc<[u32]>,
-    pub instance_mesh: Arc<[u32]>,
+    pub meshes: Vec<GpuMeshletMesh>,
+    pub instance_transforms: Vec<Mat4>,
+    pub materials: Vec<Material>,
+    pub instance_materials: Vec<u32>,
+    pub instance_mesh: Vec<u32>,
+}
+
+#[derive(Asset, TypePath)]
+pub struct FileMesh {
+    pub meshes: Vec<MeshletMesh>,
+    pub instance_transforms: Vec<Mat4>,
+    pub materials: Vec<Material>,
+    pub instance_materials: Vec<u32>,
+    pub instance_mesh: Vec<u32>,
 }
 
 #[derive(Asset, TypePath)]
@@ -80,15 +121,11 @@ impl AssetLoader for GltfMeshLoader {
     }
 }
 
-#[inline(always)]
-pub fn typed_to_bytes<T: Sized>(typed: &[T]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(typed.as_ptr().cast(), std::mem::size_of_val(typed)) }
-}
 #[derive(TypePath)]
 struct MeshTransformer;
 impl AssetTransformer for MeshTransformer {
     type AssetInput = GltfMesh;
-    type AssetOutput = Mesh;
+    type AssetOutput = FileMesh;
     type Error = anyhow::Error;
     type Settings = ();
     async fn transform<'a>(
@@ -117,13 +154,22 @@ impl AssetTransformer for MeshTransformer {
                 let verticies = reader
                     .read_positions()
                     .unwrap()
-                    .map(|e| Vec3::from(e))
+                    .map(|e| Vec3::from(e).extend(0.0))
                     .collect::<Vec<_>>();
+
+                assert_eq!(verticies.len() * 3, normals.len());
+
+                if normals.len() < 3 {
+                    log::info!("skipping");
+                    continue;
+                }
 
                 let uvs = reader
                     .read_tex_coords(0)
                     .map(|e| e.into_f32().flatten().collect::<Vec<_>>());
                 let uvs = uvs.unwrap_or(vec![0.0; verticies.len() * 2]);
+                assert_eq!(verticies.len() * 2, uvs.len());
+
                 let indicies = reader
                     .read_indices()
                     .unwrap()
@@ -173,12 +219,12 @@ impl AssetTransformer for MeshTransformer {
             }
         }
 
-        let mesh = Mesh {
-            instance_transforms: instance_transforms.into(),
-            instance_materials: instance_materials.into(),
-            instance_mesh: instance_mesh.into(),
-            materials: materials.into(),
-            meshes: meshes.into(),
+        let mesh = FileMesh {
+            instance_transforms: instance_transforms,
+            instance_materials: instance_materials,
+            instance_mesh: instance_mesh,
+            materials: materials,
+            meshes: meshes,
         };
 
         let asset = asset.replace_asset(mesh);
@@ -187,10 +233,10 @@ impl AssetTransformer for MeshTransformer {
 }
 
 async fn write_slice<T: Pod>(field: &[T], writer: &mut bevy::asset::io::Writer) -> Result<()> {
-    writer
-        .write_all(&(field.len() as u64).to_le_bytes())
-        .await?;
-    writer.write_all(bytemuck::cast_slice(field)).await?;
+    let len = field.len() as u64;
+    writer.write_all(&len.to_le_bytes()).await?;
+    let byte_slice = bytemuck::cast_slice(field);
+    writer.write_all(&byte_slice).await?;
     Ok(())
 }
 async fn read_u64(reader: &mut dyn bevy::asset::io::Reader) -> Result<u64> {
@@ -199,26 +245,34 @@ async fn read_u64(reader: &mut dyn bevy::asset::io::Reader) -> Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-async fn read_slice<T: Pod>(reader: &mut dyn bevy::asset::io::Reader) -> Result<Arc<[T]>> {
-    let len = read_u64(reader).await? as usize;
-    let mut data: Arc<[MaybeUninit<T>]> = Arc::new_uninit_slice(len);
+async fn read_slice<T: Pod>(
+    reader: &mut dyn bevy::asset::io::Reader,
+    alignment: Option<usize>,
+) -> Result<Vec<T>> {
+    let len = read_u64(reader).await?;
+    read_len_slice(reader, len as usize, alignment).await
+}
 
-    let buf = Arc::get_mut(&mut data).ok_or_else(|| anyhow::anyhow!("Arc unexpectedly shared"))?;
-    let byte_buf: &mut [u8] = unsafe {
-        slice::from_raw_parts_mut(
-            buf.as_mut_ptr() as *mut u8,
-            buf.len() * std::mem::size_of::<T>(),
-        )
+async fn read_len_slice<T: Pod>(
+    reader: &mut dyn bevy::asset::io::Reader,
+    len: usize,
+    alignment: Option<usize>,
+) -> Result<Vec<T>> {
+    let slice = unsafe {
+        let size = len * size_of::<T>();
+        let align = alignment.unwrap_or(align_of::<T>());
+        let layout = Layout::from_size_align(size, align).unwrap();
+        let mem = std::alloc::alloc(layout);
+        slice::from_raw_parts_mut(mem, size)
     };
-    reader.read_exact(byte_buf).await?;
-
-    Ok(unsafe { data.assume_init() })
+    reader.read_exact(slice).await?;
+    Ok(unsafe { Vec::from_raw_parts(slice.as_mut_ptr().cast::<T>(), len, len) })
 }
 
 #[derive(TypePath)]
 struct MeshSaver;
 impl AssetSaver for MeshSaver {
-    type Asset = Mesh;
+    type Asset = FileMesh;
     type Error = anyhow::Error;
     type Settings = ();
     type OutputLoader = MeshLoader;
@@ -229,27 +283,27 @@ impl AssetSaver for MeshSaver {
         _settings: &Self::Settings,
     ) -> std::result::Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
         let mesh = asset.get();
-
+        let len = mesh.meshes.len() as u64;
         write_slice(&mesh.instance_transforms, writer).await?;
         write_slice(&mesh.materials, writer).await?;
         write_slice(&mesh.instance_mesh, writer).await?;
         write_slice(&mesh.instance_materials, writer).await?;
 
-        writer
-            .write_all(&(mesh.meshes.len() as u64).to_le_bytes())
-            .await?;
-
+        writer.write_all(&len.to_le_bytes()).await?;
         for mesh in mesh.meshes.iter() {
-            writer.write_all(&(mesh.bvh_depth.to_le_bytes())).await?;
             writer
-                .write_all(&bytemuck::cast_slice(&[mesh.aabb]))
+                .write_all(bytes_of(&MeshHeader {
+                    aabb: Aabb {
+                        center: mesh.aabb.center_and_error.xyz().to_array(),
+                        half_extend: mesh.aabb.half_extent.xyz().to_array(),
+                    },
+                    meshlet_count: mesh.meshlet_count,
+                    meshlet_offset: mesh.meshlet_offset,
+                    vertex_offset: mesh.vertex_offset,
+                    index_offset: mesh.index_offset,
+                }))
                 .await?;
-
-            write_slice(&mesh.vertices, writer).await?;
-            write_slice(&mesh.indices, writer).await?;
-            write_slice(&mesh.meshlets, writer).await?;
-            write_slice(&mesh.cull_data, writer).await?;
-            write_slice(&mesh.bvh, writer).await?;
+            write_slice(&mesh.data, writer).await?
         }
 
         return Ok(());
@@ -268,38 +322,101 @@ impl AssetLoader for MeshLoader {
         _settings: &Self::Settings,
         _load_context: &mut LoadContext<'_>,
     ) -> std::result::Result<Self::Asset, Self::Error> {
-        let instance_transforms = read_slice(reader).await?;
-        let materials = read_slice(reader).await?;
-        let instance_materials = read_slice(reader).await?;
-        let instance_meshlet_offsets = read_slice(reader).await?;
-        let num_meshes = read_u64(reader).await?;
+        let instance_transforms = read_slice(reader, None).await?;
+        let materials = read_slice(reader, None).await?;
+        let instance_mesh = read_slice(reader, None).await?;
+        let instance_materials = read_slice(reader, None).await?;
 
-        let mut meshes = Vec::new();
-        for _ in 0..num_meshes {
-            let mut buffer = [0u8; size_of::<AabbError>()];
-            reader.read(&mut buffer).await?;
-            let aabb = bytemuck::cast_slice(&buffer)[0];
-            reader.read(&mut buffer[0..4]).await?;
-            let bvh_depth = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
-            let mesh = MeshletMesh {
-                bvh_root_node_index: !0u32,
-                aabb,
-                bvh_depth,
-                vertices: read_slice(reader).await.unwrap(),
-                indices: read_slice(reader).await.unwrap(),
-                meshlets: read_slice(reader).await.unwrap(),
-                cull_data: read_slice(reader).await.unwrap(),
-                bvh: read_slice(reader).await.unwrap(),
+        let num_meshes = read_u64(reader).await?;
+        let mut meshes = Vec::with_capacity(num_meshes as usize);
+        for i in 0..num_meshes {
+            let mut header = MeshHeader::zeroed();
+            reader.read_exact(bytes_of_mut(&mut header)).await?;
+
+            log::info!(
+                "offset of {i}: meshlets: {}, vertex offset: {}",
+                header.meshlet_offset,
+                header.vertex_offset
+            );
+            let len = read_u64(reader).await? as usize;
+
+            let buffer = Buffer::new(len).unwrap();
+            let mut slice = buffer.whole();
+            let address = buffer.address;
+
+            fn push_data<T: Pod>(v: T, data: &mut Option<Vec<u8>>, buffer: &mut BufferSlice<u8>) {
+                let bytes = bytes_of(&v);
+                if let Some(data) = data {
+                    data.extend_from_slice(bytes);
+                } else {
+                    buffer.mem_copy_from(BufferSlice::from(bytes));
+                    *buffer = buffer.add_byte_offset(bytes.len() as u64);
+                }
+            }
+
+            let mut data = if Ctx::features().rebar {
+                None
+            } else {
+                Some(Vec::with_capacity(len))
             };
-            meshes.push(mesh);
+
+            for i in 0..(header.meshlet_offset as usize / size_of::<BvhNode>()) {
+                let mut node = BvhNode::zeroed();
+                reader.read_exact(bytes_of_mut(&mut node)).await?;
+                for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
+                    let offset = aabb.offset();
+                    aabb.set_offset(
+                        offset
+                            + if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
+                                address
+                            } else {
+                                header.meshlet_offset as u64 + address
+                            },
+                    );
+                }
+                push_data(node, &mut data, &mut slice);
+            }
+
+            for _ in 0..header.meshlet_count as usize {
+                let mut meshlet = Meshlet::zeroed();
+                reader.read_exact(bytes_of_mut(&mut meshlet)).await?;
+                meshlet.triangle_index += header.index_offset as u64 + address;
+                meshlet.vertex_index += header.vertex_offset as u64 + address;
+                push_data(meshlet, &mut data, &mut slice);
+            }
+
+            let read_so_far = header.meshlet_offset as usize
+                + header.meshlet_count as usize * size_of::<Meshlet>();
+            if let Some(data) = &mut data {
+                let mut slice = unsafe {
+                    slice::from_raw_parts_mut(data.as_mut_ptr().add(read_so_far), len - read_so_far)
+                };
+                reader.read_exact(&mut slice).await?;
+            } else {
+                let mut mem_slice =
+                    unsafe { slice::from_raw_parts_mut(slice.cpu_ptr(), slice.len()) };
+                reader.read_exact(&mut mem_slice).await?;
+            }
+
+            if let Some(data) = data {
+                UploadQueue::push_buffer(data, buffer.whole()).await?;
+            }
+
+            meshes.push(GpuMeshletMesh {
+                aabb: AabbError {
+                    center_and_error: Vec3::from_array(header.aabb.center).extend(0.0),
+                    half_extent: Vec3::from_array(header.aabb.half_extend).extend(0.0),
+                },
+                buffer,
+            });
         }
 
         Ok(Mesh {
             instance_transforms,
             instance_materials,
-            instance_mesh: instance_meshlet_offsets,
+            instance_mesh,
             materials,
-            meshes: meshes.into(),
+            meshes,
         })
     }
     fn extensions(&self) -> &[&str] {

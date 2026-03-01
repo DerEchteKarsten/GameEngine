@@ -1,18 +1,22 @@
-use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
+use std::fmt::Debug;
 use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut, Range};
 use std::ptr::NonNull;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, OnceLock};
+use std::thread::{JoinHandle, Thread};
+use std::time::Duration;
 
-use ash::vk;
-use async_std::sync::Mutex;
 use bevy::asset::{AsAssetId, LoadState};
 use bevy::ecs::entity::Entities;
 use bevy::ecs::system::SystemState;
 use bevy::prelude::*;
+use futures::channel::oneshot;
+use lava::image::slice::AsImage;
+use std::sync::Mutex;
 
 use bevy::tasks::futures::check_ready;
 use bevy::tasks::futures_lite::future;
@@ -29,10 +33,10 @@ use lava::command_buffer::CommandBuffer;
 use lava::image::format::R8Uint;
 use lava::image::slice::{ImageSlice, TypeLessImageView};
 use lava::image::usage::UsageSet;
-use lava::state::Ctx;
-use lava::vkobjects;
+use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
-use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence};
+use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue, Transfer};
+use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2, vkobjects};
 use rand::random;
 use smallvec::SmallVec;
 
@@ -40,8 +44,13 @@ use crate::assets::mesh::MeshletMesh;
 use crate::assets::{Mesh, material::Material};
 use crate::bindings::{AabbError, BvhNode, CullData, Meshlet, Vertex};
 use crate::render::extract_param::Extract;
-use crate::render::render::{CommandPools, FrameCount, Swapchain, SynchronizationResources, extract_camera};
-use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderStartup, RenderSystems};
+use crate::render::render::{
+    CommandPools, FrameCount, QueueStrategie, Queues, Swapchain, SynchronizationResources,
+    extract_camera,
+};
+use crate::render::{
+    ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderStartup, RenderSystems,
+};
 use crate::ui::UiContext;
 
 #[derive(Component, Clone)]
@@ -62,8 +71,7 @@ pub struct InstanceManager {
     pub materials: Buffer<u32, CpuBuffer>,
     pub bvh_root_nodes: Buffer<u64, CpuBuffer>,
     pub aabbs: Buffer<AabbError, CpuBuffer>,
-    pub max_bvh_depth: u32,
-    pub max_instance_count: usize,
+    pub instance_count: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -76,258 +84,266 @@ struct Instance {
 
 impl InstanceManager {
     fn add_instance(&mut self, instance: Instance) {
-        let slot = self.max_instance_count;
-        self.max_instance_count += 1;
+        let slot = self.instance_count;
+        self.instance_count += 1;
         self.transforms
-            .whole()
+            .element_offset(slot)
             .mem_copy_from(BufferSlice::from(&[instance.transform]));
         self.materials
-            .whole()
+            .element_offset(slot)
             .mem_copy_from(BufferSlice::from(&[instance.material]));
         self.bvh_root_nodes
-            .whole()
+            .element_offset(slot)
             .mem_copy_from(BufferSlice::from(&[instance.bvh_root]));
         self.aabbs
-            .whole()
+            .element_offset(slot)
             .mem_copy_from(BufferSlice::from(&[instance.aabb]));
+    }
+    fn clear(&mut self) {
+        self.instance_count = 0;
     }
 }
 
 const STAGING_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
-
+#[derive(Clone)]
 enum Dst {
     Buffer(BufferSlice),
-    Image(ImageSlice)
+    Image(ImageSlice),
 }
 struct CopyRegion {
-    src: BufferSlice<u8, CpuBuffer>,
+    completed: Option<oneshot::Sender<()>>,
+    src: Vec<u8>,
     dst: Dst,
 }
 
-#[derive(Resource)]
-pub struct UploadQueue {
+#[derive(Debug)]
+enum TransferQueueStrategie {
+    SingleQueue(Arc<Mutex<Queue<Gfx>>>),
+    MultipleGfx(Queue<Gfx>),
+    Transfer(Queue<Transfer>),
+}
+
+impl TransferQueueStrategie {
+    fn with<R, F: FnOnce(&Queue<Transfer>) -> R>(&self, f: F) -> R {
+        match &self {
+            TransferQueueStrategie::SingleQueue(queue) => {
+                let q = queue.lock().unwrap();
+                let queue = &*q;
+                f(unsafe { std::mem::transmute(queue) })
+            }
+            TransferQueueStrategie::MultipleGfx(queue) => f(unsafe { std::mem::transmute(queue) }),
+            TransferQueueStrategie::Transfer(queue) => f(queue),
+        }
+    }
+}
+
+struct NonRebarResources {
     pool: CommandPool,
     fence: Fence,
     cmd: CommandBufferMemory,
-    buffer: Buffer<u8, CpuBuffer>,
-    queue: Vec<CopyRegion>,
-    task: Option<Task<()>>,
+    staging: Buffer<u8, CpuBuffer>,
+    queue: TransferQueueStrategie,
 }
 
+#[derive(Debug)]
+pub struct UploadQueue {
+    copy_queue: Sender<CopyRegion>,
+    thread: JoinHandle<()>,
+}
+
+static UPLOAD_QUEUE: OnceLock<UploadQueue> = OnceLock::new();
+
 impl UploadQueue {
-    pub fn new() -> Self {
-        let buffer = Buffer::new(STAGING_BUFFER_SIZE).unwrap();
-        let pool = Ctx::transfer_queue().create_pool();
-        Self {
-            queue: Vec::new(),
-            buffer,
-            cmd: pool.create_command_buffer(),
-            pool: pool,
-            fence: Fence::new(),
-            task: None,
-        }
-    }
-    fn resolve_writes(&mut self) {
-        if self.task.is_none() || self.queue.is_empty() {
-            return;
-        }
-
-        if check_ready(self.task.as_mut().unwrap()).is_some() {
-            self.task = None;
-        }
-
-        let mut queue = std::mem::take(&mut self.queue);
-        let whole = self.buffer.whole();
-        let fence = self.fence.clone();
-        let cmd = self.cmd.clone();
-        let pool = self.pool.clone();
-        self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
-            let mut staging = whole.clone();
-            let mut slice_start = 0;
-
-            async fn flush(
-                queue: &[CopyRegion],
-                fence: Fence,
-                cmd: CommandBufferMemory,
-                pool: CommandPool,
-                range: std::ops::Range<usize>,
-            ) {
-                pool.reset();
-                fence.reset();
-                Ctx::transfer_queue().execute_command(cmd.clone(), Some(fence), &[], &[], |cmd| {
-                    for entry in &queue[range] {
-                        match entry.dst {
+    fn flush(res: &NonRebarResources, regions: &Vec<(BufferSlice<u8, CpuBuffer>, Dst)>) {
+        res.pool.reset();
+        res.fence.reset();
+        res.queue.with(|queue| {
+            queue
+                .execute_command(None, &res.cmd, Some(&res.fence), &[], &[], |cmd| {
+                    for entry in regions {
+                        match entry.1 {
                             Dst::Buffer(buff) => {
-                                cmd.copy_buffer(entry.src, buff);
-                                cmd.release_buffer(buff, Ctx::gfx_queue_index());
-                            },
+                                cmd.copy_buffer(entry.0, buff);
+                                if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
+                                    cmd.buffer_barrier(
+                                        buff,
+                                        AccessFlags2::TRANSFER_WRITE,
+                                        AccessFlags2::NONE,
+                                        PipelineStageFlags2::TRANSFER,
+                                        PipelineStageFlags2::NONE,
+                                        Ctx::transfer_queue_index(),
+                                        Ctx::gfx_queue_index(),
+                                    );
+                                }
+                            }
                             Dst::Image(img) => {
-                                cmd.copy_buffer_to_image(entry.src, img);
+                                cmd.copy_buffer_to_image(entry.0, img);
+                                if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
+                                    cmd.image_barrier(
+                                        img.view,
+                                        AccessFlags2::TRANSFER_WRITE,
+                                        AccessFlags2::NONE,
+                                        PipelineStageFlags2::TRANSFER,
+                                        PipelineStageFlags2::NONE,
+                                        ImageLayout::UNDEFINED,
+                                        ImageLayout::UNDEFINED,
+                                        Ctx::transfer_queue_index(),
+                                        Ctx::gfx_queue_index(),
+                                    );
+                                }
                             }
                         }
                     }
-                }).unwrap();
-                fence.wait_async().await;
-            }
-
-            for i in 0..queue.len() {
-                while staging.push(queue[i].src).is_err() {
-                    let remaining = staging.size;
-                    staging.mem_copy_from(queue[i].src.num_bytes(remaining));
-                    queue[i].src.size -= remaining;
-                    queue[i].src.offset += remaining;
-
-                    flush(&queue, fence, cmd, pool, slice_start..(i + 1)).await;
-
-                    staging = whole.clone();
-                    slice_start = i;
+                })
+                .unwrap();
+            res.fence.wait();
+        });
+    }
+    pub fn init(queues: &Queues) {
+        let (sender, receiver) = std::sync::mpsc::channel::<CopyRegion>();
+        let thread = if !Ctx::features().rebar {
+            let pool;
+            let queue = match (
+                &queues.graphics,
+                Ctx::gfx_queue_index() == Ctx::transfer_queue_index(),
+            ) {
+                (QueueStrategie::Multiple(_), true) => {
+                    let queue = Queue::new().unwrap();
+                    pool = queue.create_pool();
+                    TransferQueueStrategie::MultipleGfx(queue)
                 }
-            }
-
-            if slice_start < queue.len() {
-                flush(&queue, fence, cmd, pool, slice_start..queue.len()).await;
-            }
-            for e in queue {
-                unsafe { Arc::decrement_strong_count(e.src.cpu_base_ptr as *const u32) };
-            }
-        }));
-    }
-
-    pub fn push_buffer<T: Copy+Pod+Send+Sync>(&mut self, src: &Arc<[T]>, buffer: BufferSlice<T, GpuBuffer>) {
-        unsafe { Arc::increment_strong_count(Arc::as_ptr(src)) };
-        self.queue.push(CopyRegion { src: BufferSlice::from(src).cast(), dst: Dst::Buffer(buffer.cast()) });
-    }
-    pub fn push_image<F: lava::image::format::Format, U: UsageSet>(&mut self, src: &Arc<[u8]>, image: ImageSlice<F, U>) {
-        unsafe { Arc::increment_strong_count(Arc::as_ptr(src)) };
-        self.queue.push(CopyRegion { src: BufferSlice::from(src).cast(), dst: Dst::Image(image.cast()) });
-    }
-}
-
-#[derive(Resource, Default)]
-pub struct MeshletManager {
-    pub mesh_buffers: Vec<Buffer<u8>>,
-    pub asset_instance_aabbs: Vec<AabbError>,
-    pub asset_instance_transforms: Vec<Mat4>,
-    pub asset_instance_meshes: Vec<u32>,
-    pub asset_instance_materials: Vec<u32>,
-    pub assets: HashMap<AssetId<Mesh>, (u32, u32)>,
-    pub _acceleration_structure_scratch_memory: Option<Buffer<u8>>,
-    pub _acceleration_structure_memory: Option<Buffer<u8>>,
-    pub _tlas: Option<AccelerationStructure>,
-}
-
-fn size<T>(t: &Arc<[T]>) -> u64 {
-    (t.len() * size_of::<T>()) as u64
-}
-
-impl MeshletManager {
-    fn queue_upload_if_needed(
-        &mut self,
-        id: AssetId<Mesh>,
-        assets: &mut Assets<Mesh>,
-        instance_manager: &mut InstanceManager,
-        upload_queue: &mut UploadQueue,
-    ) {
-        let queue_meshlet_mesh = |asset_id: &AssetId<Mesh>| {
-            let meshlet_mesh = assets.remove_untracked(*asset_id).expect(
-                "MeshletMesh asset was already unloaded but is not registered with MeshletManager",
-            );
-            let mesh_offset = self.mesh_buffers.len() as u32;
-            self.mesh_buffers
-                .extend(meshlet_mesh.meshes.iter().map(|mesh| {
-                    let vert_size = size(&mesh.vertices);
-                    let ind_size = size(&mesh.indices);
-                    let meshlet_size = size(&mesh.meshlets);
-                    let bvh_size = size(&mesh.bvh);
-                    let cull_size = size(&mesh.cull_data);
-
-                    let vertices_offset = bvh_size;
-                    let indices_offset = vert_size + vertices_offset;
-                    let meshlets_offset = ind_size + indices_offset;
-                    let cull_data_offset = meshlet_size + meshlets_offset;
-
-                    let buffer: Buffer<u8> = Buffer::new(
-                        (cull_data_offset + cull_size) as usize,
-                    )
-                    .unwrap();
-                    let address = buffer.address;
-
-                    assert!(Arc::is_unique(&mesh.meshlets));
-                    let meshlet_count = mesh.meshlets.len();
-                    let meshlet_ptr = mesh.meshlets.as_ptr().cast_mut();
-                    for i in 0..meshlet_count {
-                        let m = unsafe { meshlet_ptr.add(i).as_mut().unwrap() };
-                        m.triangle_index += indices_offset as u64 + address;
-                        m.vertex_index += vertices_offset as u64 + address;
+                (QueueStrategie::Single(queue), true) => {
+                    pool = queue.lock().unwrap().create_pool();
+                    TransferQueueStrategie::SingleQueue(queue.clone())
+                }
+                (_, false) => {
+                    let queue = Queue::new().unwrap();
+                    pool = queue.create_pool();
+                    TransferQueueStrategie::Transfer(queue)
+                }
+            };
+            let res = NonRebarResources {
+                queue,
+                cmd: pool.create_command_buffer(),
+                fence: Fence::new(),
+                pool,
+                staging: Buffer::new(STAGING_BUFFER_SIZE).unwrap(),
+            };
+            std::thread::spawn(move || {
+                #[cfg(feature = "trace")]
+                let _span = log::info_span!("Upload Thread").entered();
+                let mut staging_slice = res.staging.whole().clone();
+                let mut regions = Vec::new();
+                loop {
+                    let mut item = if let Ok(item) = receiver.recv_timeout(Duration::from_millis(1))
+                    {
+                        item
+                    } else {
+                        if !regions.is_empty() {
+                            Self::flush(&res, &regions);
+                        }
+                        receiver.recv().unwrap()
+                    };
+                    let mut src_remaining_bytes = item.src.len() as u64;
+                    while {
+                        let staging_remaining_bytes = staging_slice.size;
+                        unsafe {
+                            staging_slice.cpu_ptr().copy_from(
+                                item.src.as_ptr(),
+                                src_remaining_bytes.min(staging_remaining_bytes) as usize,
+                            )
+                        };
+                        regions.push((
+                            staging_slice
+                                .num_bytes(src_remaining_bytes.min(staging_remaining_bytes)),
+                            item.dst.clone(),
+                        ));
+                        staging_slice = staging_slice.add_byte_offset(src_remaining_bytes);
+                        src_remaining_bytes =
+                            src_remaining_bytes.saturating_sub(staging_remaining_bytes);
+                        staging_slice.size == 0
+                    } {
+                        Self::flush(&res, &regions);
+                        regions.clear();
+                        staging_slice = res.staging.whole();
                     }
-
-                    assert!(Arc::is_unique(&mesh.bvh));
-                    let bvh_count = mesh.bvh.len();
-                    let bvh_ptr = mesh.bvh.as_ptr().cast_mut();
-                    for i in 0..bvh_count {
-                        let n = unsafe { bvh_ptr.add(i).as_mut().unwrap() };
-                        n.aabb_and_offsets
-                            .iter_mut()
-                            .enumerate()
-                            .for_each(|(i, aabb)| {
-                                let offset = aabb.offset();
-                                aabb.set_offset(
-                                    offset
-                                        + if ((n.child_counts >> (i * 8)) & 0xFF) as u8 == 255 {
-                                            address
-                                        } else {
-                                            meshlets_offset as u64 + address
-                                        },
-                                );
-                            });
+                    let _ = item.completed.take().unwrap().send(());
+                }
+            })
+        } else {
+            std::thread::spawn(move || {
+                #[cfg(feature = "trace")]
+                let _span = log::info_span!("Upload Thread").entered();
+                for mut item in receiver.iter() {
+                    match &item.dst {
+                        Dst::Buffer(buff) => {
+                            buff.mem_copy_from(BufferSlice::from(item.src.as_slice()));
+                        }
+                        Dst::Image(image) => {
+                            let regions = [raw_vulkan::MemoryToImageCopyEXT::default()
+                                .host_pointer(item.src.as_ptr().cast())
+                                .image_extent(image.extend)
+                                .image_offset(image.offset)
+                                .image_subresource(image.view.subresource_layers())
+                                .memory_image_height(image.extend.height as u32)
+                                .memory_row_length(image.extend.width as u32)];
+                            let copy_memory_to_image_info =
+                                raw_vulkan::CopyMemoryToImageInfoEXT::default()
+                                    .dst_image(image.view.image)
+                                    .dst_image_layout(raw_vulkan::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                    .regions(&regions);
+                            unsafe {
+                                Functions::host_image_copy()
+                                    .copy_memory_to_image(&copy_memory_to_image_info)
+                                    .unwrap()
+                            };
+                        }
                     }
-
-                    upload_queue.push_buffer(&mesh.bvh, buffer.whole().num_bytes(bvh_size).cast());
-                    upload_queue.push_buffer(&mesh.vertices, buffer.whole().num_bytes(vert_size).byte_offset(vertices_offset as u64).cast());
-                    upload_queue.push_buffer(&mesh.indices, buffer.whole().num_bytes(ind_size).byte_offset(indices_offset as u64).cast());
-                    upload_queue.push_buffer(&mesh.meshlets, buffer.whole().num.byte_offset(meshlets_offset as u64).cast());
-                    upload_queue.push_buffer(&mesh.cull_data, buffer.whole().byte_offset(cull_data_offset as u64).cast());
-
-                    buffer
-                }));
-            let instance_offset = self.asset_instance_meshes.len() as u32;
-            let instance_count = meshlet_mesh.instance_mesh.len() as u32;
-            let material_offset = 0; //TODO
-            self.asset_instance_materials.extend(
-                meshlet_mesh
-                    .instance_materials
-                    .iter()
-                    .map(|e| e + material_offset),
-            );
-            self.asset_instance_meshes
-                .extend(meshlet_mesh.instance_mesh.iter().map(|e| e + mesh_offset));
-            self.asset_instance_transforms
-                .extend_from_slice(&meshlet_mesh.instance_transforms);
-            self.asset_instance_aabbs.extend(
-                meshlet_mesh
-                    .instance_mesh
-                    .iter()
-                    .map(|e| meshlet_mesh.meshes[*e as usize].aabb),
-            );
-            (instance_offset, instance_count)
+                    let _ = item.completed.take().unwrap().send(());
+                }
+            })
         };
 
-        let (instance_offset, instance_count) = self
-            .assets
-            .entry(id)
-            .or_insert_with_key(queue_meshlet_mesh)
-            .clone();
-        (instance_offset as usize..instance_count as usize).for_each(|i| {
-            let mesh = self.asset_instance_meshes[i] as usize;
+        UPLOAD_QUEUE
+            .set(Self {
+                copy_queue: sender,
+                thread,
+            })
+            .unwrap();
+    }
 
-            instance_manager.add_instance(Instance {
-                aabb: self.asset_instance_aabbs[mesh],
-                bvh_root: self.mesh_buffers[mesh].address,
-                transform: self.asset_instance_transforms[i],
-                material: self.asset_instance_materials[i],
-            });
-        });
+    pub fn push_buffer<T: Copy + Pod + Send + Sync + Debug>(
+        src: Vec<T>,
+        buffer: BufferSlice<T, GpuBuffer>,
+    ) -> oneshot::Receiver<()> {
+        let (sender, receiver) = oneshot::channel();
+        UPLOAD_QUEUE
+            .wait()
+            .copy_queue
+            .send(CopyRegion {
+                completed: Some(sender),
+                src: bytemuck::try_cast_vec(src).unwrap(),
+                dst: Dst::Buffer(buffer.cast()),
+            })
+            .unwrap();
+        receiver
+    }
+    pub fn push_image<F: lava::image::format::Format, U: UsageSet>(
+        src: Vec<u8>,
+        image: ImageSlice<F, U>,
+    ) -> oneshot::Receiver<()> {
+        let (sender, receiver) = oneshot::channel();
+        UPLOAD_QUEUE
+            .wait()
+            .copy_queue
+            .send(CopyRegion {
+                completed: Some(sender),
+                src,
+                dst: Dst::Image(image.cast()),
+            })
+            .unwrap();
+        receiver
     }
 }
 
@@ -337,17 +353,14 @@ pub(super) fn init_world(mut cmd: Commands) {
         transforms: Buffer::new(1024 * 10).unwrap(),
         bvh_root_nodes: Buffer::new(1024 * 10).unwrap(),
         materials: Buffer::new(1024 * 10).unwrap(),
-        max_bvh_depth: 5,
-        max_instance_count: 1024 * 10,
+        instance_count: 0,
     });
     cmd.init_resource::<FrameCount>();
 }
 
 fn extract_meshlet_instances(
     mut instance_manager: ResMut<InstanceManager>,
-    mut meshlet_manager: ResMut<MeshletManager>,
     mut main_world: ResMut<MainWorld>,
-    mut upload_queue: ResMut<UploadQueue>,
     mut system_state: Local<
         Option<
             SystemState<(
@@ -359,14 +372,13 @@ fn extract_meshlet_instances(
         >,
     >,
 ) {
+    instance_manager.clear();
     if system_state.is_none() {
         *system_state = Some(SystemState::new(&mut main_world));
     }
     let system_state = system_state.as_mut().unwrap();
     let (instances_query, asset_server, mut assets, mut asset_events) =
         system_state.get_mut(&mut main_world);
-
-    instance_manager.max_bvh_depth = 0;
 
     for asset_event in asset_events.read() {
         if let AssetEvent::Unused { id } | AssetEvent::Modified { id } = asset_event {
@@ -375,28 +387,21 @@ fn extract_meshlet_instances(
     }
 
     for (instance, transform) in &instances_query {
-        if asset_server.is_managed(instance.model.id())
-            && !asset_server.is_loaded_with_dependencies(instance.model.id())
-        {
-            continue;
+        if let Some(mesh) = assets.get(&instance.model) {
+            let transform = transform.affine();
+            for (i, mesh_index) in mesh.instance_mesh.iter().enumerate() {
+                instance_manager.add_instance(Instance {
+                    aabb: mesh.meshes[*mesh_index as usize].aabb,
+                    bvh_root: mesh.meshes[*mesh_index as usize].buffer.address,
+                    material: mesh.instance_materials[i],
+                    transform: mesh.instance_transforms[i],
+                });
+            }
         }
-
-        let transform = transform.affine();
-        meshlet_manager.queue_upload_if_needed(
-            instance.model.id(),
-            &mut assets,
-            &mut instance_manager,
-            &mut upload_queue,
-        );
     }
-}
-
-fn apply_writes(mut buffer: ResMut<UploadQueue>) {
-    buffer.resolve_writes();
 }
 
 pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
-        .add_systems(ExtractSchedule, (extract_meshlet_instances, extract_camera))
-        .add_systems(Render, apply_writes);
+        .add_systems(ExtractSchedule, (extract_meshlet_instances, extract_camera));
 }

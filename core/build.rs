@@ -220,20 +220,19 @@ pub fn resource(field: &Field, name: &str) -> Option<String> {
     }
 
     let access = if struct_name == "MutBuf" {
-        "vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ"
+        "AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ"
     } else if struct_name == "Buf" {
-        "vk::AccessFlags2::SHADER_STORAGE_READ"
+        "AccessFlags2::SHADER_STORAGE_READ"
     } else if struct_name == "MutImage" {
-        "vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ"
+        "AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ"
     } else if struct_name == "Image" {
-        "vk::AccessFlags2::SHADER_STORAGE_READ"
+        "AccessFlags2::SHADER_STORAGE_READ"
     } else {
-        "vk::AccessFlags2::SHADER_SAMPLED_READ"
+        "AccessFlags2::SHADER_SAMPLED_READ"
     };
 
     let is_image = struct_name == "MutImage" || struct_name == "Image" || struct_name == "Texture";
-    
-   
+
     let mut resource_state = format!(
         r#"
 ResourceState {{
@@ -245,11 +244,14 @@ ResourceState {{
     if is_image {
         resource_state.push_str(&format!(
             r#"    layout: bindings.{}.prefered_layout,"#,
-        field.name));
+            field.name
+        ));
     }
-    resource_state.push_str(r#"
+    resource_state.push_str(
+        r#"
     ..Default::default()
-}"#);
+}"#,
+    );
 
     if !is_image {
         Some(format!(
@@ -331,7 +333,7 @@ impl Binding for {cname} {{
 
     fn resources(
         bindings: &Self::CpuBinding,
-        stages: vk::PipelineStageFlags2,
+        stages: PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {{
         vec![
             {resources}
@@ -385,12 +387,12 @@ impl RasterVertexShaderPass for {file_name} {{
     const FRAGMENT: &'static str = "{fragment_entry}\0";
     const BYTES: &[u8] = include_bytes!("{file_path}");
     
-    fn module_cache() -> &'static OnceLock<vk::ShaderModule> {{
-        static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
+    fn module_cache() -> &'static OnceLock<VkShaderModule> {{
+        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
         &CACHE
     }}
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> {{
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {{
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
         &CACHE
     }}
 }}
@@ -421,13 +423,13 @@ impl RasterMeshShaderPass for {file_name} {{
     const BYTES: &[u8] = include_bytes!("{file_path}");
     const TASK: Option<&'static str> = {task_entry};
 
-    fn module_cache() -> &'static OnceLock<vk::ShaderModule> {{
-        static CACHE: OnceLock<vk::ShaderModule> = OnceLock::new();
+    fn module_cache() -> &'static OnceLock<VkShaderModule> {{
+        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
         &CACHE
     }}
 
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> {{
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, vk::Pipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {{
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
         &CACHE
     }}
 }}"#));
@@ -445,8 +447,8 @@ impl ComputePass for {file_name} {{
 
     const ENTRY: &'static str = "{entry}\0";
     const BYTES: &[u8] = include_bytes!("{file_path}");
-    fn cache() -> &'static OnceLock<vk::Pipeline> {{
-        static CACHE: OnceLock<vk::Pipeline> = OnceLock::new();
+    fn cache() -> &'static OnceLock<VkPipeline> {{
+        static CACHE: OnceLock<VkPipeline> = OnceLock::new();
         &CACHE
     }}
 }}"#
@@ -520,7 +522,7 @@ use lava::command_buffer::{Binding, ResourceHandle, ResourceState, ShaderHash, R
 use lava::bindless::BindlessHandle;
 use lava::buffer::slice::BufferSlice;
 use std::cell::{LazyCell};
-use ash::vk;
+use lava::{PipelineStageFlags2, AccessFlags2, ImageLayout, VkPipeline, VkShaderModule};
 use lava::image::slice::{StorageImageViewBinding, SampledImageViewBinding};
 "#.to_string();
     let mut structs = HashMap::<String, String>::new();

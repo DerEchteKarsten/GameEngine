@@ -1,12 +1,13 @@
 use core::{
     CorePlugin,
     assets::Mesh,
-    components::camera::{Camera, Controls}, render::world::Model,
+    components::camera::{Camera, Controls},
+    render::world::Model,
 };
+use std::{thread, time::Duration};
 
 use bevy::{log, prelude::*};
 use glam::{Vec3, vec3};
-
 
 fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
     let controles = Controls {
@@ -32,14 +33,11 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
     }
 }
 
-fn update(
-    _cmd: Commands,
-    time: Res<Time>,
-) {
+fn update(_cmd: Commands, time: Res<Time>) {
     // if let Some((transform, children)) = model.iter().last() {
 
     //     // transform.position.z = time.elapsed_secs_wrapped().sin() * 2.0;
-    log::info!("{:?}", time.delta());
+    // log::info!("{:?}", time.delta());
 
     //     for i in children.iter() {
     //         log::debug!("parent: {:?}, child: {:?}", transform, qchildren.get(*i).unwrap().as_matrix());

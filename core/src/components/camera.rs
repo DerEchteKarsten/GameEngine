@@ -44,7 +44,7 @@ impl Camera {
     }
 }
 
-#[derive(Debug, Clone, Copy, Resource)]
+#[derive(Default, Debug, Clone, Copy, Resource)]
 pub struct Controls {
     pub go_forward: bool,
     pub go_backward: bool,
@@ -56,23 +56,6 @@ pub struct Controls {
     pub pitch: f32,
     pub yaw: f32,
     pub cursor_position: [f64; 2],
-}
-
-impl Default for Controls {
-    fn default() -> Self {
-        Self {
-            go_forward: false,
-            go_backward: false,
-            strafe_right: false,
-            strafe_left: false,
-            go_up: false,
-            go_down: false,
-            look_around: false,
-            pitch: 0.0,
-            yaw: 0.0,
-            cursor_position: [0.0; 2],
-        }
-    }
 }
 
 pub fn update_mouse_buttons(
@@ -95,22 +78,35 @@ pub fn update_mouse_buttons(
 pub fn update_mouse_move(
     mut controls: ResMut<Controls>,
     mut evr_motion: MessageReader<MouseMotion>,
+    keys: Res<ButtonInput<KeyCode>>,
     window: Single<&Window>,
 ) {
-    if !controls.look_around {
-        return;
+    if keys.pressed(KeyCode::ArrowUp) {
+        controls.pitch -= 0.01 * SENSITIVITY;
     }
-    let size = window.size();
-    for ev in evr_motion.read() {
-        controls.pitch += (ev.delta.y / size.y) * SENSITIVITY;
-        controls.yaw += (ev.delta.x / size.x) * SENSITIVITY;
+    if keys.pressed(KeyCode::ArrowDown) {
+        controls.pitch += 0.01 * SENSITIVITY;
+    }
+    if keys.pressed(KeyCode::ArrowLeft) {
+        controls.yaw -= 0.01 * SENSITIVITY;
+    }
+    if keys.pressed(KeyCode::ArrowRight) {
+        controls.yaw += 0.01 * SENSITIVITY;
+    }
 
-        if controls.pitch < -PI / 2.0 + 0.1 {
-            controls.pitch = -PI / 2.0 + 0.1;
+    let size = window.size();
+    if controls.look_around {
+        for ev in evr_motion.read() {
+            controls.pitch += (ev.delta.y / size.y) * SENSITIVITY;
+            controls.yaw += (ev.delta.x / size.x) * SENSITIVITY;
         }
-        if controls.pitch > PI / 2.0 - 0.1 {
-            controls.pitch = PI / 2.0 - 0.1;
-        }
+    }
+
+    if controls.pitch < -PI / 2.0 + 0.1 {
+        controls.pitch = -PI / 2.0 + 0.1;
+    }
+    if controls.pitch > PI / 2.0 - 0.1 {
+        controls.pitch = PI / 2.0 - 0.1;
     }
 }
 
@@ -128,11 +124,9 @@ pub fn editor_camera(mut query: Query<&mut Camera>, controls: Res<Controls>, tim
     for mut camera in &mut query {
         let side = camera.direction.cross(UP);
 
-        if controls.look_around || camera.direction.length() < 1.0 {
-            camera.direction.x = controls.yaw.cos() * controls.pitch.cos();
-            camera.direction.y = controls.pitch.sin();
-            camera.direction.z = controls.yaw.sin() * controls.pitch.cos();
-        }
+        camera.direction.x = controls.yaw.cos() * controls.pitch.cos();
+        camera.direction.y = controls.pitch.sin();
+        camera.direction.z = controls.yaw.sin() * controls.pitch.cos();
 
         // Update position
         let mut direction = Vec3::ZERO;

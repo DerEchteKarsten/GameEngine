@@ -6,14 +6,19 @@ use crate::{
     },
     components::camera::Camera,
     render::{
-        render::{CommandPools, Swapchain, SynchronizationResources, aquire_swapchain_image, init_render, render, wait_frames_in_flight},
-        world::{InstanceManager, MeshletManager, UploadQueue, WorldPlugin, init_world},
+        render::{
+            CommandPools, Swapchain, SynchronizationResources, aquire_swapchain_image, init_render,
+            render, resize_swapchain, wait_frames_in_flight,
+        },
+        world::{InstanceManager, UploadQueue, WorldPlugin, init_world},
     },
     ui::UiResources,
 };
 use async_std::channel::{Receiver, Sender};
 use bevy::{
-    app::{App, AppExit, AppLabel, Plugin, PreStartup, SubApp}, asset::AssetServer, ecs::{
+    app::{App, AppExit, AppLabel, Plugin, PreStartup, SubApp},
+    asset::AssetServer,
+    ecs::{
         change_detection::Mut,
         query::With,
         resource::Resource,
@@ -23,7 +28,12 @@ use bevy::{
         },
         system::{Commands, Local, Query, Res, ResMut, Single},
         world::World,
-    }, log, tasks::ComputeTaskPool, time::Time, utils::default, window::{PrimaryWindow, RawHandleWrapperHolder}
+    },
+    log,
+    tasks::ComputeTaskPool,
+    time::Time,
+    utils::default,
+    window::{PrimaryWindow, RawHandleWrapperHolder},
 };
 use glam::Vec4;
 use lava::{
@@ -36,7 +46,10 @@ use lava::{
         usage::{ColorAttachmentSampled, DepthAttachmentSampled},
     },
     state::Ctx,
-    vkobjects::{self, queue::{Binary, CommandBufferMemory, CommandPool, Semaphore, Timeline}},
+    vkobjects::{
+        self,
+        queue::{Binary, CommandBufferMemory, CommandPool, Semaphore, Timeline},
+    },
 };
 use std::ops::{Deref, DerefMut};
 
@@ -47,7 +60,7 @@ pub mod world;
 pub const FRAMES_IN_FLIGHT: usize = 2;
 
 #[derive(SystemSet, Hash, Debug, PartialEq, Eq, Clone)]
-enum RenderSystems {
+pub enum RenderSystems {
     ApplyExtractCommands,
     WaitFences,
     AquireSwapchainImage,
@@ -59,7 +72,7 @@ enum RenderSystems {
 pub struct ExtractSchedule;
 
 #[derive(AppLabel, Hash, Debug, PartialEq, Eq, Clone)]
-struct RenderApp;
+pub struct RenderApp;
 
 #[derive(ScheduleLabel, Debug, Hash, PartialEq, Eq, Clone, Default)]
 pub struct Render;
@@ -71,16 +84,16 @@ impl Render {
     pub fn base_schedule() -> Schedule {
         let mut schedule = Schedule::new(Self);
 
-        schedule.configure_sets(
+        schedule.configure_sets((
             (
                 RenderSystems::ApplyExtractCommands,
                 RenderSystems::WaitFences,
                 RenderSystems::PreRender,
-                RenderSystems::AquireSwapchainImage,
                 RenderSystems::Render,
             )
                 .chain(),
-        );
+            RenderSystems::AquireSwapchainImage.after(RenderSystems::WaitFences),
+        ));
         schedule
     }
 }
@@ -179,7 +192,6 @@ impl Drop for RenderAppChannels {
     }
 }
 
-
 #[derive(Default)]
 pub struct PipelinedRenderingPlugin;
 
@@ -236,8 +248,7 @@ impl Plugin for PipelinedRenderingPlugin {
 
                 {
                     #[cfg(feature = "trace")]
-                    let _sub_app_span =
-                        log::info_span!("sub app", name = ?RenderApp).entered();
+                    let _sub_app_span = log::info_span!("sub app", name = ?RenderApp).entered();
                     render_app.update();
                 }
 
@@ -272,10 +283,7 @@ fn renderer_extract(app_world: &mut World, _world: &mut World) {
     });
 }
 
-
-fn init(
-    window: Single<&RawHandleWrapperHolder, With<PrimaryWindow>>,
-) {
+fn init(window: Single<&RawHandleWrapperHolder, With<PrimaryWindow>>) {
     #[cfg(debug_assertions)]
     let validation = true;
 
@@ -285,12 +293,12 @@ fn init(
     let mutex = window.0.lock().unwrap();
     let handle = mutex.as_ref().unwrap();
     lava::init(
-            &handle.get_display_handle(),
-            &handle.get_window_handle(),
-            validation,
-            true,
-        )
-        .unwrap();
+        &handle.get_display_handle(),
+        &handle.get_window_handle(),
+        validation,
+        false,
+    )
+    .unwrap();
 }
 
 #[derive(Default, Debug)]
@@ -316,6 +324,7 @@ impl Plugin for RenderPlugin {
             .add_systems(RenderStartup, init_render)
             .add_schedule(extract_schedule)
             .add_schedule(Render::base_schedule())
+            .add_systems(ExtractSchedule, resize_swapchain)
             .add_systems(
                 Render,
                 (

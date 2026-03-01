@@ -35,6 +35,7 @@ struct Meshlet {
     uint8_t* triangle_index;
     uint vertex_count;
     uint triangle_count;
+    uint2 pad;
 }
 
 struct AabbError {

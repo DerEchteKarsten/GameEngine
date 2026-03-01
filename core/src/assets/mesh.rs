@@ -3,7 +3,7 @@ use bevy::{
     prelude::*,
     tasks::{AsyncComputeTaskPool, ParallelSlice},
 };
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{Pod, Zeroable, try_cast_vec};
 use glam::{Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use itertools::Itertools;
 use meshopt::{
@@ -12,8 +12,8 @@ use meshopt::{
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
-use std::sync::Arc;
 use std::{collections::HashMap, ops::Range};
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use crate::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
@@ -68,30 +68,35 @@ impl AabbPtr {
     }
 }
 
-#[derive(Clone)]
 pub struct MeshletMesh {
-    pub vertices: Arc<[Vertex]>,
-    pub indices: Arc<[u8]>,
-    pub meshlets: Arc<[Meshlet]>,
-    pub bvh: Arc<[BvhNode]>,
-    pub cull_data: Arc<[CullData]>,
-
+    pub meshlet_offset: u32,
+    pub meshlet_count: u32,
+    pub vertex_offset: u32,
+    pub index_offset: u32,
     pub aabb: AabbError,
-    pub bvh_depth: u32,
-    pub bvh_root_node_index: u32,
+    pub data: Vec<u8>,
+}
+
+fn cast_vec_trust_me_bro<A>(a: Vec<A>) -> Vec<u8> {
+    let length = a.len() * size_of::<A>();
+    let capacity = a.capacity() * size_of::<A>();
+    let mut manual_drop_vec = ManuallyDrop::new(a);
+    let vec_ptr = manual_drop_vec.as_mut_ptr();
+    let ptr = vec_ptr as *mut u8;
+    unsafe { Vec::from_raw_parts(ptr, length, capacity) }
 }
 
 impl MeshletMesh {
     pub fn new(
         indices: &[u32],
-        vertices: &[Vec3],
+        vertices: &[Vec4],
         vertex_normals: &[f32],
         vertex_uvs: &[f32],
     ) -> Self {
-        let vertex_stride = size_of::<Vec3>();
+        let vertex_stride = size_of::<Vec4>();
         let (position_only_vertex_count, position_only_vertex_remap) = generate_vertex_remap_multi(
             vertices.len(),
-            &[VertexStream::new_with_stride::<Vec3, _>(
+            &[VertexStream::new_with_stride::<Vec4, _>(
                 vertices.as_ptr(),
                 vertex_stride,
             )],
@@ -163,7 +168,7 @@ impl MeshletMesh {
                     &meshlets,
                     &vertex_adapter,
                     vertex_normals,
-                    size_of::<Vertex>(),
+                    12,
                     &vertex_locks,
                 ) else {
                     // Couldn't simplify the group enough
@@ -238,6 +243,7 @@ impl MeshletMesh {
                 triangle_index: meshlet.triangle_offset as u64,
                 vertex_count: meshlet.vertex_count,
                 vertex_index: meshlet.vertex_offset as u64,
+                pad: UVec2 { x: 0, y: 0 },
             });
         }
 
@@ -245,7 +251,7 @@ impl MeshletMesh {
             .iter()
             .enumerate()
             .map(|(i, v)| Vertex {
-                position_and_uv1: (*v).extend(vertex_uvs[i * 2 + 0]),
+                position_and_uv1: v.xyz().extend(vertex_uvs[i * 2 + 0]),
                 normal_and_uv2: Vec4::new(
                     vertex_normals[i * 3 + 0],
                     vertex_normals[i * 3 + 1],
@@ -261,24 +267,41 @@ impl MeshletMesh {
             .map(|v| verticies[(*v) as usize])
             .collect::<Vec<_>>();
 
+        let cull_data = cull_data
+            .into_iter()
+            .map(|cull_data| CullData {
+                aabb: AabbError {
+                    center_and_error: cull_data.aabb.center().extend(cull_data.error),
+                    half_extent: cull_data.aabb.half_size().extend(0.0),
+                },
+                lod_group_sphere: cull_data.lod_group_sphere,
+            })
+            .collect::<Vec<_>>();
+
+        let mut data = Vec::with_capacity(
+            bvh.len() * size_of::<BvhNode>()
+                + mmeshlets.len() * size_of::<Meshlet>()
+                + duped_verticies.len() * size_of::<Vertex>()
+                + meshlets.triangles.len()
+                + cull_data.len() * size_of::<CullData>(),
+        );
+        let meshlet_count = mmeshlets.len() as u32;
+        let meshlet_offset = (bvh.len() * size_of::<BvhNode>()) as u32;
+        data.append(&mut cast_vec_trust_me_bro(bvh));
+        data.append(&mut cast_vec_trust_me_bro(mmeshlets));
+        let vertex_offset = data.len() as u32;
+        data.append(&mut cast_vec_trust_me_bro(duped_verticies));
+        let index_offset = data.len() as u32;
+        data.append(&mut cast_vec_trust_me_bro(meshlets.triangles));
+        data.append(&mut cast_vec_trust_me_bro(cull_data));
+
         Self {
-            vertices: duped_verticies.into(),
-            indices: meshlets.triangles.into(),
-            bvh: bvh.into(),
-            meshlets: mmeshlets.into(),
-            cull_data: cull_data
-                .into_iter()
-                .map(|cull_data| CullData {
-                    aabb: AabbError {
-                        center_and_error: cull_data.aabb.center().extend(cull_data.error),
-                        half_extent: cull_data.aabb.half_size().extend(0.0),
-                    },
-                    lod_group_sphere: cull_data.lod_group_sphere,
-                })
-                .collect(),
+            index_offset,
+            vertex_offset,
             aabb,
-            bvh_depth: depth,
-            bvh_root_node_index: !0u32,
+            data,
+            meshlet_count,
+            meshlet_offset,
         }
     }
 }

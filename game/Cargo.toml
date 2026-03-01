@@ -22,6 +22,3 @@ bevy = {version = "0.18.0", default-features = false, features = [
 [features]
 default = []
 trace = ["core/trace", "bevy/trace_tracy"]
-
-[profile.release]
-debug = true
