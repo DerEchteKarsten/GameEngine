@@ -10,13 +10,17 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{JoinHandle, Thread};
 use std::time::Duration;
 
-use bevy::asset::{AsAssetId, LoadState};
+use bevy::app::App;
+use bevy::asset::{AsAssetId, AssetId, Assets, Handle, LoadState};
+use bevy::ecs::component::Component;
 use bevy::ecs::entity::Entities;
-use bevy::ecs::system::SystemState;
-use bevy::prelude::*;
+use bevy::ecs::resource::Resource;
+use bevy::ecs::system::{Commands, Local, Query, Res, ResMut, SystemState};
+use bevy::transform::components::GlobalTransform;
 use futures::channel::oneshot;
 use lava::image::slice::AsImage;
 use std::sync::Mutex;
+use lava::image::Image;
 
 use bevy::tasks::futures::check_ready;
 use bevy::tasks::futures_lite::future;
@@ -27,11 +31,10 @@ use glam::Mat4;
 use gpu_allocator::vulkan::Allocation;
 use lava::buffer::Buffer;
 
-use lava::buffer::slice::{BufferSlice, BufferView};
-use lava::buffer::{AsBuffer, BufferUsageFlags, CpuBuffer, GpuBuffer, Location};
+use lava::buffer::slice::{BufferSlice};
 use lava::command_buffer::CommandBuffer;
 use lava::image::format::R8Uint;
-use lava::image::slice::{ImageSlice, TypeLessImageView};
+use lava::image::slice::{ImageSlice};
 use lava::image::usage::UsageSet;
 use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
@@ -67,10 +70,10 @@ impl AsAssetId for Model {
 
 #[derive(Resource)]
 pub struct InstanceManager {
-    pub transforms: Buffer<Mat4, CpuBuffer>,
-    pub materials: Buffer<u32, CpuBuffer>,
-    pub bvh_root_nodes: Buffer<u64, CpuBuffer>,
-    pub aabbs: Buffer<AabbError, CpuBuffer>,
+    pub transforms: Buffer<Mat4>,
+    pub materials: Buffer<u32>,
+    pub bvh_root_nodes: Buffer<u64>,
+    pub aabbs: Buffer<AabbError>,
     pub instance_count: usize,
 }
 
@@ -87,17 +90,17 @@ impl InstanceManager {
         let slot = self.instance_count;
         self.instance_count += 1;
         self.transforms
-            .element_offset(slot)
-            .mem_copy_from(BufferSlice::from(&[instance.transform]));
+            .range(slot..)
+            .copy_from(&[instance.transform]);
         self.materials
-            .element_offset(slot)
-            .mem_copy_from(BufferSlice::from(&[instance.material]));
+            .range(slot..)
+            .copy_from(&[instance.material]);
         self.bvh_root_nodes
-            .element_offset(slot)
-            .mem_copy_from(BufferSlice::from(&[instance.bvh_root]));
+            .range(slot..)
+            .copy_from(&[instance.bvh_root]);
         self.aabbs
-            .element_offset(slot)
-            .mem_copy_from(BufferSlice::from(&[instance.aabb]));
+            .range(slot..)
+            .copy_from(&[instance.aabb]);
     }
     fn clear(&mut self) {
         self.instance_count = 0;
@@ -106,15 +109,13 @@ impl InstanceManager {
 
 const STAGING_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
-#[derive(Clone)]
 enum Dst {
-    Buffer(BufferSlice),
-    Image(ImageSlice),
+    Buffer(Buffer<u8>, Option<oneshot::Sender<Buffer<u8>>>),
+    Image(Image, Option<oneshot::Sender<Image>>),
 }
 struct CopyRegion {
-    completed: Option<oneshot::Sender<()>>,
     src: Vec<u8>,
-    dst: Dst,
+    dst: Option<Dst>,
 }
 
 #[derive(Debug)]
@@ -142,7 +143,7 @@ struct NonRebarResources {
     pool: CommandPool,
     fence: Fence,
     cmd: CommandBufferMemory,
-    staging: Buffer<u8, CpuBuffer>,
+    staging: Buffer<u8>,
     queue: TransferQueueStrategie,
 }
 
@@ -155,19 +156,20 @@ pub struct UploadQueue {
 static UPLOAD_QUEUE: OnceLock<UploadQueue> = OnceLock::new();
 
 impl UploadQueue {
-    fn flush(res: &NonRebarResources, regions: &mut Vec<(BufferSlice<u8, CpuBuffer>, Dst, Option<oneshot::Sender<()>>,)>) {
+    fn flush(res: &NonRebarResources, mut regions: Vec<(BufferSlice<u8>, Dst)>) {
         res.pool.reset();
         res.fence.reset();
-        res.queue.with(|queue| {
+        res.queue.with(move |queue| {
             queue
                 .execute_command(None, &res.cmd, Some(&res.fence), &[], &[], |cmd| {
                     for entry in regions.iter_mut() {
-                        match entry.1 {
-                            Dst::Buffer(buff) => {
-                                cmd.copy_buffer(entry.0, buff);
+                        match &entry.1 {
+                            Dst::Buffer(buff, _) => {
+                                let slice = buff.range(..);
+                                cmd.copy_buffer(entry.0, slice);
                                 if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
                                     cmd.buffer_barrier(
-                                        buff,
+                                        slice,
                                         AccessFlags2::TRANSFER_WRITE,
                                         AccessFlags2::NONE,
                                         PipelineStageFlags2::TRANSFER,
@@ -177,11 +179,12 @@ impl UploadQueue {
                                     );
                                 }
                             }
-                            Dst::Image(img) => {
-                                cmd.copy_buffer_to_image(entry.0, img);
+                            Dst::Image(img, _) => {
+                                let view = img.whole();
+                                cmd.copy_buffer_to_image(entry.0, view);
                                 if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
                                     cmd.image_barrier(
-                                        img.view,
+                                        view.view,
                                         AccessFlags2::TRANSFER_WRITE,
                                         AccessFlags2::NONE,
                                         PipelineStageFlags2::TRANSFER,
@@ -198,13 +201,21 @@ impl UploadQueue {
                 })
                 .unwrap();
             res.fence.wait();
-            for entry in regions.iter_mut() {
-                if let Err(_) = entry.2.take().unwrap().send(()) {
-                    log::warn!("Asset completion receiver was dropped")
+            for (_, dst) in regions {
+                match dst {
+                    Dst::Buffer(buffer, mut sender) => {
+                        if let Err(_) = sender.take().unwrap().send(buffer) {
+                            log::error!("Receiver was dropped, buffer could not be sent back and will be dropped");
+                        }
+                    },
+                    Dst::Image(image, mut sender) => {
+                        if let Err(_) = sender.take().unwrap().send(image) {
+                            log::error!("Receiver was dropped, image could not be sent back and will be dropped");
+                        }
+                    }
                 }
             }
         });
-        regions.clear();
     }
     pub fn init(queues: &Queues) {
         let (sender, receiver) = std::sync::mpsc::channel::<CopyRegion>();
@@ -234,12 +245,12 @@ impl UploadQueue {
                 cmd: pool.create_command_buffer(),
                 fence: Fence::new(),
                 pool,
-                staging: Buffer::new(STAGING_BUFFER_SIZE).unwrap(),
+                staging: Buffer::new(STAGING_BUFFER_SIZE, true).unwrap(),
             };
             std::thread::spawn(move || {
                 #[cfg(feature = "trace")]
                 let _span = log::info_span!("Upload Thread").entered();
-                let mut staging_slice = res.staging.whole().clone();
+                let mut staging_slice = res.staging.range(..).clone();
                 let mut regions = Vec::new();
                 loop {
                     let mut item = if let Ok(item) = receiver.recv_timeout(Duration::from_millis(1))
@@ -247,7 +258,8 @@ impl UploadQueue {
                         item
                     } else {
                         if !regions.is_empty() {
-                            Self::flush(&res, &mut regions);
+                            let len = regions.capacity();
+                            Self::flush(&res, std::mem::replace(&mut regions, Vec::with_capacity(len)));
                         }
                         receiver.recv().unwrap()
                     };
@@ -255,24 +267,23 @@ impl UploadQueue {
                     while {
                         let staging_remaining_bytes = staging_slice.size;
                         unsafe {
-                            staging_slice.cpu_ptr().copy_from(
+                            staging_slice.ptr().copy_from(
                                 item.src.as_ptr(),
                                 src_remaining_bytes.min(staging_remaining_bytes) as usize,
                             )
                         };
                         regions.push((
-                            staging_slice
-                                .num_bytes(src_remaining_bytes.min(staging_remaining_bytes)),
-                            item.dst.clone(),
-                            item.completed.take(),
+                            staging_slice.byte_range(..src_remaining_bytes.min(staging_remaining_bytes)),
+                            item.dst.take().unwrap(),
                         ));
-                        staging_slice = staging_slice.add_byte_offset(src_remaining_bytes);
+                        staging_slice = staging_slice.byte_range(src_remaining_bytes..);
                         src_remaining_bytes =
                             src_remaining_bytes.saturating_sub(staging_remaining_bytes);
                         staging_slice.size == 0
                     } {
-                        Self::flush(&res, &mut regions);
-                        staging_slice = res.staging.whole();
+                        let len = regions.capacity();
+                        Self::flush(&res, std::mem::replace(&mut regions, Vec::with_capacity(len)));
+                        staging_slice = res.staging.range(..);
                     }
                 }
             })
@@ -281,21 +292,24 @@ impl UploadQueue {
                 #[cfg(feature = "trace")]
                 let _span = log::info_span!("Upload Thread").entered();
                 for mut item in receiver.iter() {
-                    match &item.dst {
-                        Dst::Buffer(buff) => {
-                            buff.mem_copy_from(BufferSlice::from(item.src.as_slice()));
+                    match item.dst.take().unwrap() {
+                        Dst::Buffer(buff, mut sender) => {
+                            buff.range(..).copy_from(item.src.as_slice());
+                            if let Err(_) = sender.take().unwrap().send(buff) {
+                                log::error!("Receiver was dropped, buffer could not be sent back and will be dropped");
+                            }
                         }
-                        Dst::Image(image) => {
+                        Dst::Image(image, mut sender) => {
                             let regions = [raw_vulkan::MemoryToImageCopyEXT::default()
                                 .host_pointer(item.src.as_ptr().cast())
-                                .image_extent(image.extend)
-                                .image_offset(image.offset)
-                                .image_subresource(image.view.subresource_layers())
-                                .memory_image_height(image.extend.height as u32)
-                                .memory_row_length(image.extend.width as u32)];
+                                .image_extent(image.extent)
+                                .image_offset(raw_vulkan::Offset3D { x: 0, y: 0, z: 0 })
+                                .image_subresource(image.view().subresource_layers())
+                                .memory_image_height(image.extent.height as u32)
+                                .memory_row_length(image.extent.width as u32)];
                             let copy_memory_to_image_info =
                                 raw_vulkan::CopyMemoryToImageInfoEXT::default()
-                                    .dst_image(image.view.image)
+                                    .dst_image(image.image)
                                     .dst_image_layout(raw_vulkan::ImageLayout::TRANSFER_DST_OPTIMAL)
                                     .regions(&regions);
                             unsafe {
@@ -303,9 +317,11 @@ impl UploadQueue {
                                     .copy_memory_to_image(&copy_memory_to_image_info)
                                     .unwrap()
                             };
+                            if let Err(_) = sender.take().unwrap().send(image) {
+                                log::error!("Receiver was dropped, image could not be sent back and will be dropped");
+                            }
                         }
                     }
-                    let _ = item.completed.take().unwrap().send(());
                 }
             })
         };
@@ -320,44 +336,42 @@ impl UploadQueue {
 
     pub fn push_buffer<T: Copy + Pod + Send + Sync + Debug>(
         src: Vec<T>,
-        buffer: BufferSlice<T, GpuBuffer>,
-    ) -> oneshot::Receiver<()> {
+        buffer: Buffer<T>,
+    ) -> oneshot::Receiver<Buffer<T>> {
         let (sender, receiver) = oneshot::channel();
         UPLOAD_QUEUE
             .wait()
             .copy_queue
             .send(CopyRegion {
-                completed: Some(sender),
                 src: bytemuck::try_cast_vec(src).unwrap(),
-                dst: Dst::Buffer(buffer.cast()),
+                dst: Some(Dst::Buffer(buffer.cast(), Some(sender))),
             })
             .unwrap();
-        receiver
+        unsafe { std::mem::transmute(receiver) }
     }
     pub fn push_image<F: lava::image::format::Format, U: UsageSet>(
         src: Vec<u8>,
-        image: ImageSlice<F, U>,
-    ) -> oneshot::Receiver<()> {
+        image: Image<F, U>,
+    ) -> oneshot::Receiver<Image<F, U>> {
         let (sender, receiver) = oneshot::channel();
         UPLOAD_QUEUE
             .wait()
             .copy_queue
             .send(CopyRegion {
-                completed: Some(sender),
                 src,
-                dst: Dst::Image(image.cast()),
+                dst: Some(Dst::Image(image.cast(), Some(sender))),
             })
             .unwrap();
-        receiver
+        unsafe { std::mem::transmute(receiver) }
     }
 }
 
 pub(super) fn init_world(mut cmd: Commands) {
     cmd.insert_resource(InstanceManager {
-        aabbs: Buffer::new(1024 * 10).unwrap(),
-        transforms: Buffer::new(1024 * 10).unwrap(),
-        bvh_root_nodes: Buffer::new(1024 * 10).unwrap(),
-        materials: Buffer::new(1024 * 10).unwrap(),
+        aabbs: Buffer::new(1024 * 10, true).unwrap(),
+        transforms: Buffer::new(1024 * 10, true).unwrap(),
+        bvh_root_nodes: Buffer::new(1024 * 10, true).unwrap(),
+        materials: Buffer::new(1024 * 10, true).unwrap(),
         instance_count: 0,
     });
     cmd.init_resource::<FrameCount>();

@@ -25,7 +25,7 @@ use crate::{
 };
 
 use lava::{
-    buffer::{AsBuffer, Buffer, slice::BufferSlice},
+    buffer::{Buffer, slice::BufferSlice},
     state::Ctx,
 };
 
@@ -337,8 +337,8 @@ impl AssetLoader for MeshLoader {
             log::info!("offset of {i}: header: {:#?}, num verticies: {}", header, (header.index_offset - header.vertex_offset) as usize / size_of::<Vertex>());
             let len = read_u64(reader).await? as usize;
 
-            let buffer = Buffer::new(len).unwrap();
-            let mut slice = buffer.whole();
+            let buffer = Buffer::new(len, false).unwrap();
+            let mut slice = buffer.range(..);
             let address = buffer.address;
 
             fn push_data<T: Pod>(v: T, data: &mut Option<Vec<u8>>, buffer: &mut BufferSlice<u8>) {
@@ -346,8 +346,8 @@ impl AssetLoader for MeshLoader {
                 if let Some(data) = data {
                     data.extend_from_slice(bytes);
                 } else {
-                    buffer.mem_copy_from(BufferSlice::from(bytes));
-                    *buffer = buffer.add_byte_offset(bytes.len() as u64);
+                    buffer.copy_from(&bytes);
+                    *buffer = buffer.range(bytes.len()..);
                 }
             }
 
@@ -392,25 +392,24 @@ impl AssetLoader for MeshLoader {
                 unsafe { data.set_len(len) };
             } else {
                 let mut mem_slice =
-                    unsafe { slice::from_raw_parts_mut(slice.cpu_ptr(), slice.len()) };
+                    unsafe { slice::from_raw_parts_mut(slice.ptr(), slice.len()) };
                 reader.read_exact(&mut mem_slice).await?;
             }
 
             if let Some(data) = data {
-                futures.push(UploadQueue::push_buffer(data, buffer.whole()));
+                futures.push((
+                    UploadQueue::push_buffer(data, buffer),
+                    AabbError {
+                        center_and_error: Vec3::from_array(header.aabb.center).extend(0.0),
+                        half_extent: Vec3::from_array(header.aabb.half_extend).extend(0.0),
+                    },
+                ));
             }
-
-            meshes.push(GpuMeshletMesh {
-                aabb: AabbError {
-                    center_and_error: Vec3::from_array(header.aabb.center).extend(0.0),
-                    half_extent: Vec3::from_array(header.aabb.half_extend).extend(0.0),
-                },
-                buffer,
-            });
         }
 
-        for f in futures {
-            f.await?;
+        for (receiver, aabb) in futures {
+            let buffer = receiver.await?;
+            meshes.push(GpuMeshletMesh { buffer, aabb });
         }
 
         Ok(Mesh {

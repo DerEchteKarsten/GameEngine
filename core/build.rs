@@ -189,14 +189,14 @@ pub fn gpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
 pub fn cpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
     match t.kind.as_str() {
         "struct" => match t.name.as_ref().unwrap().as_str() {
-            "MutImage" | "Image" => "StorageImageViewBinding".into(),
-            "Texture" => "SampledImageViewBinding".into(),
+            "MutImage" | "Image" => "StorageImageViewBinding<'a>".into(),
+            "Texture" => "SampledImageViewBinding<'a>".into(),
             "MutBuf" | "Buf" => {
                 let inner = cpu_type(
                     &t.fields[0].type_info.valueType.as_ref().unwrap().clone(),
                     structs,
                 );
-                format!("BufferSlice<{}>", inner)
+                format!("BufferSlice<'a, {}>", inner)
             }
             _ => rust_type(t, structs),
         },
@@ -253,17 +253,10 @@ ResourceState {{
 }"#,
     );
 
-    if !is_image {
-        Some(format!(
-            "(ResourceHandle::Buffer(bindings.{}.into()),{}),",
-            field.name, resource_state
-        ))
-    } else {
-        Some(format!(
-            "(ResourceHandle::Image(bindings.{}.into()),{}),",
-            field.name, resource_state
-        ))
-    }
+    Some(format!(
+        "(bindings.{}.into(), {}),",
+        field.name, resource_state
+    ))
 }
 
 pub fn generate_push_constant(
@@ -290,7 +283,7 @@ pub fn generate_push_constant(
         .map(
             |f| match f.type_info.name.as_ref().map(|e| e.as_str()).unwrap_or("") {
                 "MutBuf" | "Buf" => {
-                    format!("{}: bindings.{}.gpu_address() as u64,", f.name, f.name)
+                    format!("{}: bindings.{}.gpu_ptr,", f.name, f.name)
                 }
                 "Image" | "MutImage" | "Texture" => {
                     format!("{}: bindings.{}.handle,", f.name, f.name)
@@ -315,7 +308,7 @@ pub struct {cname} {{
 {gpu_fields}
 }}
 
-pub struct {name} {{
+pub struct {name}<'a> {{
 {cpu_fields}
 }}
 
@@ -323,16 +316,16 @@ unsafe impl bytemuck::Pod for {cname} {{}}
 unsafe impl bytemuck::Zeroable for {cname} {{}}
 
 impl Binding for {cname} {{
-    type CpuBinding = {name};
+    type CpuBinding<'a> = {name}<'a>;
 
-    fn from_cpu_binding(bindings: &Self::CpuBinding) -> Self {{
+    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {{
         Self {{
             {constructors}
         }}
     }}
 
-    fn resources(
-        bindings: &Self::CpuBinding,
+    fn resources<'a>(
+        bindings: &Self::CpuBinding<'a>,
         stages: PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {{
         vec![

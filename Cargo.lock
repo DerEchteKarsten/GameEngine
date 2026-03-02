@@ -2507,7 +2507,6 @@ dependencies = [
  "ash",
  "ash-window",
  "async-std",
- "bitflags 2.10.0",
  "bytemuck",
  "derivative",
  "glam",

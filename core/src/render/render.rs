@@ -22,8 +22,6 @@ use bevy::window::Window;
 use bevy::window::WindowResized;
 use glam::UVec2;
 use glam::Vec4;
-use lava::buffer::CpuBuffer;
-use lava::buffer::GpuBuffer;
 use lava::command_buffer::Filter;
 use lava::command_buffer::RasterVertexDispatch;
 use lava::command_buffer::ResourceHandle;
@@ -49,7 +47,6 @@ use lava::vkobjects::queue::Queue;
 use lava::vkobjects::queue::Semaphore;
 use lava::vkobjects::queue::Timeline;
 
-use lava::buffer::AsBuffer;
 use lava::buffer::Buffer;
 use lava::vkobjects::queue::Fence;
 
@@ -119,7 +116,7 @@ impl FrameCount {
 
 #[derive(Resource)]
 pub struct Swapchain {
-    pub swpachain: lava::vkobjects::swapchain::Swapchain,
+    pub swpachain: lava::vkobjects::swapchain::Swapchain<'static>,
     pub image_index: u32,
 }
 
@@ -130,7 +127,7 @@ impl Swapchain {
 }
 
 impl Deref for Swapchain {
-    type Target = lava::vkobjects::swapchain::Swapchain;
+    type Target = lava::vkobjects::swapchain::Swapchain<'static>;
     fn deref(&self) -> &Self::Target {
         &self.swpachain
     }
@@ -253,8 +250,8 @@ pub fn render(
             .unwrap(),
         color_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
             .unwrap(),
-        cluster_buffer: Buffer::new(1 << 14).unwrap(),
-        bvh_node_stack: Buffer::new(10000 + size_of::<bindings::TraversalVariables>()).unwrap(),
+        cluster_buffer: Buffer::new(1 << 14, false).unwrap(),
+        bvh_node_stack: Buffer::new(10000 + size_of::<bindings::TraversalVariables>(), false).unwrap(),
     });
 
     let states = queues.graphics.with(|queue| {
@@ -271,17 +268,18 @@ pub fn render(
                     let view = camera.view_matrix();
 
                     if instances.instance_count > 0 {
-                        cmd.copy_buffer(instances.bvh_root_nodes.whole(), resources.bvh_node_stack.whole());
-                        cmd.fill_buffer(resources.bvh_node_stack.whole(), 0);
-                        cmd.compute::<BvhCull>()
-                            .bind(BvhCullBindings {
-                                stack: resources.bvh_node_stack.whole().add_byte_offset(size_of::<bindings::TraversalVariables>() as u64).cast(),
-                                variables: resources.bvh_node_stack.num_bytes(size_of::<bindings::TraversalVariables>() as u64).cast(),
-                            })
-                            .dispatch(1, 1, 1);
+                        cmd.copy_buffer(instances.bvh_root_nodes.range(..), resources.bvh_node_stack.range(..));
+                        cmd.fill_buffer(resources.bvh_node_stack.range(..), 0);
+                        
+                        // cmd.compute::<BvhCull>()
+                        //     .bind(BvhCullBindings {
+                        //         stack: resources.bvh_node_stack.byte_range((size_of::<bindings::TraversalVariables>() as u64)..).cast(),
+                        //         variables: resources.bvh_node_stack.byte_range(..=(size_of::<bindings::TraversalVariables>() as u64)).cast(),
+                        //     })
+                        //     .dispatch(1, 1, 1);
                         cmd.raster::<Raster>()
                             .bind(RasterBindings {
-                                instances: instances.bvh_root_nodes.whole().cast(),
+                                instances: instances.bvh_root_nodes.range(..),
                                 proj: proj.clone(),
                                 view: view.clone(),
                                 instance: 0,
@@ -341,10 +339,10 @@ pub fn render(
                             .bind(RasterUiBindings {
                                 font_atlas: font_atlas.as_sampled(),
                                 indicies: ui_resources.indicies[frame.frame_in_flight()]
-                                    .whole()
+                                    .range(..)
                                     .cast(),
                                 verticies: ui_resources.verticies[frame.frame_in_flight()]
-                                    .whole()
+                                    .range(..)
                                     .cast(),
                             })
                             .backface_culling(false)

@@ -37,7 +37,7 @@ use bevy::{
 };
 use glam::Vec4;
 use lava::{
-    buffer::{AsBuffer, Buffer, BufferUsageFlags, GpuBuffer},
+    buffer::{Buffer},
     command_buffer::RasterVertexDispatch,
     image::{
         Image,

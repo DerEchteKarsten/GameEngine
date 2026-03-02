@@ -22,12 +22,11 @@ use gltf::json::extensions::mesh;
 use imgui::{FontSource, Io};
 use lava::{
     bindless::BindlessHandle,
-    buffer::{Buffer, BufferUsageFlags, slice::BufferSlice},
+    buffer::{Buffer, slice::BufferSlice},
     command_buffer::CommandBuffer,
     state::Ctx,
 };
 use lava::{
-    buffer::{AsBuffer, CpuBuffer},
     image::{Image, format::R8Unorm, slice::AsImage, usage::Sampled},
 };
 use std::{
@@ -232,12 +231,8 @@ fn read_input(
 }
 
 fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
-    resources.verticies[frame.frame_in_flight()]
-        .whole()
-        .mem_copy_from(BufferSlice::from(resources.pending_verticies.as_slice()));
-    resources.indicies[frame.frame_in_flight()]
-        .whole()
-        .mem_copy_from(BufferSlice::from(resources.pending_indicies.as_slice()));
+    resources.verticies[frame.frame_in_flight()].range(..).copy_from(&resources.pending_verticies);
+    resources.indicies[frame.frame_in_flight()].range(..).copy_from(&resources.pending_indicies);
     resources.num_indicies[frame.frame_in_flight()] = resources.pending_indicies.len() as u32;
     resources.pending_verticies.clear();
     resources.pending_indicies.clear();
@@ -251,7 +246,7 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
         let image = Image::new(atlas.width, atlas.height).unwrap();
         let mut data = Vec::with_capacity(atlas.data.len());
         data.extend_from_slice(atlas.data);
-        block_on(UploadQueue::push_image(data, image.whole())).unwrap();
+        let image = block_on(UploadQueue::push_image(data, image)).unwrap();
 
         resources.font_atlas = Some(image);
         ctx.ui = ctx.ctx.new_frame() as *mut _;
@@ -285,8 +280,8 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
 
 fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
-        verticies: [Buffer::new(10000).unwrap(), Buffer::new(10000).unwrap()],
-        indicies: [Buffer::new(10000).unwrap(), Buffer::new(10000).unwrap()],
+        verticies: [Buffer::new(10000, true).unwrap(), Buffer::new(10000, true).unwrap()],
+        indicies: [Buffer::new(10000, true).unwrap(), Buffer::new(10000, true).unwrap()],
         font_atlas: None,
         pending_indicies: Vec::new(),
         pending_verticies: Vec::new(),
@@ -297,9 +292,9 @@ fn init(mut commands: Commands) {
 #[derive(Resource)]
 pub struct UiResources {
     pub num_indicies: [u32; FRAMES_IN_FLIGHT],
-    pub verticies: [Buffer<UIVertex, CpuBuffer>; FRAMES_IN_FLIGHT],
+    pub verticies: [Buffer<UIVertex>; FRAMES_IN_FLIGHT],
     pub pending_verticies: Vec<UIVertex>,
-    pub indicies: [Buffer<u32, CpuBuffer>; FRAMES_IN_FLIGHT],
+    pub indicies: [Buffer<u32>; FRAMES_IN_FLIGHT],
     pub pending_indicies: Vec<u32>,
     pub font_atlas: Option<Image<R8Unorm, Sampled>>,
 }
