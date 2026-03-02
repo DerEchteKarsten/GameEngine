@@ -26,6 +26,7 @@ struct MeshShaderBindings {
     column_major float4x4 view;
     column_major float4x4 model;
     Buf<Meshlet> meshlets;
+    Buf<CullData> cull_data;
 }
 
 struct Primitive {

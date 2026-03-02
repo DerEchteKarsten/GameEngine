@@ -162,7 +162,7 @@ pub struct RenderResources {
     depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
     color_attachment: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
     cluster_buffer: Buffer<InstancedOffset>,
-    bvh_node_stack: Buffer<InstancedOffset>,
+    bvh_node_stack: Buffer<u64>,
 }
 
 pub fn resize_swapchain(
@@ -254,7 +254,7 @@ pub fn render(
         color_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
             .unwrap(),
         cluster_buffer: Buffer::new(1 << 14).unwrap(),
-        bvh_node_stack: Buffer::new(10000).unwrap(),
+        bvh_node_stack: Buffer::new(10000 + size_of::<bindings::TraversalVariables>()).unwrap(),
     });
 
     let states = queues.graphics.with(|queue| {
@@ -271,6 +271,14 @@ pub fn render(
                     let view = camera.view_matrix();
 
                     if instances.instance_count > 0 {
+                        cmd.copy_buffer(instances.bvh_root_nodes.whole(), resources.bvh_node_stack.whole());
+                        cmd.fill_buffer(resources.bvh_node_stack.whole(), 0);
+                        cmd.compute::<BvhCull>()
+                            .bind(BvhCullBindings {
+                                stack: resources.bvh_node_stack.whole().add_byte_offset(size_of::<bindings::TraversalVariables>() as u64).cast(),
+                                variables: resources.bvh_node_stack.num_bytes(size_of::<bindings::TraversalVariables>() as u64).cast(),
+                            })
+                            .dispatch(1, 1, 1);
                         cmd.raster::<Raster>()
                             .bind(RasterBindings {
                                 instances: instances.bvh_root_nodes.whole().cast(),

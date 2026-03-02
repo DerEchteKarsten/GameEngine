@@ -363,7 +363,7 @@ impl AssetLoader for MeshLoader {
                 for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
                     let offset = aabb.offset();
                     aabb.set_offset(
-                        offset
+                        offset * size_of::<BvhNode>() as u64
                             + if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
                                 address
                             } else {
