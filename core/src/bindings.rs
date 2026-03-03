@@ -64,7 +64,7 @@ impl ComputePass for BvhCull {
     type GpuBinding = CBvhCullBindings;
 
     const ENTRY: &'static str = "bvhcull\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
     fn cache() -> &'static OnceLock<VkPipeline> {
         static CACHE: OnceLock<VkPipeline> = OnceLock::new();
         &CACHE
@@ -72,104 +72,33 @@ impl ComputePass for BvhCull {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct CMeshshaderBindings {
-    pub proj: Mat4,
-    pub view: Mat4,
-    pub model: Mat4,
-    pub meshlets: u64,
-    pub cull_data: u64,
-}
-
-pub struct MeshshaderBindings<'a> {
-    pub proj: Mat4,
-    pub view: Mat4,
-    pub model: Mat4,
-    pub meshlets: BufferSlice<'a, Meshlet>,
-    pub cull_data: BufferSlice<'a, CullData>,
-}
-
-unsafe impl bytemuck::Pod for CMeshshaderBindings {}
-unsafe impl bytemuck::Zeroable for CMeshshaderBindings {}
-
-impl Binding for CMeshshaderBindings {
-    type CpuBinding<'a> = MeshshaderBindings<'a>;
-
-    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
-        Self {
-            proj: bindings.proj,
-view: bindings.view,
-model: bindings.model,
-meshlets: bindings.meshlets.gpu_ptr,
-cull_data: bindings.cull_data.gpu_ptr,
-        }
-    }
-
-    fn resources<'a>(
-        bindings: &Self::CpuBinding<'a>,
-        stages: PipelineStageFlags2,
-    ) -> Vec<(ResourceHandle, ResourceState)> {
-        vec![
-            (bindings.meshlets.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
-
-    ..Default::default()
-}),
-(bindings.cull_data.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
-
-    ..Default::default()
-}),
-        ]
-    }
-}
-pub struct Meshshader;
-impl RasterPass for Meshshader {
-    type GpuBinding = CMeshshaderBindings;
-}
-
-impl RasterMeshShaderPass for Meshshader {
-    const MESH: &'static str = "mesh\0";
-    const FRAGMENT: &'static str = "mesh_fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/meshshader.slang.spv");
-    const TASK: Option<&'static str> = Some("amp\0");
-
-    fn module_cache() -> &'static OnceLock<VkShaderModule> {
-        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
-        &CACHE
-    }
-
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
-        &CACHE
-    }
-}
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct CRasterBindings {
+pub struct CDrawVerticiesBindings {
     pub view: Mat4,
     pub proj: Mat4,
     pub instances: u64,
     pub instance: u32,
     pub offset: u32,
+    pub window_size: UVec2,
+    pub out: BindlessHandle,
+    pub num_verticies: u32,
 }
 
-pub struct RasterBindings<'a> {
+pub struct DrawVerticiesBindings<'a> {
     pub view: Mat4,
     pub proj: Mat4,
     pub instances: BufferSlice<'a, u64>,
     pub instance: u32,
     pub offset: u32,
+    pub window_size: UVec2,
+    pub out: StorageImageViewBinding<'a>,
+    pub num_verticies: u32,
 }
 
-unsafe impl bytemuck::Pod for CRasterBindings {}
-unsafe impl bytemuck::Zeroable for CRasterBindings {}
+unsafe impl bytemuck::Pod for CDrawVerticiesBindings {}
+unsafe impl bytemuck::Zeroable for CDrawVerticiesBindings {}
 
-impl Binding for CRasterBindings {
-    type CpuBinding<'a> = RasterBindings<'a>;
+impl Binding for CDrawVerticiesBindings {
+    type CpuBinding<'a> = DrawVerticiesBindings<'a>;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
@@ -178,6 +107,9 @@ proj: bindings.proj,
 instances: bindings.instances.gpu_ptr,
 instance: bindings.instance,
 offset: bindings.offset,
+window_size: bindings.window_size,
+out: bindings.out.handle,
+num_verticies: bindings.num_verticies,
         }
     }
 
@@ -193,31 +125,29 @@ ResourceState {
 
     ..Default::default()
 }),
+(bindings.out.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ,
+    layout: bindings.out.prefered_layout,
+    ..Default::default()
+}),
         ]
     }
 }
-pub struct Raster;
+pub struct DrawVerticies;
 
 
-impl RasterPass for Raster {
-    type GpuBinding = CRasterBindings;
-}
+impl ComputePass for DrawVerticies {
+    type GpuBinding = CDrawVerticiesBindings;
 
-impl RasterVertexShaderPass for Raster {
-    const VERTEX: &'static str = "vertex\0";
-    const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/raster.slang.spv");
-    
-    fn module_cache() -> &'static OnceLock<VkShaderModule> {
-        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
-        &CACHE
-    }
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+    const ENTRY: &'static str = "draw\0";
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_verticies.slang.spv");
+    fn cache() -> &'static OnceLock<VkPipeline> {
+        static CACHE: OnceLock<VkPipeline> = OnceLock::new();
         &CACHE
     }
 }
-    
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct CInstanceCullBindings {
@@ -305,9 +235,86 @@ impl ComputePass for InstanceCull {
     type GpuBinding = CInstanceCullBindings;
 
     const ENTRY: &'static str = "instance_cull\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/instance_cull.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/instance_cull.slang.spv");
     fn cache() -> &'static OnceLock<VkPipeline> {
         static CACHE: OnceLock<VkPipeline> = OnceLock::new();
+        &CACHE
+    }
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CMeshshaderBindings {
+    pub proj: Mat4,
+    pub view: Mat4,
+    pub model: Mat4,
+    pub meshlets: u64,
+    pub cull_data: u64,
+}
+
+pub struct MeshshaderBindings<'a> {
+    pub proj: Mat4,
+    pub view: Mat4,
+    pub model: Mat4,
+    pub meshlets: BufferSlice<'a, Meshlet>,
+    pub cull_data: BufferSlice<'a, CullData>,
+}
+
+unsafe impl bytemuck::Pod for CMeshshaderBindings {}
+unsafe impl bytemuck::Zeroable for CMeshshaderBindings {}
+
+impl Binding for CMeshshaderBindings {
+    type CpuBinding<'a> = MeshshaderBindings<'a>;
+
+    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
+        Self {
+            proj: bindings.proj,
+view: bindings.view,
+model: bindings.model,
+meshlets: bindings.meshlets.gpu_ptr,
+cull_data: bindings.cull_data.gpu_ptr,
+        }
+    }
+
+    fn resources<'a>(
+        bindings: &Self::CpuBinding<'a>,
+        stages: PipelineStageFlags2,
+    ) -> Vec<(ResourceHandle, ResourceState)> {
+        vec![
+            (bindings.meshlets.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+(bindings.cull_data.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+        ]
+    }
+}
+pub struct Meshshader;
+impl RasterPass for Meshshader {
+    type GpuBinding = CMeshshaderBindings;
+}
+
+impl RasterMeshShaderPass for Meshshader {
+    const MESH: &'static str = "mesh\0";
+    const FRAGMENT: &'static str = "mesh_fragment\0";
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/meshshader.slang.spv");
+    const TASK: Option<&'static str> = Some("amp\0");
+
+    fn module_cache() -> &'static OnceLock<VkShaderModule> {
+        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
+        &CACHE
+    }
+
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
         &CACHE
     }
 }
@@ -384,12 +391,83 @@ impl ComputePass for Post {
     type GpuBinding = CPostBindings;
 
     const ENTRY: &'static str = "post\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/post.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/post.slang.spv");
     fn cache() -> &'static OnceLock<VkPipeline> {
         static CACHE: OnceLock<VkPipeline> = OnceLock::new();
         &CACHE
     }
 }
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CRasterBindings {
+    pub view: Mat4,
+    pub proj: Mat4,
+    pub instances: u64,
+    pub instance: u32,
+    pub offset: u32,
+}
+
+pub struct RasterBindings<'a> {
+    pub view: Mat4,
+    pub proj: Mat4,
+    pub instances: BufferSlice<'a, u64>,
+    pub instance: u32,
+    pub offset: u32,
+}
+
+unsafe impl bytemuck::Pod for CRasterBindings {}
+unsafe impl bytemuck::Zeroable for CRasterBindings {}
+
+impl Binding for CRasterBindings {
+    type CpuBinding<'a> = RasterBindings<'a>;
+
+    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
+        Self {
+            view: bindings.view,
+proj: bindings.proj,
+instances: bindings.instances.gpu_ptr,
+instance: bindings.instance,
+offset: bindings.offset,
+        }
+    }
+
+    fn resources<'a>(
+        bindings: &Self::CpuBinding<'a>,
+        stages: PipelineStageFlags2,
+    ) -> Vec<(ResourceHandle, ResourceState)> {
+        vec![
+            (bindings.instances.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+        ]
+    }
+}
+pub struct Raster;
+
+
+impl RasterPass for Raster {
+    type GpuBinding = CRasterBindings;
+}
+
+impl RasterVertexShaderPass for Raster {
+    const VERTEX: &'static str = "vertex\0";
+    const FRAGMENT: &'static str = "fragment\0";
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/raster.slang.spv");
+    
+    fn module_cache() -> &'static OnceLock<VkShaderModule> {
+        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
+        &CACHE
+    }
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+        &CACHE
+    }
+}
+    
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct CRasterUiBindings {
@@ -457,7 +535,7 @@ impl RasterPass for RasterUi {
 impl RasterVertexShaderPass for RasterUi {
     const VERTEX: &'static str = "vertex\0";
     const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/raster_ui.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/raster_ui.slang.spv");
     
     fn module_cache() -> &'static OnceLock<VkShaderModule> {
         static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
@@ -469,104 +547,69 @@ impl RasterVertexShaderPass for RasterUi {
     }
 }
     
-#[derive(Clone, Copy)]
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CDrawVerticiesBindings {
-    pub view: Mat4,
-    pub proj: Mat4,
-    pub instances: u64,
-    pub instance: u32,
-    pub offset: u32,
-    pub window_size: UVec2,
-    pub out: BindlessHandle,
-    pub num_verticies: u32,
-}
-
-pub struct DrawVerticiesBindings<'a> {
-    pub view: Mat4,
-    pub proj: Mat4,
-    pub instances: BufferSlice<'a, u64>,
-    pub instance: u32,
-    pub offset: u32,
-    pub window_size: UVec2,
-    pub out: StorageImageViewBinding<'a>,
-    pub num_verticies: u32,
-}
-
-unsafe impl bytemuck::Pod for CDrawVerticiesBindings {}
-unsafe impl bytemuck::Zeroable for CDrawVerticiesBindings {}
-
-impl Binding for CDrawVerticiesBindings {
-    type CpuBinding<'a> = DrawVerticiesBindings<'a>;
-
-    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
-        Self {
-            view: bindings.view,
-proj: bindings.proj,
-instances: bindings.instances.gpu_ptr,
-instance: bindings.instance,
-offset: bindings.offset,
-window_size: bindings.window_size,
-out: bindings.out.handle,
-num_verticies: bindings.num_verticies,
-        }
-    }
-
-    fn resources<'a>(
-        bindings: &Self::CpuBinding<'a>,
-        stages: PipelineStageFlags2,
-    ) -> Vec<(ResourceHandle, ResourceState)> {
-        vec![
-            (bindings.instances.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
-
-    ..Default::default()
-}),
-(bindings.out.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ,
-    layout: bindings.out.prefered_layout,
-    ..Default::default()
-}),
-        ]
-    }
-}
-pub struct DrawVerticies;
-
-
-impl ComputePass for DrawVerticies {
-    type GpuBinding = CDrawVerticiesBindings;
-
-    const ENTRY: &'static str = "draw\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/Documents/code/GameEngine/core/../shaders/bin/draw_verticies.slang.spv");
-    fn cache() -> &'static OnceLock<VkPipeline> {
-        static CACHE: OnceLock<VkPipeline> = OnceLock::new();
-        &CACHE
-    }
+pub struct DispatchIndirectCommand {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstancedOffset {
-    pub instance: u32,
-    pub offset: i32,
+pub struct TraversalVariables {
+    pub publish_head: u64,
+    pub reserve_head: u64,
+    pub tail: u64,
+    pub work_count: u64,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct BvhNode {
-    pub aabb_and_offsets: [AabbPtr; 8],
-    pub errors: [f32; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: u64,
+pub struct CullData {
+    pub aabb: AabbError,
+    pub lod_group_sphere: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct UIVertex {
+    pub pos: Vec2,
+    pub uv: Vec2,
+    pub color: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
 pub struct AabbError {
     pub center_and_error: Vec4,
     pub half_extent: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct DrawIndirectCommand {
+    pub vertex_count: u32,
+    pub instance_count: u32,
+    pub first_vertex: u32,
+    pub first_instance: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct AabbPtr {
+    pub center_and_offset_high: Vec4,
+    pub half_extent_and_offset_low: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct DispatchParams {
+    pub node_head: u32,
+    pub node_tail: u32,
+    pub done: u32,
+    pub meshlet_count: u32,
+    pub indirect_draw: DrawIndirectCommand,
+    pub indirect_dispatch: DispatchIndirectCommand,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstancedOffset {
+    pub instance: u32,
+    pub offset: i32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -585,52 +628,10 @@ pub struct Meshlet {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CullData {
-    pub aabb: AabbError,
-    pub lod_group_sphere: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DispatchIndirectCommand {
-    pub x: u32,
-    pub y: u32,
-    pub z: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DispatchParams {
-    pub node_head: u32,
-    pub node_tail: u32,
-    pub done: u32,
-    pub meshlet_count: u32,
-    pub indirect_draw: DrawIndirectCommand,
-    pub indirect_dispatch: DispatchIndirectCommand,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct UIVertex {
-    pub pos: Vec2,
-    pub uv: Vec2,
-    pub color: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbPtr {
-    pub center_and_offset_high: Vec4,
-    pub half_extent_and_offset_low: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DrawIndirectCommand {
-    pub vertex_count: u32,
-    pub instance_count: u32,
-    pub first_vertex: u32,
-    pub first_instance: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct TraversalVariables {
-    pub head: u32,
-    pub tail: u32,
-    pub work_count: u32,
+pub struct BvhNode {
+    pub aabb_and_offsets: [AabbPtr; 8],
+    pub errors: [f32; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: u64,
 }

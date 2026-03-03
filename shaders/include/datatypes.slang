@@ -15,7 +15,7 @@ struct AabbPtr {
 }
 
 BvhNode *get_ptr(AabbPtr aabb) {
-    return (__asuint64(uint2(asuint(aabb.center_and_offset_high.w), asuint(aabb.half_extent_and_offset_low.w))) as BvhNode*).value; 
+    return (BvhNode *)((uint64_t(bit_cast<uint, float>(aabb.center_and_offset_high.w)) << 32) | uint64_t(bit_cast<uint, float>(aabb.half_extent_and_offset_low.w))); 
 }
 
 struct BvhNode {

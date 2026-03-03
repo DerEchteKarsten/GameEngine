@@ -61,6 +61,7 @@ use crate::bindings::Raster;
 use crate::bindings::RasterBindings;
 use crate::bindings::RasterUi;
 use crate::bindings::RasterUiBindings;
+use crate::bindings::TraversalVariables;
 use crate::bindings::UIVertex;
 use crate::render::MainWorld;
 use crate::render::extract_param::Extract;
@@ -160,6 +161,7 @@ pub struct RenderResources {
     color_attachment: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
     cluster_buffer: Buffer<InstancedOffset>,
     bvh_node_stack: Buffer<u64>,
+    variables: Buffer<TraversalVariables>,
 }
 
 pub fn resize_swapchain(
@@ -250,8 +252,9 @@ pub fn render(
             .unwrap(),
         color_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
             .unwrap(),
-        cluster_buffer: Buffer::new(1 << 14, false).unwrap(),
-        bvh_node_stack: Buffer::new(10000 + size_of::<bindings::TraversalVariables>(), false).unwrap(),
+        cluster_buffer: Buffer::new(1024 * 16, false).unwrap(),
+        bvh_node_stack: Buffer::new(1024 * 16, false).unwrap(),
+        variables: Buffer::new(1, false).unwrap()
     });
 
     let states = queues.graphics.with(|queue| {
@@ -268,15 +271,17 @@ pub fn render(
                     let view = camera.view_matrix();
 
                     if instances.instance_count > 0 {
-                        cmd.copy_buffer(instances.bvh_root_nodes.range(..), resources.bvh_node_stack.range(..));
                         cmd.fill_buffer(resources.bvh_node_stack.range(..), 0);
+                        cmd.update_buffer(resources.variables.range(..), &TraversalVariables { publish_head: 1, reserve_head: 1, tail: 0, work_count: 1 });
+                        cmd.copy_buffer(instances.bvh_root_nodes.range(..), resources.bvh_node_stack.byte_range(..));
                         
-                        // cmd.compute::<BvhCull>()
-                        //     .bind(BvhCullBindings {
-                        //         stack: resources.bvh_node_stack.byte_range((size_of::<bindings::TraversalVariables>() as u64)..).cast(),
-                        //         variables: resources.bvh_node_stack.byte_range(..=(size_of::<bindings::TraversalVariables>() as u64)).cast(),
-                        //     })
-                        //     .dispatch(1, 1, 1);
+
+                        cmd.compute::<BvhCull>()
+                            .bind(BvhCullBindings {
+                                stack: resources.bvh_node_stack.range(..),
+                                variables: resources.variables.range(..)
+                            })
+                            .dispatch(1, 1, 1);
                         cmd.raster::<Raster>()
                             .bind(RasterBindings {
                                 instances: instances.bvh_root_nodes.range(..),

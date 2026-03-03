@@ -370,6 +370,7 @@ impl AssetLoader for MeshLoader {
                                 header.meshlet_offset as u64 + address
                             },
                     );
+                    log::info!("bvh node address: {}, address: {}", aabb.offset(), address);
                 }
                 push_data(node, &mut data, &mut slice);
             }
@@ -396,14 +397,18 @@ impl AssetLoader for MeshLoader {
                 reader.read_exact(&mut mem_slice).await?;
             }
 
+            let aabb = AabbError {
+                center_and_error: Vec3::from_array(header.aabb.center).extend(0.0),
+                half_extent: Vec3::from_array(header.aabb.half_extend).extend(0.0),
+            };
+
             if let Some(data) = data {
                 futures.push((
                     UploadQueue::push_buffer(data, buffer),
-                    AabbError {
-                        center_and_error: Vec3::from_array(header.aabb.center).extend(0.0),
-                        half_extent: Vec3::from_array(header.aabb.half_extend).extend(0.0),
-                    },
+                    aabb,
                 ));
+            }else {
+                meshes.push(GpuMeshletMesh { buffer, aabb })
             }
         }
 

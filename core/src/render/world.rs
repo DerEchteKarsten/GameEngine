@@ -368,10 +368,10 @@ impl UploadQueue {
 
 pub(super) fn init_world(mut cmd: Commands) {
     cmd.insert_resource(InstanceManager {
-        aabbs: Buffer::new(1024 * 10, true).unwrap(),
-        transforms: Buffer::new(1024 * 10, true).unwrap(),
-        bvh_root_nodes: Buffer::new(1024 * 10, true).unwrap(),
-        materials: Buffer::new(1024 * 10, true).unwrap(),
+        aabbs: Buffer::new(1024 * 16, true).unwrap(),
+        transforms: Buffer::new(1024 * 16, true).unwrap(),
+        bvh_root_nodes: Buffer::new(1024 * 16, true).unwrap(),
+        materials: Buffer::new(1024 * 16, true).unwrap(),
         instance_count: 0,
     });
     cmd.init_resource::<FrameCount>();
