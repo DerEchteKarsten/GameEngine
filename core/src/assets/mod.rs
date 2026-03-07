@@ -363,14 +363,12 @@ impl AssetLoader for MeshLoader {
                 for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
                     let offset = aabb.offset();
                     aabb.set_offset(
-                        offset * size_of::<BvhNode>() as u64
-                            + if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
-                                address
+                            if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
+                                offset * size_of::<BvhNode>() as u64 + address
                             } else {
-                                header.meshlet_offset as u64 + address
+                                offset * size_of::<Meshlet>() as u64 + header.meshlet_offset as u64 + address
                             },
                     );
-                    log::info!("bvh node address: {}, address: {}", aabb.offset(), address);
                 }
                 push_data(node, &mut data, &mut slice);
             }

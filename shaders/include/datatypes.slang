@@ -14,6 +14,11 @@ struct AabbPtr {
     float4 half_extent_and_offset_low;
 }
 
+struct InstanceBvhRoot {
+    uint64_t instance;
+    BvhNode *node;
+}
+
 BvhNode *get_ptr(AabbPtr aabb) {
     return (BvhNode *)((uint64_t(bit_cast<uint, float>(aabb.center_and_offset_high.w)) << 32) | uint64_t(bit_cast<uint, float>(aabb.half_extent_and_offset_low.w))); 
 }
@@ -48,9 +53,16 @@ struct Vertex {
     float4 normal_and_uv2;
 }
 
-struct InstancedOffset {
-    uint instance;
-    int offset;
+struct TraversalVariables {
+    uint read_offset;
+    uint write_offset;
+    uint node_count;
+    uint meshlet_count;
+}
+
+struct InstancedMeshlet {
+    uint64_t instance;
+    Meshlet* meshlet;
 }
 
 struct CullData {

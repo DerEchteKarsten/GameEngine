@@ -13,13 +13,15 @@ use lava::image::slice::{StorageImageViewBinding, SampledImageViewBinding};
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct CBvhCullBindings {
-    pub stack: u64,
-    pub variables: u64,
+    pub queue: u64,
+    pub queue_state: u64,
+    pub meshlets: u64,
 }
 
 pub struct BvhCullBindings<'a> {
-    pub stack: BufferSlice<'a, u64>,
-    pub variables: BufferSlice<'a, TraversalVariables>,
+    pub queue: BufferSlice<'a, InstanceBvhRoot>,
+    pub queue_state: BufferSlice<'a, TraversalVariables>,
+    pub meshlets: BufferSlice<'a, InstancedMeshlet>,
 }
 
 unsafe impl bytemuck::Pod for CBvhCullBindings {}
@@ -30,8 +32,9 @@ impl Binding for CBvhCullBindings {
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
-            stack: bindings.stack.gpu_ptr,
-variables: bindings.variables.gpu_ptr,
+            queue: bindings.queue.gpu_ptr,
+queue_state: bindings.queue_state.gpu_ptr,
+meshlets: bindings.meshlets.gpu_ptr,
         }
     }
 
@@ -40,17 +43,24 @@ variables: bindings.variables.gpu_ptr,
         stages: PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
-            (bindings.stack.into(), 
+            (bindings.queue.into(), 
 ResourceState {
     stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
+    access: AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ,
 
     ..Default::default()
 }),
-(bindings.variables.into(), 
+(bindings.queue_state.into(), 
 ResourceState {
     stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
+    access: AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+(bindings.meshlets.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ,
 
     ..Default::default()
 }),
@@ -63,7 +73,7 @@ pub struct BvhCull;
 impl ComputePass for BvhCull {
     type GpuBinding = CBvhCullBindings;
 
-    const ENTRY: &'static str = "bvhcull\0";
+    const ENTRY: &'static str = "bvh_cull\0";
     const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/bvh_cull.slang.spv");
     fn cache() -> &'static OnceLock<VkPipeline> {
         static CACHE: OnceLock<VkPipeline> = OnceLock::new();
@@ -152,20 +162,16 @@ impl ComputePass for DrawVerticies {
 #[repr(C)]
 pub struct CInstanceCullBindings {
     pub num_instances: u64,
-    pub aabbs: u64,
     pub instance_bvh_root_nodes: u64,
-    pub instance_transforms: u64,
-    pub dp: u64,
     pub bvh_node_stack: u64,
+    pub variables: u64,
 }
 
 pub struct InstanceCullBindings<'a> {
     pub num_instances: u64,
-    pub aabbs: BufferSlice<'a, AabbError>,
-    pub instance_bvh_root_nodes: BufferSlice<'a, u32>,
-    pub instance_transforms: BufferSlice<'a, Mat4>,
-    pub dp: BufferSlice<'a, DispatchParams>,
-    pub bvh_node_stack: BufferSlice<'a, InstancedOffset>,
+    pub instance_bvh_root_nodes: BufferSlice<'a, u64>,
+    pub bvh_node_stack: BufferSlice<'a, InstanceBvhRoot>,
+    pub variables: BufferSlice<'a, TraversalVariables>,
 }
 
 unsafe impl bytemuck::Pod for CInstanceCullBindings {}
@@ -177,11 +183,9 @@ impl Binding for CInstanceCullBindings {
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
             num_instances: bindings.num_instances,
-aabbs: bindings.aabbs.gpu_ptr,
 instance_bvh_root_nodes: bindings.instance_bvh_root_nodes.gpu_ptr,
-instance_transforms: bindings.instance_transforms.gpu_ptr,
-dp: bindings.dp.gpu_ptr,
 bvh_node_stack: bindings.bvh_node_stack.gpu_ptr,
+variables: bindings.variables.gpu_ptr,
         }
     }
 
@@ -190,35 +194,21 @@ bvh_node_stack: bindings.bvh_node_stack.gpu_ptr,
         stages: PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
-            (bindings.aabbs.into(), 
+            (bindings.instance_bvh_root_nodes.into(), 
 ResourceState {
     stages,
     access: AccessFlags2::SHADER_STORAGE_READ,
 
     ..Default::default()
 }),
-(bindings.instance_bvh_root_nodes.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
-
-    ..Default::default()
-}),
-(bindings.instance_transforms.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
-
-    ..Default::default()
-}),
-(bindings.dp.into(), 
+(bindings.bvh_node_stack.into(), 
 ResourceState {
     stages,
     access: AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ,
 
     ..Default::default()
 }),
-(bindings.bvh_node_stack.into(), 
+(bindings.variables.into(), 
 ResourceState {
     stages,
     access: AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ,
@@ -402,17 +392,15 @@ impl ComputePass for Post {
 pub struct CRasterBindings {
     pub view: Mat4,
     pub proj: Mat4,
-    pub instances: u64,
-    pub instance: u32,
-    pub offset: u32,
+    pub instance_transforms: u64,
+    pub meshlets: u64,
 }
 
 pub struct RasterBindings<'a> {
     pub view: Mat4,
     pub proj: Mat4,
-    pub instances: BufferSlice<'a, u64>,
-    pub instance: u32,
-    pub offset: u32,
+    pub instance_transforms: BufferSlice<'a, Mat4>,
+    pub meshlets: BufferSlice<'a, InstancedMeshlet>,
 }
 
 unsafe impl bytemuck::Pod for CRasterBindings {}
@@ -425,9 +413,8 @@ impl Binding for CRasterBindings {
         Self {
             view: bindings.view,
 proj: bindings.proj,
-instances: bindings.instances.gpu_ptr,
-instance: bindings.instance,
-offset: bindings.offset,
+instance_transforms: bindings.instance_transforms.gpu_ptr,
+meshlets: bindings.meshlets.gpu_ptr,
         }
     }
 
@@ -436,7 +423,14 @@ offset: bindings.offset,
         stages: PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
-            (bindings.instances.into(), 
+            (bindings.instance_transforms.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+(bindings.meshlets.into(), 
 ResourceState {
     stages,
     access: AccessFlags2::SHADER_STORAGE_READ,
@@ -549,45 +543,11 @@ impl RasterVertexShaderPass for RasterUi {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct DispatchIndirectCommand {
-    pub x: u32,
-    pub y: u32,
-    pub z: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
 pub struct TraversalVariables {
-    pub publish_head: u64,
-    pub reserve_head: u64,
-    pub tail: u64,
-    pub work_count: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct CullData {
-    pub aabb: AabbError,
-    pub lod_group_sphere: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct UIVertex {
-    pub pos: Vec2,
-    pub uv: Vec2,
-    pub color: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbError {
-    pub center_and_error: Vec4,
-    pub half_extent: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct DrawIndirectCommand {
-    pub vertex_count: u32,
-    pub instance_count: u32,
-    pub first_vertex: u32,
-    pub first_instance: u32,
+    pub read_offset: u32,
+    pub write_offset: u32,
+    pub node_count: u32,
+    pub meshlet_count: u32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -597,19 +557,16 @@ pub struct AabbPtr {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct DispatchParams {
-    pub node_head: u32,
-    pub node_tail: u32,
-    pub done: u32,
-    pub meshlet_count: u32,
-    pub indirect_draw: DrawIndirectCommand,
-    pub indirect_dispatch: DispatchIndirectCommand,
+pub struct AabbError {
+    pub center_and_error: Vec4,
+    pub half_extent: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstancedOffset {
-    pub instance: u32,
-    pub offset: i32,
+pub struct UIVertex {
+    pub pos: Vec2,
+    pub uv: Vec2,
+    pub color: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -628,10 +585,28 @@ pub struct Meshlet {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
+pub struct InstanceBvhRoot {
+    pub instance: u64,
+    pub node: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct CullData {
+    pub aabb: AabbError,
+    pub lod_group_sphere: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
 pub struct BvhNode {
     pub aabb_and_offsets: [AabbPtr; 8],
     pub errors: [f32; 8],
     pub lod_bounds: [Vec4; 8],
     pub child_counts: u64,
     pub pad: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstancedMeshlet {
+    pub instance: u64,
+    pub meshlet: u64,
 }

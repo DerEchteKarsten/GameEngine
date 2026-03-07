@@ -3,29 +3,20 @@
 
 struct InstanceCullBindings {
     uint64_t num_instances;
-    Buf<AabbError> aabbs;
-    Buf<uint> instance_bvh_root_nodes;
-    Buf<float4x4> instance_transforms;
-    MutBuf<DispatchParams> dp;
-    MutBuf<InstancedOffset> bvh_node_stack;
+    Buf<BvhNode*> instance_bvh_root_nodes;
+    MutBuf<InstanceBvhRoot> bvh_node_stack;
+    MutBuf<TraversalVariables> variables;
 };
-
-
-uint push(uint n)
-{
-    uint oldTail;
-    InterlockedAdd(b.dp.val.node_tail, n, oldTail);
-    return oldTail;
-}
-
 
 [[vk::push_constant]] InstanceCullBindings b;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void instance_cull(uint gid: SV_GroupID, uint dtid: SV_DispatchThreadID, uint gtid: SV_GroupThreadID) {
-    if(dtid < b.num_instances) {
-        var slot = push(1);
-        b.bvh_node_stack.val[slot] = InstancedOffset(dtid, b.instance_bvh_root_nodes.val[dtid]);
+    if (dtid < b.num_instances) {
+        var slot = 0;
+        InterlockedAdd(b.variables.val.write_offset, 1, slot);
+        InterlockedAdd(b.variables.val.node_count, 1, slot);
+        b.bvh_node_stack.val[slot] = InstanceBvhRoot(slot, b.instance_bvh_root_nodes.val[slot]);
     }
 }

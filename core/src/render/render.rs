@@ -22,6 +22,7 @@ use bevy::window::Window;
 use bevy::window::WindowResized;
 use glam::UVec2;
 use glam::Vec4;
+use itertools::Itertools;
 use lava::command_buffer::Filter;
 use lava::command_buffer::RasterVertexDispatch;
 use lava::command_buffer::ResourceHandle;
@@ -54,7 +55,11 @@ use crate::INITIAL_WINDOW_SIZE;
 use crate::bindings;
 use crate::bindings::BvhCull;
 use crate::bindings::BvhCullBindings;
-use crate::bindings::InstancedOffset;
+use crate::bindings::InstanceBvhRoot;
+use crate::bindings::InstanceCull;
+use crate::bindings::InstanceCullBindings;
+use crate::bindings::InstancedMeshlet;
+use crate::bindings::Meshlet;
 use crate::bindings::Post;
 use crate::bindings::PostBindings;
 use crate::bindings::Raster;
@@ -159,8 +164,8 @@ pub fn aquire_swapchain_image(
 pub struct RenderResources {
     depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
     color_attachment: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
-    cluster_buffer: Buffer<InstancedOffset>,
-    bvh_node_stack: Buffer<u64>,
+    meshlets: Buffer<InstancedMeshlet>,
+    bvh_node_stack: Buffer<InstanceBvhRoot>,
     variables: Buffer<TraversalVariables>,
 }
 
@@ -252,8 +257,8 @@ pub fn render(
             .unwrap(),
         color_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
             .unwrap(),
-        cluster_buffer: Buffer::new(1024 * 16, false).unwrap(),
-        bvh_node_stack: Buffer::new(1024 * 16, false).unwrap(),
+        meshlets: Buffer::new(1024 * 16, false).unwrap(),
+        bvh_node_stack: Buffer::new(2 * 1024 * 1024, false).unwrap(),
         variables: Buffer::new(1, false).unwrap()
     });
 
@@ -271,24 +276,35 @@ pub fn render(
                     let view = camera.view_matrix();
 
                     if instances.instance_count > 0 {
-                        cmd.fill_buffer(resources.bvh_node_stack.range(..), 0);
-                        cmd.update_buffer(resources.variables.range(..), &TraversalVariables { publish_head: 1, reserve_head: 1, tail: 0, work_count: 1 });
-                        cmd.copy_buffer(instances.bvh_root_nodes.range(..), resources.bvh_node_stack.byte_range(..));
-                        
-
-                        cmd.compute::<BvhCull>()
-                            .bind(BvhCullBindings {
-                                stack: resources.bvh_node_stack.range(..),
+                        cmd.fill_buffer(resources.bvh_node_stack.range(..), !0);
+                        cmd.update_buffer(resources.variables.range(..), &TraversalVariables { node_count: 0, read_offset: 0, write_offset: 0, meshlet_count: 0});
+                        cmd.compute::<InstanceCull>()
+                            .bind(InstanceCullBindings {
+                                bvh_node_stack: resources.bvh_node_stack.range(..),
+                                instance_bvh_root_nodes: instances.bvh_root_nodes.range(..),
+                                num_instances: instances.instance_count as u64,
                                 variables: resources.variables.range(..)
                             })
+                            .dispatch(instances.instance_count.div_ceil(64) as u32, 1, 1);
+                        cmd.compute::<BvhCull>()
+                            .bind(BvhCullBindings {
+                                meshlets: resources.meshlets.range(..),
+                                queue: resources.bvh_node_stack.range(..),
+                                queue_state: resources.variables.range(..)
+                            })
                             .dispatch(1, 1, 1);
+                        // let mut meshlets = HashMap::<u64, u32>::new();
+                        // for (k, v) in meshlets.iter().sorted_by(|a, b| a.1.cmp(b.1)) {
+                        //     log::info!("{v}x {k}");w
+                        // }
+                        // log::info!("{}", meshlets.len());
+                        // log::info!("{:?}", resources.variables[0]);
                         cmd.raster::<Raster>()
                             .bind(RasterBindings {
-                                instances: instances.bvh_root_nodes.range(..),
                                 proj: proj.clone(),
                                 view: view.clone(),
-                                instance: 0,
-                                offset: 864,
+                                instance_transforms: instances.transforms.range(..),
+                                meshlets: resources.meshlets.range(..),
                             })
                             .color_attachment(resources.color_attachment.view(), None)
                             .depth_attachment(resources.depth_attachment.view())
@@ -298,7 +314,7 @@ pub fn render(
                                 swapchain.size[1],
                                 RasterVertexDispatch::Draw {
                                     vertex_count: 255,
-                                    instance_count: 84,
+                                    instance_count: 83,
                                 },
                             );
                     }

@@ -45,7 +45,7 @@ use smallvec::SmallVec;
 
 use crate::assets::mesh::MeshletMesh;
 use crate::assets::{Mesh, material::Material};
-use crate::bindings::{AabbError, BvhNode, CullData, Meshlet, Vertex};
+use crate::bindings::{AabbError, BvhNode, CullData, InstanceBvhRoot, Meshlet, Vertex};
 use crate::render::extract_param::Extract;
 use crate::render::render::{
     CommandPools, FrameCount, QueueStrategie, Queues, Swapchain, SynchronizationResources,
@@ -89,18 +89,10 @@ impl InstanceManager {
     fn add_instance(&mut self, instance: Instance) {
         let slot = self.instance_count;
         self.instance_count += 1;
-        self.transforms
-            .range(slot..)
-            .copy_from(&[instance.transform]);
-        self.materials
-            .range(slot..)
-            .copy_from(&[instance.material]);
-        self.bvh_root_nodes
-            .range(slot..)
-            .copy_from(&[instance.bvh_root]);
-        self.aabbs
-            .range(slot..)
-            .copy_from(&[instance.aabb]);
+        self.transforms[slot] = instance.transform;
+        self.materials[slot] = instance.material;
+        self.bvh_root_nodes[slot] = instance.bvh_root;
+        self.aabbs[slot] = instance.aabb;
     }
     fn clear(&mut self) {
         self.instance_count = 0;

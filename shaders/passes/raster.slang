@@ -9,9 +9,8 @@ struct VSOutput {
 struct RasterBindings {
     float4x4 view;
     float4x4 proj;
-    Buf<uint64_t> instances;
-    uint instance;
-    uint offset;
+    Buf<float4x4> instance_transforms;
+    Buf<InstancedMeshlet> meshlets;
 }
 
 [[vk::push_constant]] RasterBindings b;
@@ -19,9 +18,8 @@ struct RasterBindings {
 [shader("vertex")]
 VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
 {
-    let root = b.instances.val[b.instance];
-    let ptr = root + b.offset;
-    var meshlet = ((Meshlet *)ptr)[instance_index];
+    let instanced_meshlet = b.meshlets.val[instance_index];
+    let meshlet = *(instanced_meshlet.meshlet);
 
     if (vertex_index / 3u >= meshlet.triangle_count) { 
         return VSOutput(float4(0.0, 0.0, 0.0, 0.0), float3(0.0));
@@ -31,7 +29,8 @@ VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_Verte
     let vertex = meshlet.vertex_index[vertex_id];
 
     VSOutput output;
-    let world_space = float4(vertex.position_and_uv1.xyz, 1.0);
+    let transform = b.instance_transforms.val[instanced_meshlet.instance];
+    let world_space = mul(transform, float4(vertex.position_and_uv1.xyz, 1.0));
     let view_space = mul(b.view, world_space);
     let clip_space = mul(b.proj, view_space);
     output.position = clip_space;
