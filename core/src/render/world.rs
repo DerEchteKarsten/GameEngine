@@ -102,12 +102,24 @@ impl InstanceManager {
 const STAGING_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
 enum Dst {
-    Buffer(Buffer<u8>, Option<oneshot::Sender<Buffer<u8>>>),
-    Image(Image, Option<oneshot::Sender<Image>>),
+    Buffer(Buffer<u8>),
+    Image(Image),
 }
+
+enum DstRef<'a> {
+    Buffer(BufferSlice<'a, u8>),
+    Image(ImageSlice<'a>),
+}
+
+enum SendBack {
+    Buffer(oneshot::Sender<Buffer<u8>>),
+    Image(oneshot::Sender<Image>)
+}
+
 struct CopyRegion {
     src: Vec<u8>,
     dst: Option<Dst>,
+    send_back: Option<SendBack>,
 }
 
 #[derive(Debug)]
@@ -148,7 +160,23 @@ pub struct UploadQueue {
 static UPLOAD_QUEUE: OnceLock<UploadQueue> = OnceLock::new();
 
 impl UploadQueue {
-    fn flush(res: &NonRebarResources, mut regions: Vec<(BufferSlice<u8>, Dst)>) {
+    fn send_back(mut item: CopyRegion) {
+        match item.send_back.take().unwrap() {
+            SendBack::Buffer(buff) => {
+                let Dst::Buffer(buffer) = item.dst.take().unwrap() else {unreachable!()}; 
+                if let Err(_) = buff.send(buffer) {
+                    log::error!("Receiver was dropped, buffer could not be sent back and will be dropped");
+                }
+            },
+            SendBack::Image(imag) => {
+                let Dst::Image(image) = item.dst.take().unwrap() else {unreachable!()}; 
+                if let Err(_) = imag.send(image) {
+                    log::error!("Receiver was dropped, image could not be sent back and will be dropped");
+                }
+            }
+        }
+    }
+    fn flush(res: &NonRebarResources, mut regions: Vec<(BufferSlice<u8>, DstRef)>) {
         res.pool.reset();
         res.fence.reset();
         res.queue.with(move |queue| {
@@ -156,12 +184,11 @@ impl UploadQueue {
                 .execute_command(None, &res.cmd, Some(&res.fence), &[], &[], |cmd| {
                     for entry in regions.iter_mut() {
                         match &entry.1 {
-                            Dst::Buffer(buff, _) => {
-                                let slice = buff.range(..);
-                                cmd.copy_buffer(entry.0, slice);
+                            DstRef::Buffer(buff) => {
+                                cmd.copy_buffer(entry.0, *buff);
                                 if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
                                     cmd.buffer_barrier(
-                                        slice,
+                                        *buff,
                                         AccessFlags2::TRANSFER_WRITE,
                                         AccessFlags2::NONE,
                                         PipelineStageFlags2::TRANSFER,
@@ -171,9 +198,8 @@ impl UploadQueue {
                                     );
                                 }
                             }
-                            Dst::Image(img, _) => {
-                                let view = img.whole();
-                                cmd.copy_buffer_to_image(entry.0, view);
+                            DstRef::Image(view) => {
+                                cmd.copy_buffer_to_image(entry.0, *view);
                                 if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
                                     cmd.image_barrier(
                                         view.view,
@@ -193,20 +219,6 @@ impl UploadQueue {
                 })
                 .unwrap();
             res.fence.wait();
-            for (_, dst) in regions {
-                match dst {
-                    Dst::Buffer(buffer, mut sender) => {
-                        if let Err(_) = sender.take().unwrap().send(buffer) {
-                            log::error!("Receiver was dropped, buffer could not be sent back and will be dropped");
-                        }
-                    },
-                    Dst::Image(image, mut sender) => {
-                        if let Err(_) = sender.take().unwrap().send(image) {
-                            log::error!("Receiver was dropped, image could not be sent back and will be dropped");
-                        }
-                    }
-                }
-            }
         });
     }
     pub fn init(queues: &Queues) {
@@ -239,43 +251,71 @@ impl UploadQueue {
                 pool,
                 staging: Buffer::new(STAGING_BUFFER_SIZE, true).unwrap(),
             };
+
             std::thread::spawn(move || {
                 #[cfg(feature = "trace")]
                 let _span = log::info_span!("Upload Thread").entered();
                 let mut staging_slice = res.staging.range(..).clone();
                 let mut regions = Vec::new();
+                let mut need_send_back = Vec::new();
                 loop {
-                    let mut item = if let Ok(item) = receiver.recv_timeout(Duration::from_millis(1))
+                    let item = if let Ok(item) = receiver.recv_timeout(Duration::from_millis(1))
                     {
                         item
                     } else {
                         if !regions.is_empty() {
                             let len = regions.capacity();
                             Self::flush(&res, std::mem::replace(&mut regions, Vec::with_capacity(len)));
+                            for i in need_send_back.drain(..) {
+                                Self::send_back(i);
+                            }
                         }
                         receiver.recv().unwrap()
                     };
                     let mut src_remaining_bytes = item.src.len() as u64;
+
+                    let mut flushed = false;
                     while {
                         let staging_remaining_bytes = staging_slice.size;
+                        let copy_size = src_remaining_bytes.min(staging_remaining_bytes) as usize;
                         unsafe {
                             staging_slice.ptr().copy_from(
                                 item.src.as_ptr(),
-                                src_remaining_bytes.min(staging_remaining_bytes) as usize,
+                                copy_size,
                             )
                         };
                         regions.push((
-                            staging_slice.byte_range(..src_remaining_bytes.min(staging_remaining_bytes)),
-                            item.dst.take().unwrap(),
+                            staging_slice.byte_range((staging_slice.size - staging_remaining_bytes) as usize..(staging_slice.size -(staging_remaining_bytes.saturating_sub(copy_size as u64))) as usize),
+                            match item.dst.as_ref().unwrap() {
+                                Dst::Buffer(buffer) => {
+                                    let slice = buffer.range((buffer.size()-src_remaining_bytes) as usize..(buffer.size()-(src_remaining_bytes.saturating_sub(copy_size as u64))) as usize);
+                                    DstRef::Buffer(unsafe { std::mem::transmute(slice) })
+                                },
+                                Dst::Image(image) => {
+                                    if item.src.len() > STAGING_BUFFER_SIZE {
+                                        todo!("KOPFSCHMERZEN")
+                                    }
+                                    DstRef::Image(unsafe { std::mem::transmute(image.whole()) })
+                                },
+                            },
                         ));
-                        staging_slice = staging_slice.byte_range(src_remaining_bytes..);
+                        staging_slice = staging_slice.byte_range(copy_size..);
                         src_remaining_bytes =
                             src_remaining_bytes.saturating_sub(staging_remaining_bytes);
                         staging_slice.size == 0
                     } {
                         let len = regions.capacity();
+                        flushed = true;
                         Self::flush(&res, std::mem::replace(&mut regions, Vec::with_capacity(len)));
                         staging_slice = res.staging.range(..);
+                    }
+                    if flushed {
+                        Self::send_back(item);
+                        for i in need_send_back.drain(..) {
+                            Self::send_back(i);
+                        }
+                    }else {
+                        need_send_back.push(item);
                     }
                 }
             })
@@ -283,15 +323,12 @@ impl UploadQueue {
             std::thread::spawn(move || {
                 #[cfg(feature = "trace")]
                 let _span = log::info_span!("Upload Thread").entered();
-                for mut item in receiver.iter() {
-                    match item.dst.take().unwrap() {
-                        Dst::Buffer(buff, mut sender) => {
+                for item in receiver.iter() {
+                    match item.dst.as_ref().unwrap() {
+                        Dst::Buffer(buff) => {
                             buff.range(..).copy_from(item.src.as_slice());
-                            if let Err(_) = sender.take().unwrap().send(buff) {
-                                log::error!("Receiver was dropped, buffer could not be sent back and will be dropped");
-                            }
                         }
-                        Dst::Image(image, mut sender) => {
+                        Dst::Image(image) => {
                             let regions = [raw_vulkan::MemoryToImageCopyEXT::default()
                                 .host_pointer(item.src.as_ptr().cast())
                                 .image_extent(image.extent)
@@ -309,11 +346,9 @@ impl UploadQueue {
                                     .copy_memory_to_image(&copy_memory_to_image_info)
                                     .unwrap()
                             };
-                            if let Err(_) = sender.take().unwrap().send(image) {
-                                log::error!("Receiver was dropped, image could not be sent back and will be dropped");
-                            }
                         }
                     }
+                    Self::send_back(item);
                 }
             })
         };
@@ -336,7 +371,8 @@ impl UploadQueue {
             .copy_queue
             .send(CopyRegion {
                 src: bytemuck::try_cast_vec(src).unwrap(),
-                dst: Some(Dst::Buffer(buffer.cast(), Some(sender))),
+                dst: Some(Dst::Buffer(buffer.cast())),
+                send_back: Some(SendBack::Buffer(sender)),
             })
             .unwrap();
         unsafe { std::mem::transmute(receiver) }
@@ -351,7 +387,8 @@ impl UploadQueue {
             .copy_queue
             .send(CopyRegion {
                 src,
-                dst: Some(Dst::Image(image.cast(), Some(sender))),
+                dst: Some(Dst::Image(image.cast())),
+                send_back: Some(SendBack::Image(sender)),
             })
             .unwrap();
         unsafe { std::mem::transmute(receiver) }

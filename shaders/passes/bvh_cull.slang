@@ -7,7 +7,7 @@ struct BvhCullBindings {
     MutBuf<InstancedMeshlet> meshlets;
 };
 
-#define GROUP_SIZE 16
+#define GROUP_SIZE 64
 #define MAX_NODE_CHILDREN_BITS_NUM 3
 #define MAX_NODE_CHILDREN_NUM (1 << MAX_NODE_CHILDREN_BITS_NUM)
 #define MAX_NODES_PER_GROUP (GROUP_SIZE >> MAX_NODE_CHILDREN_BITS_NUM)
@@ -76,7 +76,7 @@ groupshared InstanceBvhRoot GroupNodeData[MAX_NODES_PER_GROUP];
 void bvh_cull(uint group_index: SV_GroupIndex) {
     var node_batch_local_offset = MAX_NODES_PER_GROUP;
     var node_batch_base_index = 0;
-    while (true) {
+    while(true) {
 
         GroupMemoryBarrierWithGroupSync();
         if (group_index == 0)
@@ -158,12 +158,12 @@ void ProcessNodeBatch(uint batch_size, uint group_index)
     let safe_node_slot = min(node_slot_in_batch, batch_size - 1u);
 
     let job = GroupNodeData[safe_node_slot];
-    let node = *job.node;
 
-    let child_node = get_ptr(node.aabb_and_offsets[child_slot_in_node]);
-
+    let child_node = get_ptr(job.node.aabb_and_offsets[child_slot_in_node]);
     var node_write_offset_in_group = 0;
-    let child_count = (node.child_counts >> (child_slot_in_node * 8)) & 0xff;
+
+    let child_count = (job.node.child_counts >> (child_slot_in_node * 8)) & 0xff;
+
     let visible = node_slot_in_batch < batch_size; // && ....
     let push_node = child_count == 255 && visible;
     if (push_node)
@@ -172,6 +172,7 @@ void ProcessNodeBatch(uint batch_size, uint group_index)
         WaveInterlockedAddScalar(GroupNumCandidateNodes, push_node, 1u, node_write_offset_in_group);
     }
 
+
     if (visible && !push_node) {
         var slot = 0;
         InterlockedAdd(b.queue_state.val.meshlet_count, uint(child_count), slot);
@@ -179,6 +180,7 @@ void ProcessNodeBatch(uint batch_size, uint group_index)
             b.meshlets.val[slot + i] = InstancedMeshlet(job.instance, (Meshlet *)(((uint64_t)child_node) + i * sizeof(Meshlet)));
         }
     }
+
 
     GroupMemoryBarrierWithGroupSync();
 
@@ -198,6 +200,8 @@ void ProcessNodeBatch(uint batch_size, uint group_index)
     }
 
     DeviceMemoryBarrierWithGroupSync();
+
+
 
     // GroupMemoryBarrierWithGroupSync();
     // if (group_index == 0)

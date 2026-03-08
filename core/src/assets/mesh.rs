@@ -176,7 +176,7 @@ impl MeshletMesh {
                     &simplified_group_indices,
                     &vertex_adapter,
                     &position_only_vertex_remap,
-                    Some((BoundingSphere::new(group.lod_bounds.xyz(), group.lod_bounds.z), group.parent_error)),
+                    Some((BoundingSphere::new(group.lod_bounds.xyz(), group.lod_bounds.w), group.parent_error)),
                 );
 
                 Ok((group, new_meshlets))
@@ -394,6 +394,7 @@ fn compute_meshlets(
         for meshlet in meshlet.iter() {
             let (lod_group_sphere, error) = prev_lod_data.unwrap_or_else(|| {
                 let bounds = meshopt::compute_meshlet_bounds(meshlet, vertices);
+                assert!(bounds.radius >= 0.0);
                 (BoundingSphere::new(bounds.center, bounds.radius), 0.0)
             });
 

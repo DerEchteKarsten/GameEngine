@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::mem::offset_of;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -277,7 +278,7 @@ pub fn render(
 
                     if instances.instance_count > 0 {
                         cmd.fill_buffer(resources.bvh_node_stack.range(..), !0);
-                        cmd.update_buffer(resources.variables.range(..), &TraversalVariables { node_count: 0, read_offset: 0, write_offset: 0, meshlet_count: 0});
+                        cmd.update_buffer(resources.variables.range(..), &TraversalVariables { pad:0, node_count: 0, read_offset: 0, write_offset: 0, meshlet_count: 0, first_instance: 0, first_vertex: 0, vertex_count: 255});
                         cmd.compute::<InstanceCull>()
                             .bind(InstanceCullBindings {
                                 bvh_node_stack: resources.bvh_node_stack.range(..),
@@ -292,13 +293,7 @@ pub fn render(
                                 queue: resources.bvh_node_stack.range(..),
                                 queue_state: resources.variables.range(..)
                             })
-                            .dispatch(1, 1, 1);
-                        // let mut meshlets = HashMap::<u64, u32>::new();
-                        // for (k, v) in meshlets.iter().sorted_by(|a, b| a.1.cmp(b.1)) {
-                        //     log::info!("{v}x {k}");w
-                        // }
-                        // log::info!("{}", meshlets.len());
-                        // log::info!("{:?}", resources.variables[0]);
+                            .dispatch(1000, 1, 1);
                         cmd.raster::<Raster>()
                             .bind(RasterBindings {
                                 proj: proj.clone(),
@@ -312,10 +307,7 @@ pub fn render(
                             .draw(
                                 swapchain.size[0],
                                 swapchain.size[1],
-                                RasterVertexDispatch::Draw {
-                                    vertex_count: 255,
-                                    instance_count: 83,
-                                },
+                                RasterVertexDispatch::DrawIndirect { buffer: resources.variables.byte_range(offset_of!(TraversalVariables, vertex_count)..).cast() },
                             );
                     }
 

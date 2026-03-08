@@ -115,8 +115,8 @@ pub fn CorePlugin(app: &mut App) {
     app.add_plugins((
         AssetPlugin {
             mode: AssetMode::Processed,
-            file_path: format!("/home/karsten/code/GameEngine/game/assets"),
-            processed_file_path: format!("/home/karsten/code/GameEngine/game/imported_assets"),
+            file_path: format!("/home/karsten/Documents/code/GameEngine/game/assets"),
+            processed_file_path: format!("/home/karsten/Documents/code/GameEngine/game/imported_assets"),
             ..Default::default()
         },
         WinitPlugin::default(),

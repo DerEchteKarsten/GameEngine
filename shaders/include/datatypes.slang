@@ -20,7 +20,7 @@ struct InstanceBvhRoot {
 }
 
 BvhNode *get_ptr(AabbPtr aabb) {
-    return (BvhNode *)((uint64_t(bit_cast<uint, float>(aabb.center_and_offset_high.w)) << 32) | uint64_t(bit_cast<uint, float>(aabb.half_extent_and_offset_low.w))); 
+    return (BvhNode *)(((uint64_t(asuint(aabb.center_and_offset_high.w))) << 32) | uint64_t(asuint(aabb.half_extent_and_offset_low.w))); 
 }
 
 struct BvhNode {
@@ -28,7 +28,7 @@ struct BvhNode {
     float errors[8];
     float4 lod_bounds[8];
     uint64_t child_counts;
-    uint64_t pad;
+    uint2 pad;
 }
 
 uint8_t get_byte(uint i, uint64_t value) {
@@ -57,7 +57,11 @@ struct TraversalVariables {
     uint read_offset;
     uint write_offset;
     uint node_count;
+    uint pad;
+    uint vertex_count;
     uint meshlet_count;
+    uint first_vertex;
+    uint first_instance;
 }
 
 struct InstancedMeshlet {

@@ -146,10 +146,14 @@
                                                         {
                                                             "name": "pad",
                                                             "type": {
-                                                                "kind": "scalar",
-                                                                "scalarType": "uint64"
+                                                                "kind": "vector",
+                                                                "elementCount": 2,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "uint32"
+                                                                }
                                                             },
-                                                            "binding": {"kind": "uniform", "offset": 424, "size": 8, "elementStride": 0}
+                                                            "binding": {"kind": "uniform", "offset": 424, "size": 8, "elementStride": 4}
                                                         }
                                                     ]
                                                 }
@@ -271,10 +275,14 @@
                                                                     {
                                                                         "name": "pad",
                                                                         "type": {
-                                                                            "kind": "scalar",
-                                                                            "scalarType": "uint64"
+                                                                            "kind": "vector",
+                                                                            "elementCount": 2,
+                                                                            "elementType": {
+                                                                                "kind": "scalar",
+                                                                                "scalarType": "uint32"
+                                                                            }
                                                                         },
-                                                                        "binding": {"kind": "uniform", "offset": 424, "size": 8, "elementStride": 0}
+                                                                        "binding": {"kind": "uniform", "offset": 424, "size": 8, "elementStride": 4}
                                                                     }
                                                                 ]
                                                             }
@@ -329,12 +337,44 @@
                                                         "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
                                                     },
                                                     {
-                                                        "name": "meshlet_count",
+                                                        "name": "pad",
                                                         "type": {
                                                             "kind": "scalar",
                                                             "scalarType": "uint32"
                                                         },
                                                         "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "vertex_count",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "meshlet_count",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "first_vertex",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "first_instance",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
                                                     }
                                                 ]
                                             }
@@ -459,10 +499,14 @@
                                                             {
                                                                 "name": "pad",
                                                                 "type": {
-                                                                    "kind": "scalar",
-                                                                    "scalarType": "uint64"
+                                                                    "kind": "vector",
+                                                                    "elementCount": 2,
+                                                                    "elementType": {
+                                                                        "kind": "scalar",
+                                                                        "scalarType": "uint32"
+                                                                    }
                                                                 },
-                                                                "binding": {"kind": "uniform", "offset": 424, "size": 8, "elementStride": 0}
+                                                                "binding": {"kind": "uniform", "offset": 424, "size": 8, "elementStride": 4}
                                                             }
                                                         ]
                                                     }
@@ -584,10 +628,14 @@
                                                                         {
                                                                             "name": "pad",
                                                                             "type": {
-                                                                                "kind": "scalar",
-                                                                                "scalarType": "uint64"
+                                                                                "kind": "vector",
+                                                                                "elementCount": 2,
+                                                                                "elementType": {
+                                                                                    "kind": "scalar",
+                                                                                    "scalarType": "uint32"
+                                                                                }
                                                                             },
-                                                                            "binding": {"kind": "uniform", "offset": 424, "size": 8, "elementStride": 0}
+                                                                            "binding": {"kind": "uniform", "offset": 424, "size": 8, "elementStride": 4}
                                                                         }
                                                                     ]
                                                                 }
@@ -642,12 +690,44 @@
                                                             "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
                                                         },
                                                         {
-                                                            "name": "meshlet_count",
+                                                            "name": "pad",
                                                             "type": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "uint32"
                                                             },
                                                             "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "vertex_count",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "meshlet_count",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "first_vertex",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "first_instance",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
                                                         }
                                                     ]
                                                 }
