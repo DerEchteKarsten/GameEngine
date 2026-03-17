@@ -1,14 +1,10 @@
 use crate::{
     INITIAL_WINDOW_SIZE,
-    bindings::{
-        Post,
-        PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings,
-    },
+    bindings::{Post, PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings},
     components::camera::Camera,
     render::{
         render::{
-            CommandPools, Swapchain, SynchronizationResources, aquire_swapchain_image, init_render,
-            render, resize_swapchain, wait_frames_in_flight,
+            CommandPools, RenderDebugUi, RenderPassesPlugin, Swapchain, SynchronizationResources, aquire_swapchain_image, init_render, render, resize_swapchain, wait_frames_in_flight
         },
         world::{InstanceManager, UploadQueue, WorldPlugin, init_world},
     },
@@ -37,7 +33,7 @@ use bevy::{
 };
 use glam::Vec4;
 use lava::{
-    buffer::{Buffer},
+    buffer::Buffer,
     command_buffer::RasterVertexDispatch,
     image::{
         Image,
@@ -66,6 +62,7 @@ pub enum RenderSystems {
     AquireSwapchainImage,
     PreRender,
     Render,
+    AfterFences,
 }
 
 #[derive(ScheduleLabel, PartialEq, Eq, Debug, Clone, Hash, Default)]
@@ -88,11 +85,12 @@ impl Render {
             (
                 RenderSystems::ApplyExtractCommands,
                 RenderSystems::WaitFences,
-                RenderSystems::PreRender,
+                RenderSystems::AquireSwapchainImage,
                 RenderSystems::Render,
             )
                 .chain(),
-            RenderSystems::AquireSwapchainImage.after(RenderSystems::WaitFences),
+            RenderSystems::PreRender.after(RenderSystems::WaitFences).before(RenderSystems::Render),
+            RenderSystems::AfterFences.after(RenderSystems::WaitFences),
         ));
         schedule
     }
@@ -321,19 +319,10 @@ impl Plugin for RenderPlugin {
         let mut should_run_startup = true;
 
         render_app
-            .add_systems(RenderStartup, init_render)
             .add_schedule(extract_schedule)
             .add_schedule(Render::base_schedule())
             .add_systems(ExtractSchedule, resize_swapchain)
-            .add_systems(
-                Render,
-                (
-                    apply_extract_commands.in_set(RenderSystems::ApplyExtractCommands),
-                    wait_frames_in_flight.in_set(RenderSystems::WaitFences),
-                    aquire_swapchain_image.in_set(RenderSystems::AquireSwapchainImage),
-                    render.in_set(RenderSystems::Render),
-                ),
-            )
+            .add_systems(Render, apply_extract_commands.in_set(RenderSystems::ApplyExtractCommands))
             .set_extract(move |main_world, render_world| {
                 if should_run_startup {
                     render_world.run_schedule(RenderStartup);
@@ -342,7 +331,8 @@ impl Plugin for RenderPlugin {
 
                 extract(main_world, render_world);
             })
-            .add_plugins(WorldPlugin);
+            .add_plugins(WorldPlugin)
+            .add_plugins(RenderPassesPlugin);
 
         app.insert_sub_app(RenderApp, render_app);
     }

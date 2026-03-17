@@ -1,10 +1,20 @@
 #include "bindless.slang"
 #include "datatypes.slang"
 
+struct InstanceHeader {
+    uint64_t meshlet_offset;
+    uint64_t cull_data_offset;
+}
+
 struct BvhCullBindings {
     MutBuf<InstanceBvhRoot> queue;
     MutBuf<TraversalVariables> queue_state;
     MutBuf<InstancedMeshlet> meshlets;
+    Buf<float4x4> instance_transforms;
+    Buf<InstanceHeader> instance_headers;
+    float4 camera_pos;
+    row_major float4x4 proj;
+    float window_height;
 };
 
 #define GROUP_SIZE 64
@@ -24,15 +34,15 @@ groupshared uint GroupNodeCount;
 groupshared uint GroupNodeMask;
 groupshared InstanceBvhRoot GroupNodeData[MAX_NODES_PER_GROUP];
 
-// groupshared uint GroupMeshletBatchStartIndex;
-// groupshared uint GroupMeshletBatchReadySize;
+groupshared uint GroupMeshletBatchStartIndex;
+groupshared uint GroupMeshletBatchReadySize;
 
-// groupshared uint GroupLeafCount;
-// groupshared uint GroupLeafPrefix[DAG_CULL_GROUP_SIZE + 1];
-// groupshared uint2 GroupLeafKey[DAG_CULL_GROUP_SIZE];
-// groupshared uint GroupLeafMeshletCount[DAG_CULL_GROUP_SIZE];
-// groupshared uint GroupCandidateMeshletBase;
-// groupshared uint GroupCandidateMeshletCount;
+groupshared uint GroupLeafCount;
+groupshared uint GroupLeafPrefix[GROUP_SIZE + 1];
+groupshared uint2 GroupLeafKey[GROUP_SIZE];
+groupshared uint GroupLeafMeshletCount[GROUP_SIZE];
+groupshared uint GroupCandidateMeshletBase;
+groupshared uint GroupCandidateMeshletCount;
 
 /**
  * High-performance scalar wavefront atomic adder (fixed-size version)
@@ -150,6 +160,19 @@ void bvh_cull(uint group_index: SV_GroupIndex) {
     }
 }
 
+bool lod_error_is_imperceptible(float4 lod_sphere, float simplification_error, uint instance_id) {
+    let world_from_local = b.instance_transforms.val[instance_id];
+    let world_scale = max(length(world_from_local[0]), max(length(world_from_local[1]), length(world_from_local[2])));
+    let camera_pos = b.camera_pos;
+
+    var near = b.proj[3][2];
+    let world_sphere_center = (mul(world_from_local, float4(lod_sphere.xyz, 1.0))).xyz;
+    let world_sphere_radius = lod_sphere.w * world_scale;
+    let d_pos = world_sphere_center - camera_pos.xyz;
+    let d = max(sqrt(dot(d_pos, d_pos)) - world_sphere_radius, near);
+    let norm_error = simplification_error / d * b.proj[1][1] * 0.5;
+    return norm_error * b.window_height < 100.0;
+}
 void ProcessNodeBatch(uint batch_size, uint group_index)
 {
     // Each thread maps to (node slot in batch, child slot within that node).
@@ -164,20 +187,30 @@ void ProcessNodeBatch(uint batch_size, uint group_index)
 
     let child_count = (job.node.child_counts >> (child_slot_in_node * 8)) & 0xff;
 
-    let visible = node_slot_in_batch < batch_size; // && ....
-    let push_node = child_count == 255 && visible;
+    var visible = node_slot_in_batch < batch_size; // && ....
+    let is_leave = child_count != 255;
+
+    let world_matrix = b.instance_transforms.val[job.instance];
+    // if (!is_leave) {
+        // visible = visible && !lod_error_is_imperceptible((*child_node).lod_bounds[child_slot_in_node], (*child_node).errors[child_slot_in_node], job.instance);
+    // }
+
+    let push_node = visible && !is_leave;
     if (push_node)
     {
         // Reserve one slot per visible internal child node.
         WaveInterlockedAddScalar(GroupNumCandidateNodes, push_node, 1u, node_write_offset_in_group);
     }
 
-
-    if (visible && !push_node) {
-        var slot = 0;
-        InterlockedAdd(b.queue_state.val.meshlet_count, uint(child_count), slot);
-        for(int i = 0; i < child_count; i++) {
-            b.meshlets.val[slot + i] = InstancedMeshlet(job.instance, (Meshlet *)(((uint64_t)child_node) + i * sizeof(Meshlet)));
+    if (is_leave && visible) {
+        let header = b.instance_headers.val[job.instance];
+        for (int i = 0; i < child_count; i++) {
+            let cull_data = (CullData *)((((uint64_t)child_node) + i) * sizeof(CullData) + header.cull_data_offset);
+            // if (lod_error_is_imperceptible(cull_data.lod_group_sphere, cull_data.aabb.center_and_error.w, job.instance)) {
+                var slot = 0;
+                InterlockedAdd(b.queue_state.val.meshlet_count, 1, slot);
+                b.meshlets.val[slot] = InstancedMeshlet(job.instance, (Meshlet *)((((uint64_t)child_node) + i) * sizeof(Meshlet) + header.meshlet_offset));
+            // }
         }
     }
 
@@ -201,37 +234,19 @@ void ProcessNodeBatch(uint batch_size, uint group_index)
 
     DeviceMemoryBarrierWithGroupSync();
 
-
-
-    // GroupMemoryBarrierWithGroupSync();
+    // AllMemoryBarrierWithGroupSync();
+    
     // if (group_index == 0)
     // {
     //     GroupLeafCount = 0;
     // }
     // GroupMemoryBarrierWithGroupSync();
 
-    // Collect visible leaf nodes for group-wide parallel candidate emission.
-    // if (bVisible && bIsLeaf)
+    // // Collect visible leaf nodes for group-wide parallel candidate emission.
+    // if (visible && child_count == 255)
     // {
-    //     const uint groupID = childNode.GetGroupIndex();
-
-    //     globallycoherent RWByteAddressBuffer requestMaskUAV = GetGeometryStreamingRequestMaskBufferUAV();
-    //     const uint requestMaskAddress = (groupID >> 5) << 2;
-    //     const uint requestBitMask = 1u << (groupID & 31);
-    //     uint originalTemp;
-    //     requestMaskUAV.InterlockedOr(requestMaskAddress, requestBitMask, originalTemp);
-
-    //     StructuredBuffer<GroupDataLocation> groupDataLocationSRV = GetGroupDataLocationBufferSRV();
-    //     GroupDataLocation groupDataLocation = groupDataLocationSRV[groupID];
-    //     bool bResident = groupDataLocation.ChunkIndex != INVALID_ID;
-
-    //     uint leafOffsetInGroup = 0;
-    //     WaveInterlockedAddScalar(GroupLeafCount, bResident, 1u, leafOffsetInGroup);
-    //     if (bResident)
-    //     {
-    //         GroupLeafKey[leafOffsetInGroup] = uint2(instanceIndex, groupID);
-    //         GroupLeafMeshletCount[leafOffsetInGroup] = childNode.GetMeshletCount();
-    //     }
+    //     GroupLeafKey[leafOffsetInGroup] = uint2(instanceIndex, groupID);
+    //     GroupLeafMeshletCount[leafOffsetInGroup] = childNode.GetMeshletCount();
     // }
 
     // GroupMemoryBarrierWithGroupSync();

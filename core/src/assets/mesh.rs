@@ -7,7 +7,8 @@ use bytemuck::{Pod, Zeroable, try_cast_vec};
 use glam::{Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use itertools::Itertools;
 use meshopt::{
-    SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_position_remap, generate_vertex_remap_multi, simplify_with_attributes_and_locks
+    SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_position_remap,
+    generate_vertex_remap_multi, simplify_with_attributes_and_locks,
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
@@ -69,7 +70,7 @@ impl AabbPtr {
 
 pub struct MeshletMesh {
     pub meshlet_offset: u32,
-    pub meshlet_count: u32,
+    pub cull_data_offset: u32,
     pub vertex_offset: u32,
     pub index_offset: u32,
     pub aabb: AabbError,
@@ -98,12 +99,8 @@ impl MeshletMesh {
         let position_only_vertex_remap = generate_position_remap(&vertex_adapter);
 
         // Split the mesh into an initial list of meshlets (LOD 0)
-        let (mut meshlets, mut cull_data) = compute_meshlets(
-            &indices,
-            &vertex_adapter,
-            &position_only_vertex_remap,
-            None,
-        );
+        let (mut meshlets, mut cull_data) =
+            compute_meshlets(&indices, &vertex_adapter, &position_only_vertex_remap, None);
 
         let mut vertex_locks = vec![false; vertices.len()];
 
@@ -176,7 +173,10 @@ impl MeshletMesh {
                     &simplified_group_indices,
                     &vertex_adapter,
                     &position_only_vertex_remap,
-                    Some((BoundingSphere::new(group.lod_bounds.xyz(), group.lod_bounds.w), group.parent_error)),
+                    Some((
+                        BoundingSphere::new(group.lod_bounds.xyz(), group.lod_bounds.w),
+                        group.parent_error,
+                    )),
                 );
 
                 Ok((group, new_meshlets))
@@ -224,16 +224,15 @@ impl MeshletMesh {
 
         let (bvh, aabb, depth) = bvh.build(&mut meshlets, all_groups, &mut cull_data);
 
-        let mut mmeshlets = Vec::with_capacity(meshlets.len());
-        for meshlet in meshlets.meshlets.iter() {
-            mmeshlets.push(Meshlet {
+        let mmeshlets: Vec<_> = meshlets.meshlets.into_iter().map(|meshlet| {
+            Meshlet {
                 triangle_count: meshlet.triangle_count,
                 triangle_index: meshlet.triangle_offset as u64,
                 vertex_count: meshlet.vertex_count,
                 vertex_index: meshlet.vertex_offset as u64,
                 pad: UVec2 { x: 0, y: 0 },
-            });
-        }
+            }
+        }).collect();
         let verticies = vertices
             .iter()
             .enumerate()
@@ -272,22 +271,23 @@ impl MeshletMesh {
                 + meshlets.triangles.len()
                 + cull_data.len() * size_of::<CullData>(),
         );
-        let meshlet_count = mmeshlets.len() as u32;
-        let meshlet_offset = (bvh.len() * size_of::<BvhNode>()) as u32;
+
         data.append(&mut cast_vec_trust_me_bro(bvh));
+        let meshlet_offset = data.len() as u32;
         data.append(&mut cast_vec_trust_me_bro(mmeshlets));
+        let cull_data_offset = data.len() as u32;
+        data.append(&mut cast_vec_trust_me_bro(cull_data));
         let vertex_offset = data.len() as u32;
         data.append(&mut cast_vec_trust_me_bro(duped_verticies));
         let index_offset = data.len() as u32;
         data.append(&mut cast_vec_trust_me_bro(meshlets.triangles));
-        data.append(&mut cast_vec_trust_me_bro(cull_data));
 
         Self {
             index_offset,
             vertex_offset,
             aabb,
             data,
-            meshlet_count,
+            cull_data_offset,
             meshlet_offset,
         }
     }
@@ -397,6 +397,7 @@ fn compute_meshlets(
                 assert!(bounds.radius >= 0.0);
                 (BoundingSphere::new(bounds.center, bounds.radius), 0.0)
             });
+
 
             cull_data.push(TempMeshletCullData {
                 aabb: Aabb3d::from_point_cloud(
@@ -541,7 +542,6 @@ fn lock_group_borders(
         vertex_locks[i] = position_only_locks[vertex_id] == -2;
     }
 }
-
 
 fn simplify_meshlet_group(
     group: &TempMeshletGroup,
@@ -816,14 +816,13 @@ impl BvhBuilder {
                 out.aabb_and_offsets[i] = aabb_to_meshlet(group.aabb, group.meshlets[0]);
                 out.errors[i] = group.parent_error;
                 out.lod_bounds[i] = group.lod_bounds;
-                out.set_child_count(i, group.meshlets[1] as _);
+                out.set_child_count(i, group.meshlets[1] as u8);
             } else {
                 let child_id = self.build_inner(groups, out, max_depth, child_id, depth + 1);
                 let child = &out[child_id as usize];
                 let mut aabb = aabb_default();
                 let mut parent_error = 0.0f32;
                 let mut lod_bounds = Vec4::ZERO;
-
                 for i in 0..8 {
                     if child.child_counts(i) == 0 {
                         break;
@@ -833,7 +832,10 @@ impl BvhBuilder {
                         child.aabb_and_offsets[i].center_and_offset_high.xyz(),
                         child.aabb_and_offsets[i].half_extent_and_offset_low.xyz(),
                     ));
-                    lod_bounds = merge_spheres(lod_bounds, child.lod_bounds[i]);
+                    lod_bounds = merge_spheres(
+                        lod_bounds,
+                        child.lod_bounds[i],
+                    );
                     parent_error = parent_error.max(child.errors[i]);
                 }
 

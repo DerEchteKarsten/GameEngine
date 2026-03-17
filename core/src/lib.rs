@@ -1,6 +1,6 @@
 #![feature(f16)]
-#![feature(random)]
-#![feature(arc_is_unique)]
+#![feature(random)] 
+#![feature(core_intrinsics)]
 
 use std::{
     any::type_name,
@@ -36,8 +36,8 @@ mod bindings;
 use crate::{
     assets::MeshAssets,
     components::camera::{Camera, CameraPlugin},
-    render::{PipelinedRenderingPlugin, RenderPlugin},
-    ui::{UiContext, UiPlugin, UiResources},
+    render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi},
+    ui::{UiBuilder, UiContext, UiPlugin, UiResources},
 };
 
 pub mod assets;
@@ -60,7 +60,7 @@ impl Default for UiState {
     }
 }
 
-fn ui(mut ui: ResMut<UiContext>, mut state: ResMut<UiState>, time: Res<Time>) {
+fn ui(mut ui: ResMut<UiBuilder>, mut state: ResMut<UiState>, time: Res<Time>) {
     state.delta_time_histogram.rotate_left(1);
     state.delta_time_histogram[299] = time.delta_secs() * 1000.0;
     let average = state
@@ -115,8 +115,8 @@ pub fn CorePlugin(app: &mut App) {
     app.add_plugins((
         AssetPlugin {
             mode: AssetMode::Processed,
-            file_path: format!("/home/karsten/Documents/code/GameEngine/game/assets"),
-            processed_file_path: format!("/home/karsten/Documents/code/GameEngine/game/imported_assets"),
+            file_path: format!("/home/karsten/code/GameEngine/game/assets"),
+            processed_file_path: format!("/home/karsten/code/GameEngine/game/imported_assets"),
             ..Default::default()
         },
         WinitPlugin::default(),
@@ -151,6 +151,7 @@ pub fn CorePlugin(app: &mut App) {
         RenderPlugin::default(),
         PipelinedRenderingPlugin::default(),
         UiPlugin,
+        RenderDebugUi,
     ))
     .add_systems(Update, ui)
     .init_resource::<UiState>();

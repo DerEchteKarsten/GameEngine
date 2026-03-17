@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use crate::{
     assets::{material::Material, mesh::MeshletMesh},
-    bindings::{AabbError, BvhNode, Meshlet, Vertex},
+    bindings::{AabbError, BvhNode, CullData, Meshlet, Vertex},
     render::world::UploadQueue,
 };
 
@@ -49,12 +49,12 @@ impl Plugin for MeshAssets {
 
 #[derive(Pod, Zeroable, Clone, Copy, Debug)]
 #[repr(C)]
-struct MeshHeader {
-    meshlet_offset: u32,
-    meshlet_count: u32,
-    vertex_offset: u32,
-    index_offset: u32,
-    aabb: Aabb,
+pub struct MeshHeader {
+    pub meshlet_offset: u32,
+    pub vertex_offset: u32,
+    pub index_offset: u32,
+    pub cull_data_offset: u32,
+    pub aabb: Aabb,
 }
 
 #[derive(Pod, Zeroable, Clone, Copy, Debug)]
@@ -65,6 +65,7 @@ struct Aabb {
 }
 
 pub struct GpuMeshletMesh {
+    pub header: MeshHeader,
     pub buffer: Buffer<u8>,
     pub aabb: AabbError,
 }
@@ -297,7 +298,7 @@ impl AssetSaver for MeshSaver {
                         center: mesh.aabb.center_and_error.xyz().to_array(),
                         half_extend: mesh.aabb.half_extent.xyz().to_array(),
                     },
-                    meshlet_count: mesh.meshlet_count,
+                    cull_data_offset: mesh.cull_data_offset,
                     meshlet_offset: mesh.meshlet_offset,
                     vertex_offset: mesh.vertex_offset,
                     index_offset: mesh.index_offset,
@@ -308,6 +309,77 @@ impl AssetSaver for MeshSaver {
 
         return Ok(());
     }
+}
+
+fn check_vertex(v: Vertex) -> bool {
+    v.position_and_uv1.xyz().length() < 10000.0
+}
+
+// fn verify_bvh(buffer: BufferSlice<u8>, node: BvhNode, num_meshlets: &mut usize) -> bool {
+//     for i in 0..8 {
+//         let offset = node.aabb_and_offsets[i].offset();
+//         let offset = offset - buffer.base_address;
+//         let child_count = (node.child_counts >> i * 8) & 0xff;
+//         if child_count == 255 {
+//             if offset > buffer.size {
+//                 std::intrinsics::breakpoint();
+//                 return false;
+//             }
+//             if node.lod_bounds[i].length() > 10000.0 {
+//                 std::intrinsics::breakpoint();
+//                 return false;
+//             }
+//             let child_node = buffer.range(offset as usize..).cast()[0];
+//             if !verify_bvh(buffer, child_node, num_meshlets) {
+//                 std::intrinsics::breakpoint();
+//                 return false;
+//             }
+//         } else {
+//             *num_meshlets -= child_count as usize;
+//             for m in 0..child_count as usize {
+//                 if (offset + (m * size_of::<Meshlet>()) as u64) > buffer.size {
+//                     std::intrinsics::breakpoint();
+//                     return false;
+//                 }
+//                 let meshlet = buffer
+//                     .range(offset as usize + m * size_of::<Meshlet>()..)
+//                     .cast::<Meshlet>()[0];
+//                 let vertex_offset = meshlet.vertex_index - buffer.base_address;
+//                 if vertex_offset > buffer.size {
+//                     std::intrinsics::breakpoint();
+//                     return false;
+//                 }
+//                 for v in 0..meshlet.vertex_count {
+//                     let v_offset = vertex_offset + v as u64 * size_of::<Vertex>() as u64;
+//                     if v_offset > buffer.size {
+//                         std::intrinsics::breakpoint();
+//                         return false;
+//                     }
+//                     let vertex = buffer.range(v_offset as usize..).cast::<Vertex>()[0];
+//                     if !check_vertex(vertex) {
+//                         std::intrinsics::breakpoint();
+//                         return false;
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     true
+// }
+
+async fn read_range<'a>(reader: &mut dyn bevy::asset::io::Reader, data: &mut Option<Vec<u8>>, slice: BufferSlice<'a, u8>, start_offset: u32, end_offset: u32)-> Result<()> {
+    let len = (end_offset - start_offset) as usize;
+    if let Some(data) = data {
+        let mut slice = unsafe {
+            slice::from_raw_parts_mut(data.as_mut_ptr().add(start_offset as usize), len)
+        };
+        reader.read_exact(&mut slice).await?;
+        unsafe { data.set_len(len) };
+    } else {
+        let mut mem_slice = unsafe { slice::from_raw_parts_mut(slice.ptr(), len) };
+        reader.read_exact(&mut mem_slice).await?;
+    }
+    Ok(())
 }
 
 #[derive(TypePath)]
@@ -333,8 +405,6 @@ impl AssetLoader for MeshLoader {
         for i in 0..num_meshes {
             let mut header = MeshHeader::zeroed();
             reader.read_exact(bytes_of_mut(&mut header)).await?;
-
-            log::info!("offset of {i}: header: {:#?}, num verticies: {}", header, (header.index_offset - header.vertex_offset) as usize / size_of::<Vertex>());
             let len = read_u64(reader).await? as usize;
 
             let buffer = Buffer::new(len, false).unwrap();
@@ -363,37 +433,30 @@ impl AssetLoader for MeshLoader {
                 for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
                     let offset = aabb.offset();
                     aabb.set_offset(
-                            if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
-                                offset * size_of::<BvhNode>() as u64 + address
-                            } else {
-                                offset * size_of::<Meshlet>() as u64 + header.meshlet_offset as u64 + address
-                            },
+                        if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
+                            offset * size_of::<BvhNode>() as u64 + address
+                        } else {
+                            offset
+                        },
                     );
                 }
                 push_data(node, &mut data, &mut slice);
             }
 
-            for _ in 0..header.meshlet_count as usize {
+            let meshlet_count = (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
+
+            for _ in 0..meshlet_count {
                 let mut meshlet = Meshlet::zeroed();
                 reader.read_exact(bytes_of_mut(&mut meshlet)).await?;
-                meshlet.triangle_index = meshlet.triangle_index + header.index_offset as u64 + address;
-                meshlet.vertex_index = meshlet.vertex_index * size_of::<Vertex>() as u64 + header.vertex_offset as u64 + address;
+                meshlet.triangle_index =
+                    meshlet.triangle_index + header.index_offset as u64 + address;
+                meshlet.vertex_index = meshlet.vertex_index * size_of::<Vertex>() as u64
+                    + header.vertex_offset as u64
+                    + address;
                 push_data(meshlet, &mut data, &mut slice);
             }
 
-            let read_so_far = header.meshlet_offset as usize
-                + header.meshlet_count as usize * size_of::<Meshlet>();
-            if let Some(data) = &mut data {
-                let mut slice = unsafe {
-                    slice::from_raw_parts_mut(data.as_mut_ptr().add(read_so_far), len - read_so_far)
-                };
-                reader.read_exact(&mut slice).await?;
-                unsafe { data.set_len(len) };
-            } else {
-                let mut mem_slice =
-                    unsafe { slice::from_raw_parts_mut(slice.ptr(), slice.len()) };
-                reader.read_exact(&mut mem_slice).await?;
-            }
+            read_range(reader, &mut data, slice, header.cull_data_offset, len as u32).await?;
 
             let aabb = AabbError {
                 center_and_error: Vec3::from_array(header.aabb.center).extend(0.0),
@@ -401,18 +464,22 @@ impl AssetLoader for MeshLoader {
             };
 
             if let Some(data) = data {
-                futures.push((
-                    UploadQueue::push_buffer(data, buffer),
-                    aabb,
-                ));
-            }else {
-                meshes.push(GpuMeshletMesh { buffer, aabb })
+                futures.push((UploadQueue::push_buffer(data, buffer), aabb, header));
+            } else {
+                // #[cfg(debug_assertions)]
+                // {
+                //     let node = buffer.range(..).cast()[0];
+                //     let mut num_meshlets = meshlet_count;
+                //     // assert!(verify_bvh(buffer.range(..), node, &mut num_meshlets));
+                //     assert!(num_meshlets == 0);
+                // }    
+                meshes.push(GpuMeshletMesh { buffer, aabb, header })
             }
         }
 
-        for (receiver, aabb) in futures {
+        for (receiver, aabb, header) in futures {
             let buffer = receiver.await?;
-            meshes.push(GpuMeshletMesh { buffer, aabb });
+            meshes.push(GpuMeshletMesh { buffer, aabb, header });
         }
 
         Ok(Mesh {

@@ -18,9 +18,9 @@ use bevy::ecs::resource::Resource;
 use bevy::ecs::system::{Commands, Local, Query, Res, ResMut, SystemState};
 use bevy::transform::components::GlobalTransform;
 use futures::channel::oneshot;
+use lava::image::Image;
 use lava::image::slice::AsImage;
 use std::sync::Mutex;
-use lava::image::Image;
 
 use bevy::tasks::futures::check_ready;
 use bevy::tasks::futures_lite::future;
@@ -31,10 +31,10 @@ use glam::Mat4;
 use gpu_allocator::vulkan::Allocation;
 use lava::buffer::Buffer;
 
-use lava::buffer::slice::{BufferSlice};
+use lava::buffer::slice::BufferSlice;
 use lava::command_buffer::CommandBuffer;
 use lava::image::format::R8Uint;
-use lava::image::slice::{ImageSlice};
+use lava::image::slice::ImageSlice;
 use lava::image::usage::UsageSet;
 use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::vkobjects::acceleration_structure::AccelerationStructure;
@@ -43,9 +43,10 @@ use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2, vkobjects};
 use rand::random;
 use smallvec::SmallVec;
 
+use crate::assets::MeshHeader;
 use crate::assets::mesh::MeshletMesh;
 use crate::assets::{Mesh, material::Material};
-use crate::bindings::{AabbError, BvhNode, CullData, InstanceBvhRoot, Meshlet, Vertex};
+use crate::bindings::{self, AabbError, BvhNode, CullData, InstanceBvhRoot, Meshlet, Vertex};
 use crate::render::extract_param::Extract;
 use crate::render::render::{
     CommandPools, FrameCount, QueueStrategie, Queues, Swapchain, SynchronizationResources,
@@ -73,7 +74,9 @@ pub struct InstanceManager {
     pub transforms: Buffer<Mat4>,
     pub materials: Buffer<u32>,
     pub bvh_root_nodes: Buffer<u64>,
+    pub instance_headers: Buffer<bindings::InstanceHeader>,
     pub aabbs: Buffer<AabbError>,
+    pub headers: Vec<MeshHeader>,
     pub instance_count: usize,
 }
 
@@ -83,6 +86,7 @@ struct Instance {
     material: u32,
     bvh_root: u64,
     aabb: AabbError,
+    header: MeshHeader,
 }
 
 impl InstanceManager {
@@ -93,9 +97,12 @@ impl InstanceManager {
         self.materials[slot] = instance.material;
         self.bvh_root_nodes[slot] = instance.bvh_root;
         self.aabbs[slot] = instance.aabb;
+        self.instance_headers[slot] = bindings::InstanceHeader { meshlet_offset: instance.header.meshlet_offset as u64 + instance.bvh_root, cull_data_offset: instance.header.cull_data_offset as u64 + instance.bvh_root };
+        self.headers.push(instance.header);
     }
     fn clear(&mut self) {
         self.instance_count = 0;
+        self.headers.clear();
     }
 }
 
@@ -113,7 +120,7 @@ enum DstRef<'a> {
 
 enum SendBack {
     Buffer(oneshot::Sender<Buffer<u8>>),
-    Image(oneshot::Sender<Image>)
+    Image(oneshot::Sender<Image>),
 }
 
 struct CopyRegion {
@@ -163,15 +170,23 @@ impl UploadQueue {
     fn send_back(mut item: CopyRegion) {
         match item.send_back.take().unwrap() {
             SendBack::Buffer(buff) => {
-                let Dst::Buffer(buffer) = item.dst.take().unwrap() else {unreachable!()}; 
+                let Dst::Buffer(buffer) = item.dst.take().unwrap() else {
+                    unreachable!()
+                };
                 if let Err(_) = buff.send(buffer) {
-                    log::error!("Receiver was dropped, buffer could not be sent back and will be dropped");
+                    log::error!(
+                        "Receiver was dropped, buffer could not be sent back and will be dropped"
+                    );
                 }
-            },
+            }
             SendBack::Image(imag) => {
-                let Dst::Image(image) = item.dst.take().unwrap() else {unreachable!()}; 
+                let Dst::Image(image) = item.dst.take().unwrap() else {
+                    unreachable!()
+                };
                 if let Err(_) = imag.send(image) {
-                    log::error!("Receiver was dropped, image could not be sent back and will be dropped");
+                    log::error!(
+                        "Receiver was dropped, image could not be sent back and will be dropped"
+                    );
                 }
             }
         }
@@ -259,13 +274,15 @@ impl UploadQueue {
                 let mut regions = Vec::new();
                 let mut need_send_back = Vec::new();
                 loop {
-                    let item = if let Ok(item) = receiver.recv_timeout(Duration::from_millis(1))
-                    {
+                    let item = if let Ok(item) = receiver.recv_timeout(Duration::from_millis(1)) {
                         item
                     } else {
                         if !regions.is_empty() {
                             let len = regions.capacity();
-                            Self::flush(&res, std::mem::replace(&mut regions, Vec::with_capacity(len)));
+                            Self::flush(
+                                &res,
+                                std::mem::replace(&mut regions, Vec::with_capacity(len)),
+                            );
                             for i in need_send_back.drain(..) {
                                 Self::send_back(i);
                             }
@@ -278,25 +295,32 @@ impl UploadQueue {
                     while {
                         let staging_remaining_bytes = staging_slice.size;
                         let copy_size = src_remaining_bytes.min(staging_remaining_bytes) as usize;
-                        unsafe {
-                            staging_slice.ptr().copy_from(
-                                item.src.as_ptr(),
-                                copy_size,
-                            )
-                        };
+                        unsafe { staging_slice.ptr().copy_from(item.src.as_ptr(), copy_size) };
                         regions.push((
-                            staging_slice.byte_range((staging_slice.size - staging_remaining_bytes) as usize..(staging_slice.size -(staging_remaining_bytes.saturating_sub(copy_size as u64))) as usize),
+                            staging_slice.byte_range(
+                                (staging_slice.size - staging_remaining_bytes) as usize
+                                    ..(staging_slice.size
+                                        - (staging_remaining_bytes
+                                            .saturating_sub(copy_size as u64)))
+                                        as usize,
+                            ),
                             match item.dst.as_ref().unwrap() {
                                 Dst::Buffer(buffer) => {
-                                    let slice = buffer.range((buffer.size()-src_remaining_bytes) as usize..(buffer.size()-(src_remaining_bytes.saturating_sub(copy_size as u64))) as usize);
+                                    let slice = buffer.range(
+                                        (buffer.size() - src_remaining_bytes) as usize
+                                            ..(buffer.size()
+                                                - (src_remaining_bytes
+                                                    .saturating_sub(copy_size as u64)))
+                                                as usize,
+                                    );
                                     DstRef::Buffer(unsafe { std::mem::transmute(slice) })
-                                },
+                                }
                                 Dst::Image(image) => {
                                     if item.src.len() > STAGING_BUFFER_SIZE {
                                         todo!("KOPFSCHMERZEN")
                                     }
                                     DstRef::Image(unsafe { std::mem::transmute(image.whole()) })
-                                },
+                                }
                             },
                         ));
                         staging_slice = staging_slice.byte_range(copy_size..);
@@ -306,7 +330,10 @@ impl UploadQueue {
                     } {
                         let len = regions.capacity();
                         flushed = true;
-                        Self::flush(&res, std::mem::replace(&mut regions, Vec::with_capacity(len)));
+                        Self::flush(
+                            &res,
+                            std::mem::replace(&mut regions, Vec::with_capacity(len)),
+                        );
                         staging_slice = res.staging.range(..);
                     }
                     if flushed {
@@ -314,7 +341,7 @@ impl UploadQueue {
                         for i in need_send_back.drain(..) {
                             Self::send_back(i);
                         }
-                    }else {
+                    } else {
                         need_send_back.push(item);
                     }
                 }
@@ -397,11 +424,13 @@ impl UploadQueue {
 
 pub(super) fn init_world(mut cmd: Commands) {
     cmd.insert_resource(InstanceManager {
+        instance_headers: Buffer::new(1024*16, true).unwrap(),
         aabbs: Buffer::new(1024 * 16, true).unwrap(),
         transforms: Buffer::new(1024 * 16, true).unwrap(),
         bvh_root_nodes: Buffer::new(1024 * 16, true).unwrap(),
         materials: Buffer::new(1024 * 16, true).unwrap(),
         instance_count: 0,
+        headers: Vec::with_capacity(1024* 16),
     });
     cmd.init_resource::<FrameCount>();
 }
@@ -410,12 +439,7 @@ fn extract_meshlet_instances(
     mut instance_manager: ResMut<InstanceManager>,
     mut main_world: ResMut<MainWorld>,
     mut system_state: Local<
-        Option<
-            SystemState<(
-                Query<(&Model, &GlobalTransform)>,
-                Res<Assets<Mesh>>,
-            )>,
-        >,
+        Option<SystemState<(Query<(&Model, &GlobalTransform)>, Res<Assets<Mesh>>)>>,
     >,
 ) {
     instance_manager.clear();
@@ -423,18 +447,20 @@ fn extract_meshlet_instances(
         *system_state = Some(SystemState::new(&mut main_world));
     }
     let system_state = system_state.as_mut().unwrap();
-    let (instances_query, assets) =
-        system_state.get_mut(&mut main_world);
+    let (instances_query, assets) = system_state.get_mut(&mut main_world);
 
     for (instance, transform) in &instances_query {
         if let Some(mesh) = assets.get(&instance.model) {
-            let transform = transform.affine();
+            let (scale, rotation, translation) = transform.affine().to_scale_rotation_translation(); //HUGE TODO
+            let mat = Mat4::from_scale_rotation_translation(scale, rotation, translation);
             for (i, mesh_index) in mesh.instance_mesh.iter().enumerate() {
+                let mat = mesh.instance_transforms[i] * mat;
                 instance_manager.add_instance(Instance {
+                    header: mesh.meshes[*mesh_index as usize].header,
                     aabb: mesh.meshes[*mesh_index as usize].aabb,
                     bvh_root: mesh.meshes[*mesh_index as usize].buffer.address,
                     material: mesh.instance_materials[i],
-                    transform: mesh.instance_transforms[i],
+                    transform: mat,
                 });
             }
         }

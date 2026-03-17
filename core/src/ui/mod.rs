@@ -5,7 +5,7 @@ use bevy::{
         query::With,
         resource::Resource,
         schedule::IntoScheduleConfigs,
-        system::{Commands, NonSendMut, Res, ResMut, Single},
+        system::{Commands, NonSendMut, Res, ResMut, Single}, world::Mut,
     },
     input::{
         ButtonState,
@@ -20,14 +20,12 @@ use futures::channel::oneshot;
 use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
 use imgui::{FontSource, Io};
+use lava::image::{Image, format::R8Unorm, slice::AsImage, usage::Sampled};
 use lava::{
     bindless::BindlessHandle,
     buffer::{Buffer, slice::BufferSlice},
     command_buffer::CommandBuffer,
     state::Ctx,
-};
-use lava::{
-    image::{Image, format::R8Unorm, slice::AsImage, usage::Sampled},
 };
 use std::{
     collections::HashMap,
@@ -52,17 +50,25 @@ use crate::{
 #[derive(Resource)]
 pub struct UiContext {
     ctx: imgui::Context,
-    ui: *mut imgui::Ui,
 }
 
 unsafe impl Send for UiContext {}
 unsafe impl Sync for UiContext {}
 
-impl UiContext {
+#[derive(Resource)]
+pub struct UiBuilder {
+    ui: *mut imgui::Ui,
+}
+
+unsafe impl Send for UiBuilder {}
+unsafe impl Sync for UiBuilder {}
+
+impl UiBuilder {
     pub fn ui(&mut self) -> Option<&mut imgui::Ui> {
         unsafe { self.ui.as_mut() }
     }
 }
+
 
 fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
     let igkey = match key {
@@ -231,57 +237,76 @@ fn read_input(
 }
 
 fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
-    resources.verticies[frame.frame_in_flight()].range(..).copy_from(&resources.pending_verticies);
-    resources.indicies[frame.frame_in_flight()].range(..).copy_from(&resources.pending_indicies);
+    resources.verticies[frame.frame_in_flight()]
+        .range(..)
+        .copy_from(&resources.pending_verticies);
+    resources.indicies[frame.frame_in_flight()]
+        .range(..)
+        .copy_from(&resources.pending_indicies);
+    if resources.verticies.len() > 10000 {
+        log::error!("not enougth space");
+    }
+
+    if resources.indicies.len() > 10000 {
+        log::error!("not enougth space");
+    }
     resources.num_indicies[frame.frame_in_flight()] = resources.pending_indicies.len() as u32;
     resources.pending_verticies.clear();
     resources.pending_indicies.clear();
 }
 
-fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) {
-    let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
-    if ctx.ui().is_none() {
-        log::info!("building font atlas");
-        let atlas = ctx.ctx.fonts().build_alpha8_texture();
-        let image = Image::new(atlas.width, atlas.height).unwrap();
-        let mut data = Vec::with_capacity(atlas.data.len());
-        data.extend_from_slice(atlas.data);
-        let image = block_on(UploadQueue::push_image(data, image)).unwrap();
-
-        resources.font_atlas = Some(image);
-        ctx.ui = ctx.ctx.new_frame() as *mut _;
-        return;
-    }
-    let draw_data = ctx.ctx.render();
-
-    let transform = Vec2::from(draw_data.display_pos);
-    let scale = Vec2::from(draw_data.display_size);
-    if draw_data.draw_lists_count() != 0 {
-        for list in draw_data.draw_lists() {
-            let vertex_offset = resources.pending_verticies.len() as u32;
-            let indicies = list.idx_buffer().iter().map(|i| *i as u32 + vertex_offset);
-            let verticies = list.vtx_buffer().iter().map(|v| UIVertex {
-                color: Vec4::new(
-                    v.col[0] as f32 / 255.0,
-                    v.col[1] as f32 / 255.0,
-                    v.col[2] as f32 / 255.0,
-                    v.col[3] as f32 / 255.0,
-                ),
-                pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0
-                    - Vec2::splat(1.0)),
-                uv: Vec2::new(v.uv[0], v.uv[1]),
-            });
-            resources.pending_indicies.extend(indicies);
-            resources.pending_verticies.extend(verticies);
+fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) {    
+    world.resource_scope(|world, mut builder: Mut<UiBuilder>| {
+        let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
+        if builder.ui().is_none() {
+            log::info!("building font atlas");
+            let atlas = ctx.ctx.fonts().build_alpha8_texture();
+            let image = Image::new(atlas.width, atlas.height).unwrap();
+            let mut data = Vec::with_capacity(atlas.data.len());
+            data.extend_from_slice(atlas.data);
+            let image = block_on(UploadQueue::push_image(data, image)).unwrap();
+    
+            resources.font_atlas = Some(image);
+            builder.ui = ctx.ctx.new_frame() as *mut _;
+            return;
         }
-    }
-    ctx.ui = ctx.ctx.new_frame() as *mut _;
+        let draw_data = ctx.ctx.render();
+        
+        let transform = Vec2::from(draw_data.display_pos);
+        let scale = Vec2::from(draw_data.display_size);
+        if draw_data.draw_lists_count() != 0 {
+            for list in draw_data.draw_lists() {
+                let vertex_offset = resources.pending_verticies.len() as u32;
+                let indicies = list.idx_buffer().iter().map(|i| *i as u32 + vertex_offset);
+                let verticies = list.vtx_buffer().iter().map(|v| UIVertex {
+                    color: Vec4::new(
+                        v.col[0] as f32 / 255.0,
+                        v.col[1] as f32 / 255.0,
+                        v.col[2] as f32 / 255.0,
+                        v.col[3] as f32 / 255.0,
+                    ),
+                    pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0
+                        - Vec2::splat(1.0)),
+                    uv: Vec2::new(v.uv[0], v.uv[1]),
+                });
+                resources.pending_indicies.extend(indicies);
+                resources.pending_verticies.extend(verticies);
+            }
+        }
+        builder.ui = ctx.ctx.new_frame() as *mut _;
+    });
 }
 
 fn init(mut commands: Commands) {
     commands.insert_resource(UiResources {
-        verticies: [Buffer::new(10000, true).unwrap(), Buffer::new(10000, true).unwrap()],
-        indicies: [Buffer::new(10000, true).unwrap(), Buffer::new(10000, true).unwrap()],
+        verticies: [
+            Buffer::new(10000, true).unwrap(),
+            Buffer::new(10000, true).unwrap(),
+        ],
+        indicies: [
+            Buffer::new(10000, true).unwrap(),
+            Buffer::new(10000, true).unwrap(),
+        ],
         font_atlas: None,
         pending_indicies: Vec::new(),
         pending_verticies: Vec::new(),
@@ -312,7 +337,9 @@ pub fn UiPlugin(app: &mut App) {
             .add_font(&[FontSource::DefaultFontData { config: None }]);
         UiContext {
             ctx,
-            ui: std::ptr::null_mut(),
         }
+    })
+    .insert_resource(UiBuilder {
+        ui: std::ptr::null_mut(),
     });
 }

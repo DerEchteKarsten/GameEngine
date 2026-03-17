@@ -82,16 +82,16 @@ pub fn update_mouse_move(
     window: Single<&Window>,
 ) {
     if keys.pressed(KeyCode::ArrowUp) {
-        controls.pitch -= 0.01 * SENSITIVITY;
+        controls.pitch -= 0.08 * SENSITIVITY;
     }
     if keys.pressed(KeyCode::ArrowDown) {
-        controls.pitch += 0.01 * SENSITIVITY;
+        controls.pitch += 0.08 * SENSITIVITY;
     }
     if keys.pressed(KeyCode::ArrowLeft) {
-        controls.yaw -= 0.01 * SENSITIVITY;
+        controls.yaw -= 0.08 * SENSITIVITY;
     }
     if keys.pressed(KeyCode::ArrowRight) {
-        controls.yaw += 0.01 * SENSITIVITY;
+        controls.yaw += 0.08 * SENSITIVITY;
     }
 
     let size = window.size();

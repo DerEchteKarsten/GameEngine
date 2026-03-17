@@ -2081,6 +2081,7 @@ dependencies = [
  "bevy",
  "core",
  "glam",
+ "walkdir",
 ]
 
 [[package]]
@@ -2129,6 +2130,7 @@ dependencies = [
  "bytemuck",
  "encase",
  "libm",
+ "mint",
  "rand",
  "serde_core",
 ]

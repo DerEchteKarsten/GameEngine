@@ -1,4 +1,6 @@
+use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::mem::offset_of;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -6,16 +8,24 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+use bevy::app::App;
+use bevy::app::PreUpdate;
+use bevy::app::Startup;
+use bevy::app::Update;
 use bevy::ecs::message::MessageReader;
 use bevy::ecs::query::With;
 use bevy::ecs::resource::Resource;
+use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::Commands;
+use bevy::ecs::system::If;
 use bevy::ecs::system::Local;
 use bevy::ecs::system::Query;
 use bevy::ecs::system::Res;
 use bevy::ecs::system::ResMut;
 use bevy::ecs::system::Single;
 use bevy::ecs::system::SystemState;
+use bevy::tasks::AsyncComputeTaskPool;
+use bevy::tasks::Task;
 use bevy::time::Time;
 use bevy::window::PrimaryWindow;
 use bevy::window::Window;
@@ -23,6 +33,7 @@ use bevy::window::Window;
 use bevy::window::WindowResized;
 use glam::UVec2;
 use glam::Vec4;
+use imgui::TreeNodeFlags;
 use itertools::Itertools;
 use lava::command_buffer::Filter;
 use lava::command_buffer::RasterVertexDispatch;
@@ -43,6 +54,7 @@ use lava::vkobjects;
 use lava::vkobjects::queue::Binary;
 use lava::vkobjects::queue::CommandBufferMemory;
 use lava::vkobjects::queue::CommandPool;
+use lava::vkobjects::queue::Event;
 use lava::vkobjects::queue::Gfx;
 use lava::vkobjects::queue::Present;
 use lava::vkobjects::queue::Queue;
@@ -64,15 +76,24 @@ use crate::bindings::Meshlet;
 use crate::bindings::Post;
 use crate::bindings::PostBindings;
 use crate::bindings::Raster;
+use crate::bindings::RasterAll;
+use crate::bindings::RasterAllBindings;
 use crate::bindings::RasterBindings;
 use crate::bindings::RasterUi;
 use crate::bindings::RasterUiBindings;
 use crate::bindings::TraversalVariables;
 use crate::bindings::UIVertex;
+use crate::render::ExtractSchedule;
 use crate::render::MainWorld;
+use crate::render::Render;
+use crate::render::RenderApp;
+use crate::render::RenderStartup;
+use crate::render::RenderSystems;
 use crate::render::extract_param::Extract;
 use crate::render::world::InstanceManager;
 use crate::render::world::UploadQueue;
+use crate::ui::UiBuilder;
+use crate::ui::UiContext;
 use crate::ui::UiResources;
 use crate::{components::camera::Camera, render::FRAMES_IN_FLIGHT};
 
@@ -162,14 +183,6 @@ pub fn aquire_swapchain_image(
         swapchain.aquire_image(&sync.image_available[frame.frame_in_flight()], None);
 }
 
-pub struct RenderResources {
-    depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
-    color_attachment: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
-    meshlets: Buffer<InstancedMeshlet>,
-    bvh_node_stack: Buffer<InstanceBvhRoot>,
-    variables: Buffer<TraversalVariables>,
-}
-
 pub fn resize_swapchain(
     mut swapchain: ResMut<Swapchain>,
     window: Extract<Single<&Window, With<PrimaryWindow>>>,
@@ -209,12 +222,12 @@ pub fn init_render(mut cmd: Commands) {
         },
     };
     cmd.insert_resource(swapchain);
-    let pools: [CommandPool; 2] = (0..FRAMES_IN_FLIGHT)
+    let pools: [CommandPool; FRAMES_IN_FLIGHT] = (0..FRAMES_IN_FLIGHT)
         .map(|_| queues.graphics.with(|queue| queue.create_pool()))
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
-    let command_buffers: [CommandBufferMemory; 2] = pools
+    let command_buffers: [CommandBufferMemory; FRAMES_IN_FLIGHT] = pools
         .iter()
         .map(|p| p.create_command_buffer())
         .collect::<Vec<_>>()
@@ -241,6 +254,49 @@ pub struct ResourceStates {
     resource_states: Option<HashMap<ResourceHandle, ResourceState>>,
 }
 
+pub struct RenderResources {
+    depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
+    color_attachment: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
+    meshlets: Buffer<InstancedMeshlet>,
+    bvh_node_stack: Buffer<InstanceBvhRoot>,
+    variables: Buffer<TraversalVariables>,
+}
+
+#[derive(Resource, Default, Clone)]
+pub struct RenderValues {
+    meshlet_count: u32,
+    instance_count: u32,
+}
+
+
+#[derive(Resource, Default, Clone)]
+pub struct RenderSettings {
+    test: u32,
+}
+
+pub fn settings_ui(mut ui: ResMut<UiBuilder>, res: Res<RenderValues>) {
+    let Some(ui) = ui.ui() else {return;};
+    ui.window("Render Settings").build(|| {
+        ui.text(format!("Num Meshlets: {}", res.meshlet_count));
+        ui.text(format!("Num Instances: {}", res.instance_count));
+
+        if ui.collapsing_header("Shader Output:", TreeNodeFlags::DEFAULT_OPEN) {
+            let out = Ctx::log_debug_printf_output();
+            let set = out.into_iter().collect::<BTreeSet<String>>();
+            for i in set {
+                ui.text(i);
+            }
+        }
+            
+    }).unwrap();
+}
+
+pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<RenderValues>) {
+    log::info!("extracgin");
+    world.insert_resource(values.clone());
+    cmd.insert_resource(world.get_resource::<RenderSettings>().unwrap().clone());
+}
+
 pub fn render(
     camera: Res<Camera>,
     instances: Res<InstanceManager>,
@@ -248,20 +304,26 @@ pub fn render(
     queues: Res<Queues>,
     mut resources: Local<Option<RenderResources>>,
     mut resource_states: ResMut<ResourceStates>,
-    cmds: ResMut<CommandPools>,
+    cmds: Res<CommandPools>,
     frame: Res<FrameCount>,
     sync: Res<SynchronizationResources>,
     swapchain: Res<Swapchain>,
+    mut values: ResMut<RenderValues>,
 ) {
+    log::info!("rendering");
     let resources = resources.get_or_insert_with(|| RenderResources {
         depth_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
             .unwrap(),
         color_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
             .unwrap(),
-        meshlets: Buffer::new(1024 * 16, false).unwrap(),
+        meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
         bvh_node_stack: Buffer::new(2 * 1024 * 1024, false).unwrap(),
-        variables: Buffer::new(1, false).unwrap()
+        variables: Buffer::new(1, false).unwrap(),
     });
+
+    
+    values.instance_count = 67;//instances.instance_count as u32;
+    values.meshlet_count = 67;//resources.variables[0].meshlet_count;
 
     let states = queues.graphics.with(|queue| {
         queue
@@ -276,24 +338,45 @@ pub fn render(
                         camera.projection_matrix(UVec2::from_array(swapchain.size).as_vec2());
                     let view = camera.view_matrix();
 
+                    // for i in resources.meshlets.range(0..10) {
+                    //     log::info!("{:#?}", i);
+                    // }
+
                     if instances.instance_count > 0 {
                         cmd.fill_buffer(resources.bvh_node_stack.range(..), !0);
-                        cmd.update_buffer(resources.variables.range(..), &TraversalVariables { pad:0, node_count: 0, read_offset: 0, write_offset: 0, meshlet_count: 0, first_instance: 0, first_vertex: 0, vertex_count: 255});
+                        cmd.update_buffer(
+                            resources.variables.range(..),
+                            &TraversalVariables {
+                                pad: 0,
+                                node_count: 0,
+                                read_offset: 0,
+                                write_offset: 0,
+                                meshlet_count: 0,
+                                first_instance: 0,
+                                first_vertex: 0,
+                                vertex_count: 128 * 3,
+                            },
+                        );
                         cmd.compute::<InstanceCull>()
                             .bind(InstanceCullBindings {
                                 bvh_node_stack: resources.bvh_node_stack.range(..),
                                 instance_bvh_root_nodes: instances.bvh_root_nodes.range(..),
                                 num_instances: instances.instance_count as u64,
-                                variables: resources.variables.range(..)
+                                variables: resources.variables.range(..),
                             })
                             .dispatch(instances.instance_count.div_ceil(64) as u32, 1, 1);
                         cmd.compute::<BvhCull>()
                             .bind(BvhCullBindings {
+                                instance_headers: instances.instance_headers.range(..),
                                 meshlets: resources.meshlets.range(..),
                                 queue: resources.bvh_node_stack.range(..),
-                                queue_state: resources.variables.range(..)
+                                queue_state: resources.variables.range(..),
+                                camera_pos: camera.position.extend(0.0),
+                                proj,
+                                window_height: swapchain.size[1] as f32,
+                                instance_transforms: instances.transforms.range(..),
                             })
-                            .dispatch(1000, 1, 1);
+                            .dispatch(80, 1, 1);
                         cmd.raster::<Raster>()
                             .bind(RasterBindings {
                                 proj: proj.clone(),
@@ -307,7 +390,12 @@ pub fn render(
                             .draw(
                                 swapchain.size[0],
                                 swapchain.size[1],
-                                RasterVertexDispatch::DrawIndirect { buffer: resources.variables.byte_range(offset_of!(TraversalVariables, vertex_count)..).cast() },
+                                RasterVertexDispatch::DrawIndirect {
+                                    buffer: resources
+                                        .variables
+                                        .byte_range(offset_of!(TraversalVariables, vertex_count)..)
+                                        .cast(),
+                                },
                             );
                     }
 
@@ -331,21 +419,6 @@ pub fn render(
                             1,
                         );
 
-                    // if instances.instance_count > 0 {
-                    //     let num_verticies = 6705;
-                    //     cmd.compute::<bindings::DrawVerticies>()
-                    //         .bind(bindings::DrawVerticiesBindings {
-                    //             instance: 0,
-                    //             instances: instances.bvh_root_nodes.whole().cast(),
-                    //             num_verticies,
-                    //             offset: 3552,
-                    //             out: swapchain.image().as_storage(),
-                    //             proj: proj.clone(),
-                    //             view: view.clone(),
-                    //             window_size: UVec2::new(swapchain.size[0], swapchain.size[1]),
-                    //         })
-                    //         .dispatch(num_verticies.div_ceil(64), 1, 1);
-                    // }
 
                     if let Some(font_atlas) = &ui_resources.font_atlas {
                         cmd.raster::<RasterUi>()
@@ -369,23 +442,13 @@ pub fn render(
                                     instance_count: 1,
                                 },
                             );
-                        cmd.blit_image(
-                            font_atlas.whole(),
-                            swapchain.image().region(UVec2::new(
-                                font_atlas.extent.width,
-                                font_atlas.extent.height,
-                            )),
-                            Filter::Nearest,
-                        );
                     }
                     cmd.present(swapchain.image());
                 },
             )
             .unwrap()
     });
-    #[cfg(debug_assertions)]
-    Ctx::log_debug_printf_output();
-
+   
     resource_states.resource_states = Some(states);
     if let Some(present) = &queues.present {
         present
@@ -406,4 +469,29 @@ pub fn render(
                 .unwrap()
         });
     }
+}
+
+
+pub fn RenderPassesPlugin(app: &mut App) {
+    app.add_systems(
+        Render,
+        (
+            wait_frames_in_flight.in_set(RenderSystems::WaitFences),
+            aquire_swapchain_image.in_set(RenderSystems::AquireSwapchainImage),
+            render.in_set(RenderSystems::Render),
+        ),
+    )
+    .add_systems(RenderStartup, init_render);
+}
+
+pub fn RenderDebugUi(app: &mut App) {
+    app
+        .insert_resource(RenderValues::default())
+        .insert_resource(RenderSettings::default())
+        .add_systems(Update, settings_ui);
+
+    let render_app = app.get_sub_app_mut(RenderApp).unwrap();
+    render_app.add_systems(ExtractSchedule, extract_ui)
+        .insert_resource(RenderSettings::default())
+        .insert_resource(RenderValues::default());
 }
