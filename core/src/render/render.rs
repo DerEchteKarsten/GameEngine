@@ -96,6 +96,7 @@ use crate::ui::UiBuilder;
 use crate::ui::UiContext;
 use crate::ui::UiResources;
 use crate::{components::camera::Camera, render::FRAMES_IN_FLIGHT};
+use tracing::info;
 
 #[derive(Resource)]
 pub struct CommandPools {
@@ -189,7 +190,7 @@ pub fn resize_swapchain(
 ) {
     let size = window.physical_size().to_array();
     if size != swapchain.size {
-        log::info!("Resized Swapchain");
+        info!("Resized Swapchain");
         swapchain.swpachain.recreate(size);
     }
 }
@@ -279,20 +280,10 @@ pub fn settings_ui(mut ui: ResMut<UiBuilder>, res: Res<RenderValues>) {
     ui.window("Render Settings").build(|| {
         ui.text(format!("Num Meshlets: {}", res.meshlet_count));
         ui.text(format!("Num Instances: {}", res.instance_count));
-
-        if ui.collapsing_header("Shader Output:", TreeNodeFlags::DEFAULT_OPEN) {
-            let out = Ctx::log_debug_printf_output();
-            let set = out.into_iter().collect::<BTreeSet<String>>();
-            for i in set {
-                ui.text(i);
-            }
-        }
-            
     }).unwrap();
 }
 
 pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<RenderValues>) {
-    log::info!("extracgin");
     world.insert_resource(values.clone());
     cmd.insert_resource(world.get_resource::<RenderSettings>().unwrap().clone());
 }
@@ -310,7 +301,6 @@ pub fn render(
     swapchain: Res<Swapchain>,
     mut values: ResMut<RenderValues>,
 ) {
-    log::info!("rendering");
     let resources = resources.get_or_insert_with(|| RenderResources {
         depth_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
             .unwrap(),
@@ -322,8 +312,8 @@ pub fn render(
     });
 
     
-    values.instance_count = 67;//instances.instance_count as u32;
-    values.meshlet_count = 67;//resources.variables[0].meshlet_count;
+    values.instance_count = instances.instance_count as u32;
+    values.meshlet_count = resources.variables[0].meshlet_count;
 
     let states = queues.graphics.with(|queue| {
         queue
@@ -373,6 +363,7 @@ pub fn render(
                                 queue_state: resources.variables.range(..),
                                 camera_pos: camera.position.extend(0.0),
                                 proj,
+                                clip_from_world: (proj * view).transpose(),
                                 window_height: swapchain.size[1] as f32,
                                 instance_transforms: instances.transforms.range(..),
                             })
@@ -419,29 +410,28 @@ pub fn render(
                             1,
                         );
 
-
                     if let Some(font_atlas) = &ui_resources.font_atlas {
-                        cmd.raster::<RasterUi>()
-                            .bind(RasterUiBindings {
-                                font_atlas: font_atlas.as_sampled(),
-                                indicies: ui_resources.indicies[frame.frame_in_flight()]
-                                    .range(..)
-                                    .cast(),
-                                verticies: ui_resources.verticies[frame.frame_in_flight()]
-                                    .range(..)
-                                    .cast(),
-                            })
-                            .backface_culling(false)
-                            .color_attachment(swapchain.image(), None)
-                            .draw(
-                                swapchain.size[0],
-                                swapchain.size[1],
-                                RasterVertexDispatch::Draw {
-                                    vertex_count: ui_resources.num_indicies
-                                        [frame.frame_in_flight()],
-                                    instance_count: 1,
-                                },
-                            );
+                        for list in &ui_resources.draw_lists[frame.frame_in_flight()] {
+                            cmd.raster::<RasterUi>()
+                                .bind(RasterUiBindings {
+                                    font_atlas: font_atlas.as_sampled(),
+                                    indicies: ui_resources.indicies[frame.frame_in_flight()]
+                                        .range(list.start_index as usize..),
+                                    verticies: ui_resources.verticies[frame.frame_in_flight()]
+                                        .range(list.start_vertex as usize..),
+                                })
+                                .backface_culling(false)
+                                .color_attachment(swapchain.image(), None)
+                                .draw_scissored(
+                                    RasterVertexDispatch::Draw {
+                                        vertex_count: list.count,
+                                        instance_count: 1,
+                                    },
+                                    swapchain.size[0],
+                                    swapchain.size[1],
+                                    &[list.clip_rect]
+                                );
+                        }
                     }
                     cmd.present(swapchain.image());
                 },

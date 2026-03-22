@@ -20,6 +20,7 @@ pub struct CBvhCullBindings {
     pub instance_headers: u64,
     pub camera_pos: Vec4,
     pub proj: Mat4,
+    pub clip_from_world: Mat4,
     pub window_height: f32,
 }
 
@@ -31,6 +32,7 @@ pub struct BvhCullBindings<'a> {
     pub instance_headers: BufferSlice<'a, InstanceHeader>,
     pub camera_pos: Vec4,
     pub proj: Mat4,
+    pub clip_from_world: Mat4,
     pub window_height: f32,
 }
 
@@ -49,6 +51,7 @@ instance_transforms: bindings.instance_transforms.gpu_ptr,
 instance_headers: bindings.instance_headers.gpu_ptr,
 camera_pos: bindings.camera_pos,
 proj: bindings.proj,
+clip_from_world: bindings.clip_from_world,
 window_height: bindings.window_height,
         }
     }
@@ -575,9 +578,63 @@ impl RasterVertexShaderPass for RasterAll {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct AabbPtr {
-    pub center_and_offset_high: Vec4,
-    pub half_extent_and_offset_low: Vec4,
+pub struct BvhNode {
+    pub aabb_and_offsets: [AabbPtr; 8],
+    pub errors: [f32; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: UVec2,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Vertex {
+    pub position_and_uv1: Vec4,
+    pub normal_and_uv2: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Meshlet {
+    pub vertex_index: u64,
+    pub triangle_index: u64,
+    pub vertex_count: u32,
+    pub triangle_count: u32,
+    pub pad: UVec2,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstanceBvhRoot {
+    pub instance: u64,
+    pub node: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstanceHeader {
+    pub meshlet_offset: u64,
+    pub cull_data_offset: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct TraversalVariables {
+    pub read_offset: u32,
+    pub write_offset: u32,
+    pub node_count: u32,
+    pub pad: u32,
+    pub vertex_count: u32,
+    pub meshlet_count: u32,
+    pub first_vertex: u32,
+    pub first_instance: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstancedMeshlet {
+    pub instance: u64,
+    pub meshlet: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct AabbError {
+    pub center_and_error: Vec4,
+    pub half_extent: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -594,61 +651,7 @@ pub struct UIVertex {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct TraversalVariables {
-    pub read_offset: u32,
-    pub write_offset: u32,
-    pub node_count: u32,
-    pub pad: u32,
-    pub vertex_count: u32,
-    pub meshlet_count: u32,
-    pub first_vertex: u32,
-    pub first_instance: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstanceHeader {
-    pub meshlet_offset: u64,
-    pub cull_data_offset: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstanceBvhRoot {
-    pub instance: u64,
-    pub node: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Vertex {
-    pub position_and_uv1: Vec4,
-    pub normal_and_uv2: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct BvhNode {
-    pub aabb_and_offsets: [AabbPtr; 8],
-    pub errors: [f32; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: UVec2,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstancedMeshlet {
-    pub instance: u64,
-    pub meshlet: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbError {
-    pub center_and_error: Vec4,
-    pub half_extent: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Meshlet {
-    pub vertex_index: u64,
-    pub triangle_index: u64,
-    pub vertex_count: u32,
-    pub triangle_count: u32,
-    pub pad: UVec2,
+pub struct AabbPtr {
+    pub center_and_offset_high: Vec4,
+    pub half_extent_and_offset_low: Vec4,
 }

@@ -13,7 +13,8 @@ struct BvhCullBindings {
     Buf<float4x4> instance_transforms;
     Buf<InstanceHeader> instance_headers;
     float4 camera_pos;
-    row_major float4x4 proj;
+    float4x4 proj;
+    float4x4 clip_from_world;
     float window_height;
 };
 
@@ -165,14 +166,40 @@ bool lod_error_is_imperceptible(float4 lod_sphere, float simplification_error, u
     let world_scale = max(length(world_from_local[0]), max(length(world_from_local[1]), length(world_from_local[2])));
     let camera_pos = b.camera_pos;
 
-    var near = b.proj[3][2];
+    var near = b.proj[2][3];    
     let world_sphere_center = (mul(world_from_local, float4(lod_sphere.xyz, 1.0))).xyz;
     let world_sphere_radius = lod_sphere.w * world_scale;
     let d_pos = world_sphere_center - camera_pos.xyz;
     let d = max(sqrt(dot(d_pos, d_pos)) - world_sphere_radius, near);
     let norm_error = simplification_error / d * b.proj[1][1] * 0.5;
-    return norm_error * b.window_height < 100.0;
+    return norm_error * b.window_height < 10.0;
 }
+
+float4 normalize_plane(float4 p){
+    return p / length(p.xyz);
+}
+bool aabb_in_frustum(float3 center, float3 half_extent, uint32_t instance_id) {
+    let world_from_local = b.instance_transforms.val[instance_id];
+    let clip_from_local = mul(transpose(world_from_local), b.clip_from_world);
+    let rowmajor = transpose(clip_from_local);
+    float4 planes[] = {
+        rowmajor[3] + rowmajor[0],
+        rowmajor[3] - rowmajor[0],
+        rowmajor[3] + rowmajor[1],
+        rowmajor[3] - rowmajor[1],
+        rowmajor[2],
+    };
+
+    for (var i = 0; i < 5; i++) {
+        let plane = normalize_plane(planes[i]);
+        let flipped = half_extent * sign(plane.xyz);
+        if (dot (center + flipped, plane.xyz) <= -plane.w) {
+                return false;
+            }
+    }
+    return true;
+}
+
 void ProcessNodeBatch(uint batch_size, uint group_index)
 {
     // Each thread maps to (node slot in batch, child slot within that node).
@@ -187,13 +214,12 @@ void ProcessNodeBatch(uint batch_size, uint group_index)
 
     let child_count = (job.node.child_counts >> (child_slot_in_node * 8)) & 0xff;
 
-    var visible = node_slot_in_batch < batch_size; // && ....
+    var visible = node_slot_in_batch < batch_size && child_count != 0;
     let is_leave = child_count != 255;
 
     let world_matrix = b.instance_transforms.val[job.instance];
-    // if (!is_leave) {
-        // visible = visible && !lod_error_is_imperceptible((*child_node).lod_bounds[child_slot_in_node], (*child_node).errors[child_slot_in_node], job.instance);
-    // }
+    visible = visible && aabb_in_frustum(job.node.aabb_and_offsets[child_slot_in_node].center_and_offset_high.xyz, job.node.aabb_and_offsets[child_slot_in_node].half_extent_and_offset_low.xyz, job.instance);
+    visible = visible && !lod_error_is_imperceptible(job.node.lod_bounds[child_slot_in_node], job.node.errors[child_slot_in_node], job.instance);
 
     let push_node = visible && !is_leave;
     if (push_node)
@@ -206,11 +232,12 @@ void ProcessNodeBatch(uint batch_size, uint group_index)
         let header = b.instance_headers.val[job.instance];
         for (int i = 0; i < child_count; i++) {
             let cull_data = (CullData *)((((uint64_t)child_node) + i) * sizeof(CullData) + header.cull_data_offset);
-            // if (lod_error_is_imperceptible(cull_data.lod_group_sphere, cull_data.aabb.center_and_error.w, job.instance)) {
+            if (aabb_in_frustum(cull_data.aabb.center_and_error.xyz, cull_data.aabb.half_extent.xyz, job.instance) &&
+                lod_error_is_imperceptible(cull_data.lod_group_sphere, cull_data.aabb.center_and_error.w, job.instance)) {
                 var slot = 0;
                 InterlockedAdd(b.queue_state.val.meshlet_count, 1, slot);
                 b.meshlets.val[slot] = InstancedMeshlet(job.instance, (Meshlet *)((((uint64_t)child_node) + i) * sizeof(Meshlet) + header.meshlet_offset));
-            // }
+            }
         }
     }
 

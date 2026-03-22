@@ -37,7 +37,7 @@ use crate::{
     assets::MeshAssets,
     components::camera::{Camera, CameraPlugin},
     render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi},
-    ui::{UiBuilder, UiContext, UiPlugin, UiResources},
+    ui::{UiBuilder, UiContext, UiPlugin, UiResources, console::ConsolePlugin},
 };
 
 pub mod assets;
@@ -134,10 +134,6 @@ pub fn CorePlugin(app: &mut App) {
             ..Default::default()
         },
         PanicHandlerPlugin,
-        LogPlugin {
-            level: Level::DEBUG,
-            ..Default::default()
-        },
         TaskPoolPlugin::default(),
         TimePlugin,
         DiagnosticsPlugin,
@@ -145,6 +141,7 @@ pub fn CorePlugin(app: &mut App) {
         AccessibilityPlugin,
         CameraPlugin,
         MeshAssets,
+        // LogPlugin::default(),
         TransformPlugin::default(),
     ))
     .add_plugins((
@@ -152,6 +149,11 @@ pub fn CorePlugin(app: &mut App) {
         PipelinedRenderingPlugin::default(),
         UiPlugin,
         RenderDebugUi,
+        ConsolePlugin {
+            also_log_to_stderr: false,
+            level: Level::DEBUG,
+            ..Default::default()
+        },
     ))
     .add_systems(Update, ui)
     .init_resource::<UiState>();

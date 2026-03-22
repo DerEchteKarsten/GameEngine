@@ -495,6 +495,7 @@ fn capitalize_first(s: &str) -> String {
 
 fn main() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    println!("cargo:rerun-if-changed={manifest_dir}/src");
     println!("cargo:rerun-if-changed={manifest_dir}/../shaders/");
 
     let out = PathBuf::from("src/bindings.rs");

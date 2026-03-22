@@ -10,23 +10,27 @@ use bevy::{
     input::{
         ButtonState,
         keyboard::{KeyCode, KeyboardInput},
-        mouse::{MouseButton, MouseButtonInput, MouseWheel},
+        mouse::{MouseButton, MouseButtonInput, MouseWheel}, touch::{TouchInput, TouchPhase},
     },
     tasks::block_on,
     time::Time,
     window::{CursorMoved, PrimaryWindow, Window, WindowEvent},
 };
+use bytemuck::Zeroable;
 use futures::channel::oneshot;
-use glam::{Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
+use glam::{IVec2, Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
-use imgui::{FontSource, Io};
-use lava::image::{Image, format::R8Unorm, slice::AsImage, usage::Sampled};
+use imgui::{DrawCmd, FontSource, Io};
+use lava::{command_buffer::Scissor, image::{Image, format::R8Unorm, slice::AsImage, usage::Sampled}, state::raw_vulkan::{self, Offset2D}, vkobjects};
 use lava::{
     bindless::BindlessHandle,
     buffer::{Buffer, slice::BufferSlice},
     command_buffer::CommandBuffer,
     state::Ctx,
 };
+
+use tracing::info;
+use tracing_log::log::error;
 use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
@@ -46,6 +50,8 @@ use crate::{
         world::UploadQueue,
     },
 };
+
+pub mod console;
 
 #[derive(Resource)]
 pub struct UiContext {
@@ -175,7 +181,7 @@ fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
         KeyCode::SuperRight => imgui::Key::RightSuper,
         KeyCode::SuperLeft => imgui::Key::LeftSuper,
         _ => {
-            log::error!("Unknown Key");
+            error!("Unknown Key");
             // Ignore unknown keys
             return;
         }
@@ -214,11 +220,30 @@ fn read_input(
             WindowEvent::CursorMoved(CursorMoved {
                 position, delta, ..
             }) => io.add_mouse_pos_event([position.x, position.y]),
+            WindowEvent::TouchInput(TouchInput {
+                position, phase,  ..
+            }) => {
+                io.add_mouse_pos_event([position.x, position.y]);
+                match *phase {
+                    TouchPhase::Canceled => {
+                        io.add_mouse_button_event(imgui::MouseButton::Left, false);
+                    },
+                    TouchPhase::Started => {
+                        io.add_mouse_button_event(imgui::MouseButton::Left, true);
+                    },
+                    TouchPhase::Ended => {
+                        io.add_mouse_button_event(imgui::MouseButton::Left, false);
+                    },
+                    TouchPhase::Moved => {
+                        // io.add_mouse_button_event(imgui::MouseButton::Left, true);
+                    }
+                }
+            }
             WindowEvent::MouseButtonInput(MouseButtonInput { button, state, .. }) => io
                 .add_mouse_button_event(
                     match button {
                         MouseButton::Forward => imgui::MouseButton::Extra1,
-                        MouseButton::Back => imgui::MouseButton::Extra2,
+                        MouseButton::Back => imgui::MouseButton::Extra2,    
                         MouseButton::Left => imgui::MouseButton::Left,
                         MouseButton::Right => imgui::MouseButton::Right,
                         MouseButton::Middle => imgui::MouseButton::Middle,
@@ -237,20 +262,22 @@ fn read_input(
 }
 
 fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
+    if resources.indicies[frame.frame_in_flight()].len() < resources.pending_indicies.len() {
+        resources.indicies[frame.frame_in_flight()] = Buffer::new(resources.pending_indicies.len().next_power_of_two(), true).unwrap();
+    }
+    if resources.verticies[frame.frame_in_flight()].len() < resources.pending_verticies.len() {
+        resources.verticies[frame.frame_in_flight()] = Buffer::new(resources.pending_verticies.len().next_power_of_two(), true).unwrap();
+    }
+
     resources.verticies[frame.frame_in_flight()]
         .range(..)
         .copy_from(&resources.pending_verticies);
     resources.indicies[frame.frame_in_flight()]
         .range(..)
         .copy_from(&resources.pending_indicies);
-    if resources.verticies.len() > 10000 {
-        log::error!("not enougth space");
-    }
-
-    if resources.indicies.len() > 10000 {
-        log::error!("not enougth space");
-    }
-    resources.num_indicies[frame.frame_in_flight()] = resources.pending_indicies.len() as u32;
+    resources.draw_lists[frame.frame_in_flight()].clear();
+    let elements = resources.pending_draw_lists.drain(..).collect::<Vec<_>>();
+    resources.draw_lists[frame.frame_in_flight()].extend(elements);
     resources.pending_verticies.clear();
     resources.pending_indicies.clear();
 }
@@ -259,7 +286,7 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
     world.resource_scope(|world, mut builder: Mut<UiBuilder>| {
         let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
         if builder.ui().is_none() {
-            log::info!("building font atlas");
+            info!("building font atlas");
             let atlas = ctx.ctx.fonts().build_alpha8_texture();
             let image = Image::new(atlas.width, atlas.height).unwrap();
             let mut data = Vec::with_capacity(atlas.data.len());
@@ -277,7 +304,8 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
         if draw_data.draw_lists_count() != 0 {
             for list in draw_data.draw_lists() {
                 let vertex_offset = resources.pending_verticies.len() as u32;
-                let indicies = list.idx_buffer().iter().map(|i| *i as u32 + vertex_offset);
+                let index_offset = resources.pending_indicies.len() as u32;
+                let indicies = list.idx_buffer().iter().map(|i| *i as u32);
                 let verticies = list.vtx_buffer().iter().map(|v| UIVertex {
                     color: Vec4::new(
                         v.col[0] as f32 / 255.0,
@@ -291,6 +319,19 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
                 });
                 resources.pending_indicies.extend(indicies);
                 resources.pending_verticies.extend(verticies);
+                for cmd in list.commands() {
+                    if let DrawCmd::Elements { count, cmd_params } = cmd {
+                        resources.pending_draw_lists.push(DrawList {
+                            clip_rect: Scissor {
+                                offset: IVec2::new(cmd_params.clip_rect[0] as i32, cmd_params.clip_rect[1] as i32),
+                                extent: UVec2::new((cmd_params.clip_rect[2] as u32).saturating_sub(cmd_params.clip_rect[0] as u32), (cmd_params.clip_rect[3] as u32).saturating_sub(cmd_params.clip_rect[1] as u32)),
+                            },
+                            start_index: cmd_params.idx_offset as u32 + index_offset,
+                            start_vertex: cmd_params.vtx_offset as u32 + vertex_offset,
+                            count: count as u32,
+                        });
+                    }
+                }
             }
         }
         builder.ui = ctx.ctx.new_frame() as *mut _;
@@ -310,13 +351,23 @@ fn init(mut commands: Commands) {
         font_atlas: None,
         pending_indicies: Vec::new(),
         pending_verticies: Vec::new(),
-        num_indicies: [0; FRAMES_IN_FLIGHT],
+        draw_lists: [Vec::new(), Vec::new()],
+        pending_draw_lists: Vec::new(),
     });
+}
+
+#[derive(Copy, Clone)]
+pub struct DrawList {
+    pub count: u32,
+    pub start_vertex: u32,
+    pub start_index: u32,
+    pub clip_rect: Scissor,
 }
 
 #[derive(Resource)]
 pub struct UiResources {
-    pub num_indicies: [u32; FRAMES_IN_FLIGHT],
+    pub draw_lists: [Vec<DrawList>; FRAMES_IN_FLIGHT],
+    pub pending_draw_lists: Vec<DrawList>,
     pub verticies: [Buffer<UIVertex>; FRAMES_IN_FLIGHT],
     pub pending_verticies: Vec<UIVertex>,
     pub indicies: [Buffer<u32>; FRAMES_IN_FLIGHT],
@@ -330,7 +381,7 @@ pub fn UiPlugin(app: &mut App) {
     sub_app
         .add_systems(RenderStartup, init)
         .add_systems(Render, write_ui_data.in_set(RenderSystems::PreRender))
-        .add_systems(ExtractSchedule, extract_ui);
+        .add_systems(ExtractSchedule, extract_ui);  
     app.add_systems(Update, read_input).insert_resource({
         let mut ctx = imgui::Context::create();
         ctx.fonts()

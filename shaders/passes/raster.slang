@@ -26,9 +26,6 @@ VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_Verte
     }
 
     let vertex_id = meshlet.triangle_index[vertex_index];
-    // if (vertex_id > meshlet.vertex_count) {
-    //     return VSOutput(float4(0.0 / 0.0, 0.0 / 0.0, 0.0 / 0.0, 0.0 / 0.0), float3(0.0));
-    // }
     let vertex = meshlet.vertex_index[uint(vertex_id)];
 
     VSOutput output;

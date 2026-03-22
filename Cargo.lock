@@ -1505,7 +1505,6 @@ dependencies = [
  "imgui",
  "itertools",
  "lava",
- "log",
  "meshopt",
  "metis",
  "rand",
@@ -1513,6 +1512,9 @@ dependencies = [
  "serde_json",
  "smallvec",
  "tiff",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "tracy-client",
  "walkdir",
 ]
@@ -2514,9 +2516,9 @@ dependencies = [
  "glam",
  "gpu-allocator",
  "json",
- "log",
  "presser",
  "raw-window-handle",
+ "tracing",
  "tracy-client",
  "winit",
 ]

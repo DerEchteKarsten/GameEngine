@@ -16,6 +16,7 @@ use bevy::{
 use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut, try_cast_vec};
 use futures::future::join_all;
 use glam::{Mat4, Vec3};
+use tracing_log::log;
 use std::sync::Arc;
 
 use crate::{
@@ -160,11 +161,6 @@ impl AssetTransformer for MeshTransformer {
                     .collect::<Vec<_>>();
 
                 assert_eq!(verticies.len() * 3, normals.len());
-
-                if normals.len() < 3 {
-                    log::info!("skipping");
-                    continue;
-                }
 
                 let uvs = reader
                     .read_tex_coords(0)
@@ -430,6 +426,16 @@ impl AssetLoader for MeshLoader {
             for i in 0..(header.meshlet_offset as usize / size_of::<BvhNode>()) {
                 let mut node = BvhNode::zeroed();
                 reader.read_exact(bytes_of_mut(&mut node)).await?;
+                // if node.errors.contains(&0.0) {
+                //     log::info!("Node: -----");
+                //     for i in 0..8 {
+                //         log::info!("    Child: {}", i);
+                //         log::info!("        ptr: {}", node.aabb_and_offsets[i].offset());
+                //         log::info!("        children: {}", node.child_counts(i));
+                //         log::info!("        error: {}", node.errors[i]);
+                //         log::info!("        bounds: {:?}", node.lod_bounds[i]);
+                //     }
+                // }
                 for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
                     let offset = aabb.offset();
                     aabb.set_offset(

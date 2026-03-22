@@ -42,6 +42,8 @@ use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2, vkobjects};
 use rand::random;
 use smallvec::SmallVec;
+use tracing::error;
+
 
 use crate::assets::MeshHeader;
 use crate::assets::mesh::MeshletMesh;
@@ -174,7 +176,7 @@ impl UploadQueue {
                     unreachable!()
                 };
                 if let Err(_) = buff.send(buffer) {
-                    log::error!(
+                    error!(
                         "Receiver was dropped, buffer could not be sent back and will be dropped"
                     );
                 }
@@ -184,7 +186,7 @@ impl UploadQueue {
                     unreachable!()
                 };
                 if let Err(_) = imag.send(image) {
-                    log::error!(
+                    error!(
                         "Receiver was dropped, image could not be sent back and will be dropped"
                     );
                 }
