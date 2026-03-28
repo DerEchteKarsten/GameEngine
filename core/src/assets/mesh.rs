@@ -15,7 +15,16 @@ use smallvec::SmallVec;
 use std::{collections::HashMap, ops::Range};
 use std::{mem::ManuallyDrop, sync::Arc};
 
-use crate::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
+use crate::{
+    assets::MeshHeader,
+    bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex},
+    physics::{
+        self,
+        bvh::{
+            ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
+        },
+    },
+};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 
@@ -69,12 +78,9 @@ impl AabbPtr {
 }
 
 pub struct MeshletMesh {
-    pub meshlet_offset: u32,
-    pub cull_data_offset: u32,
-    pub vertex_offset: u32,
-    pub index_offset: u32,
-    pub aabb: AabbError,
+    pub header: MeshHeader,
     pub data: Vec<u8>,
+    pub colission_bvh: Vec<u8>,
 }
 
 fn cast_vec_trust_me_bro<A>(a: Vec<A>) -> Vec<u8> {
@@ -99,9 +105,10 @@ impl MeshletMesh {
         let position_only_vertex_remap = generate_position_remap(&vertex_adapter);
 
         // Split the mesh into an initial list of meshlets (LOD 0)
+
         let (mut meshlets, mut cull_data) =
             compute_meshlets(&indices, &vertex_adapter, &position_only_vertex_remap, None);
-
+        let initial_cull_data = cull_data.len();
         let mut vertex_locks = vec![false; vertices.len()];
 
         // Build further LODs
@@ -224,15 +231,32 @@ impl MeshletMesh {
 
         let (bvh, aabb, depth) = bvh.build(&mut meshlets, all_groups, &mut cull_data);
 
-        let mmeshlets: Vec<_> = meshlets.meshlets.into_iter().map(|meshlet| {
-            Meshlet {
+        let mut leafs = cull_data[..initial_cull_data]
+            .iter()
+            .enumerate()
+            .map(|(i, c)| LeafData {
+                aabb: c.aabb,
+                data: ChildData::HasLeaf(HasLeaf { meshlet: i }),
+                mortan_code: vec3_to_morton(c.aabb.center(), aabb.min, aabb.max, 1024),
+                typ: ChildType::HasLeaf,
+            })
+            .collect::<Vec<_>>();
+
+        let initial_data = build_intial_nodes(&mut leafs, aabb);
+        let mut colission_bvh = Vec::new();
+        let colission_bvh_root_node = build_bvh(initial_data, aabb, &mut colission_bvh);
+
+        let mmeshlets: Vec<_> = meshlets
+            .meshlets
+            .into_iter()
+            .map(|meshlet| Meshlet {
                 triangle_count: meshlet.triangle_count,
                 triangle_index: meshlet.triangle_offset as u64,
                 vertex_count: meshlet.vertex_count,
                 vertex_index: meshlet.vertex_offset as u64,
                 pad: UVec2 { x: 0, y: 0 },
-            }
-        }).collect();
+            })
+            .collect();
         let verticies = vertices
             .iter()
             .enumerate()
@@ -283,12 +307,19 @@ impl MeshletMesh {
         data.append(&mut cast_vec_trust_me_bro(meshlets.triangles));
 
         Self {
-            index_offset,
-            vertex_offset,
-            aabb,
+            header: MeshHeader {
+                cull_data_offset,
+                meshlet_offset,
+                index_offset,
+                vertex_offset,
+                colission_bvh_root_node: colission_bvh_root_node as u32,
+                aabb: crate::assets::Aabb {
+                    center: aabb.center().to_array(),
+                    half_extend: aabb.half_size().to_array(),
+                },
+            },
             data,
-            cull_data_offset,
-            meshlet_offset,
+            colission_bvh,
         }
     }
 }
@@ -397,7 +428,6 @@ fn compute_meshlets(
                 assert!(bounds.radius >= 0.0);
                 (BoundingSphere::new(bounds.center, bounds.radius), 0.0)
             });
-
 
             cull_data.push(TempMeshletCullData {
                 aabb: Aabb3d::from_point_cloud(
@@ -832,10 +862,7 @@ impl BvhBuilder {
                         child.aabb_and_offsets[i].center_and_offset_high.xyz(),
                         child.aabb_and_offsets[i].half_extent_and_offset_low.xyz(),
                     ));
-                    lod_bounds = merge_spheres(
-                        lod_bounds,
-                        child.lod_bounds[i],
-                    );
+                    lod_bounds = merge_spheres(lod_bounds, child.lod_bounds[i]);
                     parent_error = parent_error.max(child.errors[i]);
                 }
 
@@ -855,7 +882,7 @@ impl BvhBuilder {
         meshlets: &mut meshopt::Meshlets,
         mut groups: Vec<TempMeshletGroup>,
         cull_data: &mut Vec<TempMeshletCullData>,
-    ) -> (Vec<BvhNode>, AabbError, u32) {
+    ) -> (Vec<BvhNode>, Aabb3d, u32) {
         // The BVH requires group meshlets to be contiguous, so remap them first.
         let mut remap = Vec::with_capacity(meshlets.meshlets.len());
         let mut remapped_cull_data = Vec::with_capacity(cull_data.len());
@@ -915,14 +942,7 @@ impl BvhBuilder {
             "all meshlets must be reachable"
         );
 
-        (
-            out,
-            AabbError {
-                center_and_error: aabb.center().to_vec3().extend(0.0),
-                half_extent: aabb.half_size().to_vec3().extend(0.0),
-            },
-            max_depth,
-        )
+        (out, aabb, max_depth)
     }
 }
 

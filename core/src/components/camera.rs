@@ -13,7 +13,7 @@ use lava::state::Ctx;
 const MOVE_SPEED: f32 = 1.0;
 const SENSITIVITY: f32 = 0.5;
 
-const UP: Vec3 = vec3(0.0, 1.0, 0.0);
+const UP: Vec3 = vec3(0.0, -1.0, 0.0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Component, Resource)]
 pub struct Camera {
@@ -82,16 +82,16 @@ pub fn update_mouse_move(
     window: Single<&Window>,
 ) {
     if keys.pressed(KeyCode::ArrowUp) {
-        controls.pitch -= 0.08 * SENSITIVITY;
-    }
-    if keys.pressed(KeyCode::ArrowDown) {
         controls.pitch += 0.08 * SENSITIVITY;
     }
+    if keys.pressed(KeyCode::ArrowDown) {
+        controls.pitch -= 0.08 * SENSITIVITY;
+    }
     if keys.pressed(KeyCode::ArrowLeft) {
-        controls.yaw -= 0.08 * SENSITIVITY;
+        controls.yaw += 0.08 * SENSITIVITY;
     }
     if keys.pressed(KeyCode::ArrowRight) {
-        controls.yaw += 0.08 * SENSITIVITY;
+        controls.yaw -= 0.08 * SENSITIVITY;
     }
 
     let size = window.size();

@@ -16,12 +16,13 @@ use bevy::{
 use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut, try_cast_vec};
 use futures::future::join_all;
 use glam::{Mat4, Vec3};
-use tracing_log::log;
 use std::sync::Arc;
+use tracing_log::log;
 
 use crate::{
     assets::{material::Material, mesh::MeshletMesh},
     bindings::{AabbError, BvhNode, CullData, Meshlet, Vertex},
+    physics,
     render::world::UploadQueue,
 };
 
@@ -55,20 +56,21 @@ pub struct MeshHeader {
     pub vertex_offset: u32,
     pub index_offset: u32,
     pub cull_data_offset: u32,
+    pub colission_bvh_root_node: u32,
     pub aabb: Aabb,
 }
 
 #[derive(Pod, Zeroable, Clone, Copy, Debug)]
 #[repr(C)]
-struct Aabb {
-    center: [f32; 3],
-    half_extend: [f32; 3],
+pub struct Aabb {
+    pub center: [f32; 3],
+    pub half_extend: [f32; 3],
 }
 
 pub struct GpuMeshletMesh {
     pub header: MeshHeader,
     pub buffer: Buffer<u8>,
-    pub aabb: AabbError,
+    pub colission_bvh: Vec<u8>,
 }
 
 #[derive(Asset, TypePath)]
@@ -288,19 +290,9 @@ impl AssetSaver for MeshSaver {
         write_slice(&mesh.instance_materials, writer).await?;
         writer.write_all(&len.to_le_bytes()).await?;
         for mesh in mesh.meshes.iter() {
-            writer
-                .write_all(bytes_of(&MeshHeader {
-                    aabb: Aabb {
-                        center: mesh.aabb.center_and_error.xyz().to_array(),
-                        half_extend: mesh.aabb.half_extent.xyz().to_array(),
-                    },
-                    cull_data_offset: mesh.cull_data_offset,
-                    meshlet_offset: mesh.meshlet_offset,
-                    vertex_offset: mesh.vertex_offset,
-                    index_offset: mesh.index_offset,
-                }))
-                .await?;
-            write_slice(&mesh.data, writer).await?
+            writer.write_all(bytes_of(&mesh.header)).await?;
+            write_slice(&mesh.data, writer).await?;
+            write_slice(&mesh.colission_bvh, writer).await?;
         }
 
         return Ok(());
@@ -363,12 +355,17 @@ fn check_vertex(v: Vertex) -> bool {
 //     true
 // }
 
-async fn read_range<'a>(reader: &mut dyn bevy::asset::io::Reader, data: &mut Option<Vec<u8>>, slice: BufferSlice<'a, u8>, start_offset: u32, end_offset: u32)-> Result<()> {
+async fn read_range<'a>(
+    reader: &mut dyn bevy::asset::io::Reader,
+    data: &mut Option<Vec<u8>>,
+    slice: BufferSlice<'a, u8>,
+    start_offset: u32,
+    end_offset: u32,
+) -> Result<()> {
     let len = (end_offset - start_offset) as usize;
     if let Some(data) = data {
-        let mut slice = unsafe {
-            slice::from_raw_parts_mut(data.as_mut_ptr().add(start_offset as usize), len)
-        };
+        let mut slice =
+            unsafe { slice::from_raw_parts_mut(data.as_mut_ptr().add(start_offset as usize), len) };
         reader.read_exact(&mut slice).await?;
         unsafe { data.set_len(len) };
     } else {
@@ -449,7 +446,8 @@ impl AssetLoader for MeshLoader {
                 push_data(node, &mut data, &mut slice);
             }
 
-            let meshlet_count = (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
+            let meshlet_count =
+                (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
 
             for _ in 0..meshlet_count {
                 let mut meshlet = Meshlet::zeroed();
@@ -462,7 +460,16 @@ impl AssetLoader for MeshLoader {
                 push_data(meshlet, &mut data, &mut slice);
             }
 
-            read_range(reader, &mut data, slice, header.cull_data_offset, len as u32).await?;
+            read_range(
+                reader,
+                &mut data,
+                slice,
+                header.cull_data_offset,
+                len as u32,
+            )
+            .await?;
+
+            let colission_bvh = read_slice(reader, Some(8)).await?;
 
             let aabb = AabbError {
                 center_and_error: Vec3::from_array(header.aabb.center).extend(0.0),
@@ -470,7 +477,12 @@ impl AssetLoader for MeshLoader {
             };
 
             if let Some(data) = data {
-                futures.push((UploadQueue::push_buffer(data, buffer), aabb, header));
+                futures.push((
+                    UploadQueue::push_buffer(data, buffer),
+                    aabb,
+                    header,
+                    colission_bvh,
+                ));
             } else {
                 // #[cfg(debug_assertions)]
                 // {
@@ -478,14 +490,22 @@ impl AssetLoader for MeshLoader {
                 //     let mut num_meshlets = meshlet_count;
                 //     // assert!(verify_bvh(buffer.range(..), node, &mut num_meshlets));
                 //     assert!(num_meshlets == 0);
-                // }    
-                meshes.push(GpuMeshletMesh { buffer, aabb, header })
+                // }
+                meshes.push(GpuMeshletMesh {
+                    buffer,
+                    colission_bvh,
+                    header,
+                })
             }
         }
 
-        for (receiver, aabb, header) in futures {
+        for (receiver, aabb, header, colission_bvh) in futures {
             let buffer = receiver.await?;
-            meshes.push(GpuMeshletMesh { buffer, aabb, header });
+            meshes.push(GpuMeshletMesh {
+                buffer,
+                header,
+                colission_bvh,
+            });
         }
 
         Ok(Mesh {

@@ -19,6 +19,7 @@ bevy = {version = "0.18.0", default-features = false, features = [
     "bevy_window",
 ]}
 walkdir = "2.5.0"
+rand = "0.10.0"
 
 [features]
 default = []

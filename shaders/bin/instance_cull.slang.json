@@ -166,6 +166,79 @@
                             "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
                         },
                         {
+                            "name": "instance_aabbs",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "struct",
+                                                "name": "AabbError",
+                                                "fields": [
+                                                    {
+                                                        "name": "center_and_error",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 4,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                                                    },
+                                                    {
+                                                        "name": "half_extent",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 4,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "instance_transforms",
+                            "type": {
+                                "kind": "struct",
+                                "name": "Buf",
+                                "fields": [
+                                    {
+                                        "name": "val",
+                                        "type": {
+                                            "kind": "pointer",
+                                            "valueType": {
+                                                "kind": "matrix",
+                                                "rowCount": 4,
+                                                "columnCount": 4,
+                                                "elementType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "float32"
+                                                }
+                                            }
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                        },
+                        {
                             "name": "bvh_node_stack",
                             "type": {
                                 "kind": "struct",
@@ -296,7 +369,7 @@
                                     }
                                 ]
                             },
-                            "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
                         },
                         {
                             "name": "variables",
@@ -313,7 +386,7 @@
                                                 "name": "TraversalVariables",
                                                 "fields": [
                                                     {
-                                                        "name": "read_offset",
+                                                        "name": "node_batch_read_offset",
                                                         "type": {
                                                             "kind": "scalar",
                                                             "scalarType": "uint32"
@@ -321,7 +394,7 @@
                                                         "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                                                     },
                                                     {
-                                                        "name": "write_offset",
+                                                        "name": "total_meshlets",
                                                         "type": {
                                                             "kind": "scalar",
                                                             "scalarType": "uint32"
@@ -329,7 +402,7 @@
                                                         "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
                                                     },
                                                     {
-                                                        "name": "node_count",
+                                                        "name": "node_write_offset",
                                                         "type": {
                                                             "kind": "scalar",
                                                             "scalarType": "uint32"
@@ -337,7 +410,7 @@
                                                         "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
                                                     },
                                                     {
-                                                        "name": "pad",
+                                                        "name": "node_count",
                                                         "type": {
                                                             "kind": "scalar",
                                                             "scalarType": "uint32"
@@ -353,7 +426,7 @@
                                                         "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
                                                     },
                                                     {
-                                                        "name": "meshlet_count",
+                                                        "name": "visible_meshlet_count",
                                                         "type": {
                                                             "kind": "scalar",
                                                             "scalarType": "uint32"
@@ -375,6 +448,22 @@
                                                             "scalarType": "uint32"
                                                         },
                                                         "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "candidate_meshlet_write_offset",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 32, "size": 4, "elementStride": 0}
+                                                    },
+                                                    {
+                                                        "name": "meshlet_batch_read_offset",
+                                                        "type": {
+                                                            "kind": "scalar",
+                                                            "scalarType": "uint32"
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 36, "size": 4, "elementStride": 0}
                                                     }
                                                 ]
                                             }
@@ -383,7 +472,20 @@
                                     }
                                 ]
                             },
-                            "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "clip_from_world",
+                            "type": {
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 48, "size": 64, "elementStride": 0}
                         }
                     ]
                 },
@@ -519,6 +621,79 @@
                                 "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
                             },
                             {
+                                "name": "instance_aabbs",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "struct",
+                                                    "name": "AabbError",
+                                                    "fields": [
+                                                        {
+                                                            "name": "center_and_error",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 4,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                                                        },
+                                                        {
+                                                            "name": "half_extent",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 4,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "instance_transforms",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "Buf",
+                                    "fields": [
+                                        {
+                                            "name": "val",
+                                            "type": {
+                                                "kind": "pointer",
+                                                "valueType": {
+                                                    "kind": "matrix",
+                                                    "rowCount": 4,
+                                                    "columnCount": 4,
+                                                    "elementType": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "float32"
+                                                    }
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                            },
+                            {
                                 "name": "bvh_node_stack",
                                 "type": {
                                     "kind": "struct",
@@ -649,7 +824,7 @@
                                         }
                                     ]
                                 },
-                                "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
                             },
                             {
                                 "name": "variables",
@@ -666,7 +841,7 @@
                                                     "name": "TraversalVariables",
                                                     "fields": [
                                                         {
-                                                            "name": "read_offset",
+                                                            "name": "node_batch_read_offset",
                                                             "type": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "uint32"
@@ -674,7 +849,7 @@
                                                             "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                                                         },
                                                         {
-                                                            "name": "write_offset",
+                                                            "name": "total_meshlets",
                                                             "type": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "uint32"
@@ -682,7 +857,7 @@
                                                             "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
                                                         },
                                                         {
-                                                            "name": "node_count",
+                                                            "name": "node_write_offset",
                                                             "type": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "uint32"
@@ -690,7 +865,7 @@
                                                             "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
                                                         },
                                                         {
-                                                            "name": "pad",
+                                                            "name": "node_count",
                                                             "type": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "uint32"
@@ -706,7 +881,7 @@
                                                             "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
                                                         },
                                                         {
-                                                            "name": "meshlet_count",
+                                                            "name": "visible_meshlet_count",
                                                             "type": {
                                                                 "kind": "scalar",
                                                                 "scalarType": "uint32"
@@ -728,6 +903,22 @@
                                                                 "scalarType": "uint32"
                                                             },
                                                             "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "candidate_meshlet_write_offset",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 32, "size": 4, "elementStride": 0}
+                                                        },
+                                                        {
+                                                            "name": "meshlet_batch_read_offset",
+                                                            "type": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "uint32"
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 36, "size": 4, "elementStride": 0}
                                                         }
                                                     ]
                                                 }
@@ -736,11 +927,24 @@
                                         }
                                     ]
                                 },
-                                "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "clip_from_world",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 48, "size": 64, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 32, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 112, "elementStride": 0}
                 }
             }
         }

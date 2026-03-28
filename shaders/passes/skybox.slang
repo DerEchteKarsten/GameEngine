@@ -1,15 +1,13 @@
 #include "bindless.slang"
 
-struct PostBindings {
+struct SkyBoxBindings {
     column_major float4x4 inverse_proj;
     column_major float4x4 inverse_view;
     float4 window_size;
-    Tex2D<float> depth;
-    Tex2D<float4> color;
     MutImage2D<float4> out;
 }
 
-[[vk::push_constant]] PostBindings bindings;
+[[vk::push_constant]] SkyBoxBindings bindings;
 
 float3 view_dir(uint2 pixelCoord) {
     const var pixelCenter = float2(pixelCoord) + float2(0.5);
@@ -24,12 +22,5 @@ float3 view_dir(uint2 pixelCoord) {
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void post(uint2 dtid: SV_DispatchThreadID) {
-    float4 color = bindings.color.Load(dtid);
-    float depth = bindings.depth.Load(dtid);
-
-    if (depth == 0.0) {
-        bindings.out.Store(dtid, float4(view_dir(dtid), 1.0));
-    } else {
-        bindings.out.Store(dtid, color);
-    }
+    bindings.out.Store(dtid, float4(view_dir(dtid), 1.0));
 }

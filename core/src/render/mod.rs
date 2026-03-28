@@ -1,10 +1,9 @@
 use crate::{
-    INITIAL_WINDOW_SIZE,
-    bindings::{Post, PostBindings, Raster, RasterBindings, RasterUi, RasterUiBindings},
     components::camera::Camera,
     render::{
         render::{
-            CommandPools, RenderDebugUi, RenderPassesPlugin, Swapchain, SynchronizationResources, aquire_swapchain_image, init_render, render, resize_swapchain, wait_frames_in_flight
+            CommandPools, RenderDebugUi, RenderPassesPlugin, Swapchain, SynchronizationResources,
+            aquire_swapchain_image, init_render, render, resize_swapchain, wait_frames_in_flight,
         },
         world::{InstanceManager, UploadQueue, WorldPlugin, init_world},
     },
@@ -89,7 +88,9 @@ impl Render {
                 RenderSystems::Render,
             )
                 .chain(),
-            RenderSystems::PreRender.after(RenderSystems::WaitFences).before(RenderSystems::Render),
+            RenderSystems::PreRender
+                .after(RenderSystems::WaitFences)
+                .before(RenderSystems::Render),
             RenderSystems::AfterFences.after(RenderSystems::WaitFences),
         ));
         schedule
@@ -322,7 +323,10 @@ impl Plugin for RenderPlugin {
             .add_schedule(extract_schedule)
             .add_schedule(Render::base_schedule())
             .add_systems(ExtractSchedule, resize_swapchain)
-            .add_systems(Render, apply_extract_commands.in_set(RenderSystems::ApplyExtractCommands))
+            .add_systems(
+                Render,
+                apply_extract_commands.in_set(RenderSystems::ApplyExtractCommands),
+            )
             .set_extract(move |main_world, render_world| {
                 if should_run_startup {
                     render_world.run_schedule(RenderStartup);

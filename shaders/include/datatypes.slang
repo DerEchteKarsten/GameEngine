@@ -54,14 +54,21 @@ struct Vertex {
 }
 
 struct TraversalVariables {
-    uint read_offset;
-    uint write_offset;
+    uint node_batch_read_offset;
+    uint total_meshlets;
+    uint node_write_offset;
     uint node_count;
-    uint pad;
     uint vertex_count;
-    uint meshlet_count;
+    uint visible_meshlet_count;
     uint first_vertex;
     uint first_instance;
+    uint candidate_meshlet_write_offset;
+    uint meshlet_batch_read_offset;
+}
+
+struct InstanceMeshletIndex {
+    uint instance;
+    uint meshlet;
 }
 
 struct InstancedMeshlet {
@@ -94,4 +101,4 @@ struct DispatchParams {
     uint meshlet_count;
     DrawIndirectCommand indirect_draw;
     DispatchIndirectCommand indirect_dispatch;
-}
+}   

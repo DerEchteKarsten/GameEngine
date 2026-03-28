@@ -1,5 +1,5 @@
 #![feature(f16)]
-#![feature(random)] 
+#![feature(random)]
 #![feature(core_intrinsics)]
 
 use std::{
@@ -32,10 +32,12 @@ use glam::{Vec2, Vec4};
 use lava::{command_buffer::RasterVertexDispatch, state::Ctx};
 
 mod bindings;
+pub mod physics;
 
 use crate::{
     assets::MeshAssets,
     components::camera::{Camera, CameraPlugin},
+    physics::PhysicsPlugin,
     render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi},
     ui::{UiBuilder, UiContext, UiPlugin, UiResources, console::ConsolePlugin},
 };
@@ -141,7 +143,6 @@ pub fn CorePlugin(app: &mut App) {
         AccessibilityPlugin,
         CameraPlugin,
         MeshAssets,
-        // LogPlugin::default(),
         TransformPlugin::default(),
     ))
     .add_plugins((
@@ -149,6 +150,7 @@ pub fn CorePlugin(app: &mut App) {
         PipelinedRenderingPlugin::default(),
         UiPlugin,
         RenderDebugUi,
+        PhysicsPlugin,
         ConsolePlugin {
             also_log_to_stderr: false,
             level: Level::DEBUG,

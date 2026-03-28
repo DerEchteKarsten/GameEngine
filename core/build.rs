@@ -344,10 +344,9 @@ pub fn generate_from_json_str(
     structs: &mut HashMap<String, String>,
 ) -> String {
     let file_name = file_name.split(".").next().unwrap();
-    let Ok(root) =
-        serde_json::from_str(json) else {
-            return "".into();
-        };
+    let Ok(root) = serde_json::from_str(json) else {
+        return "".into();
+    };
 
     let fields = extract_push_constant(&root).expect("No pushConstantBuffer found!");
     let pc_name = format!("{file_name}Bindings");

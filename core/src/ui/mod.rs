@@ -5,12 +5,14 @@ use bevy::{
         query::With,
         resource::Resource,
         schedule::IntoScheduleConfigs,
-        system::{Commands, NonSendMut, Res, ResMut, Single}, world::Mut,
+        system::{Commands, NonSendMut, Res, ResMut, Single},
+        world::Mut,
     },
     input::{
         ButtonState,
         keyboard::{KeyCode, KeyboardInput},
-        mouse::{MouseButton, MouseButtonInput, MouseWheel}, touch::{TouchInput, TouchPhase},
+        mouse::{MouseButton, MouseButtonInput, MouseWheel},
+        touch::{TouchInput, TouchPhase},
     },
     tasks::block_on,
     time::Time,
@@ -21,16 +23,19 @@ use futures::channel::oneshot;
 use glam::{IVec2, Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
 use imgui::{DrawCmd, FontSource, Io};
-use lava::{command_buffer::Scissor, image::{Image, format::R8Unorm, slice::AsImage, usage::Sampled}, state::raw_vulkan::{self, Offset2D}, vkobjects};
 use lava::{
     bindless::BindlessHandle,
     buffer::{Buffer, slice::BufferSlice},
     command_buffer::CommandBuffer,
     state::Ctx,
 };
+use lava::{
+    command_buffer::Scissor,
+    image::{Image, format::R8Unorm, slice::AsImage, usage::Sampled},
+    state::raw_vulkan::{self, Offset2D},
+    vkobjects,
+};
 
-use tracing::info;
-use tracing_log::log::error;
 use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
@@ -39,6 +44,8 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
+use tracing::info;
+use tracing_log::log::error;
 
 use crate::{
     bindings::{self, UIVertex},
@@ -74,7 +81,6 @@ impl UiBuilder {
         unsafe { self.ui.as_mut() }
     }
 }
-
 
 fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
     let igkey = match key {
@@ -221,19 +227,19 @@ fn read_input(
                 position, delta, ..
             }) => io.add_mouse_pos_event([position.x, position.y]),
             WindowEvent::TouchInput(TouchInput {
-                position, phase,  ..
+                position, phase, ..
             }) => {
                 io.add_mouse_pos_event([position.x, position.y]);
                 match *phase {
                     TouchPhase::Canceled => {
                         io.add_mouse_button_event(imgui::MouseButton::Left, false);
-                    },
+                    }
                     TouchPhase::Started => {
                         io.add_mouse_button_event(imgui::MouseButton::Left, true);
-                    },
+                    }
                     TouchPhase::Ended => {
                         io.add_mouse_button_event(imgui::MouseButton::Left, false);
-                    },
+                    }
                     TouchPhase::Moved => {
                         // io.add_mouse_button_event(imgui::MouseButton::Left, true);
                     }
@@ -243,7 +249,7 @@ fn read_input(
                 .add_mouse_button_event(
                     match button {
                         MouseButton::Forward => imgui::MouseButton::Extra1,
-                        MouseButton::Back => imgui::MouseButton::Extra2,    
+                        MouseButton::Back => imgui::MouseButton::Extra2,
                         MouseButton::Left => imgui::MouseButton::Left,
                         MouseButton::Right => imgui::MouseButton::Right,
                         MouseButton::Middle => imgui::MouseButton::Middle,
@@ -263,10 +269,12 @@ fn read_input(
 
 fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
     if resources.indicies[frame.frame_in_flight()].len() < resources.pending_indicies.len() {
-        resources.indicies[frame.frame_in_flight()] = Buffer::new(resources.pending_indicies.len().next_power_of_two(), true).unwrap();
+        resources.indicies[frame.frame_in_flight()] =
+            Buffer::new(resources.pending_indicies.len().next_power_of_two(), true).unwrap();
     }
     if resources.verticies[frame.frame_in_flight()].len() < resources.pending_verticies.len() {
-        resources.verticies[frame.frame_in_flight()] = Buffer::new(resources.pending_verticies.len().next_power_of_two(), true).unwrap();
+        resources.verticies[frame.frame_in_flight()] =
+            Buffer::new(resources.pending_verticies.len().next_power_of_two(), true).unwrap();
     }
 
     resources.verticies[frame.frame_in_flight()]
@@ -282,7 +290,7 @@ fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
     resources.pending_indicies.clear();
 }
 
-fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) {    
+fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) {
     world.resource_scope(|world, mut builder: Mut<UiBuilder>| {
         let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
         if builder.ui().is_none() {
@@ -292,13 +300,13 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
             let mut data = Vec::with_capacity(atlas.data.len());
             data.extend_from_slice(atlas.data);
             let image = block_on(UploadQueue::push_image(data, image)).unwrap();
-    
+
             resources.font_atlas = Some(image);
             builder.ui = ctx.ctx.new_frame() as *mut _;
             return;
         }
         let draw_data = ctx.ctx.render();
-        
+
         let transform = Vec2::from(draw_data.display_pos);
         let scale = Vec2::from(draw_data.display_size);
         if draw_data.draw_lists_count() != 0 {
@@ -323,8 +331,16 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
                     if let DrawCmd::Elements { count, cmd_params } = cmd {
                         resources.pending_draw_lists.push(DrawList {
                             clip_rect: Scissor {
-                                offset: IVec2::new(cmd_params.clip_rect[0] as i32, cmd_params.clip_rect[1] as i32),
-                                extent: UVec2::new((cmd_params.clip_rect[2] as u32).saturating_sub(cmd_params.clip_rect[0] as u32), (cmd_params.clip_rect[3] as u32).saturating_sub(cmd_params.clip_rect[1] as u32)),
+                                offset: IVec2::new(
+                                    cmd_params.clip_rect[0] as i32,
+                                    cmd_params.clip_rect[1] as i32,
+                                ),
+                                extent: UVec2::new(
+                                    (cmd_params.clip_rect[2] as u32)
+                                        .saturating_sub(cmd_params.clip_rect[0] as u32),
+                                    (cmd_params.clip_rect[3] as u32)
+                                        .saturating_sub(cmd_params.clip_rect[1] as u32),
+                                ),
                             },
                             start_index: cmd_params.idx_offset as u32 + index_offset,
                             start_vertex: cmd_params.vtx_offset as u32 + vertex_offset,
@@ -381,16 +397,15 @@ pub fn UiPlugin(app: &mut App) {
     sub_app
         .add_systems(RenderStartup, init)
         .add_systems(Render, write_ui_data.in_set(RenderSystems::PreRender))
-        .add_systems(ExtractSchedule, extract_ui);  
-    app.add_systems(Update, read_input).insert_resource({
-        let mut ctx = imgui::Context::create();
-        ctx.fonts()
-            .add_font(&[FontSource::DefaultFontData { config: None }]);
-        UiContext {
-            ctx,
-        }
-    })
-    .insert_resource(UiBuilder {
-        ui: std::ptr::null_mut(),
-    });
+        .add_systems(ExtractSchedule, extract_ui);
+    app.add_systems(Update, read_input)
+        .insert_resource({
+            let mut ctx = imgui::Context::create();
+            ctx.fonts()
+                .add_font(&[FontSource::DefaultFontData { config: None }]);
+            UiContext { ctx }
+        })
+        .insert_resource(UiBuilder {
+            ui: std::ptr::null_mut(),
+        });
 }

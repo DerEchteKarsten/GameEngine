@@ -10,7 +10,9 @@
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
-use bevy::app::{App, First, Last, Plugin, PostStartup, PostUpdate, PreStartup, PreUpdate, Startup, Update};
+use bevy::app::{
+    App, First, Last, Plugin, PostStartup, PostUpdate, PreStartup, PreUpdate, Startup, Update,
+};
 use bevy::ecs::prelude::*;
 use bevy::ecs::schedule::{InternedScheduleLabel, ScheduleLabel};
 use imgui::{ComboBoxFlags, SliderFlags};
@@ -28,10 +30,10 @@ static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
-    pub level:    tracing::Level,
-    pub target:   String,
-    pub message:  String,
-    pub frame:    u64,
+    pub level: tracing::Level,
+    pub target: String,
+    pub message: String,
+    pub frame: u64,
 }
 
 type FrameCounter = Arc<std::sync::atomic::AtomicU64>;
@@ -41,7 +43,7 @@ struct SharedBuffer(Arc<Mutex<Vec<LogEntry>>>);
 
 struct ConsoleLayer {
     buffer: SharedBuffer,
-    frame:  FrameCounter,
+    frame: FrameCounter,
 }
 
 impl<S> Layer<S> for ConsoleLayer
@@ -54,10 +56,14 @@ where
             struct Msg(String);
             impl Visit for Msg {
                 fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
-                    if f.name() == "message" { self.0 = format!("{v:?}"); }
+                    if f.name() == "message" {
+                        self.0 = format!("{v:?}");
+                    }
                 }
                 fn record_str(&mut self, f: &Field, v: &str) {
-                    if f.name() == "message" { self.0 = v.to_owned(); }
+                    if f.name() == "message" {
+                        self.0 = v.to_owned();
+                    }
                 }
             }
             let mut m = Msg(String::new());
@@ -69,8 +75,8 @@ where
 
         if let Ok(mut buf) = self.buffer.0.lock() {
             buf.push(LogEntry {
-                level:    *event.metadata().level(),
-                target:   event.metadata().target().to_owned(),
+                level: *event.metadata().level(),
+                target: event.metadata().target().to_owned(),
                 message,
                 frame,
             });
@@ -95,30 +101,29 @@ pub struct ConsoleLog {
     frame_counter: u64,
 }
 
-
 /// UI state for the console window.
 #[derive(Resource)]
 pub struct ConsoleUiState {
-    pub open:             bool,
-    pub filter_text:      String,
-    pub auto_scroll:      bool,
-    pub clear_requested:  bool,
+    pub open: bool,
+    pub filter_text: String,
+    pub auto_scroll: bool,
+    pub clear_requested: bool,
     pub scroll_to_bottom: bool,
-    pub max_entries:      usize,
+    pub max_entries: usize,
     /// Minimum level index: 0=TRACE 1=DEBUG 2=INFO 3=WARN 4=ERROR
-    pub min_level:        u8,
+    pub min_level: u8,
 }
 
 impl Default for ConsoleUiState {
     fn default() -> Self {
         Self {
-            open:             true,
-            filter_text:      String::new(),
-            auto_scroll:      true,
-            clear_requested:  false,
+            open: true,
+            filter_text: String::new(),
+            auto_scroll: true,
+            clear_requested: false,
             scroll_to_bottom: false,
-            max_entries:      10_000,
-            min_level:        2,
+            max_entries: 10_000,
+            min_level: 2,
         }
     }
 }
@@ -127,7 +132,7 @@ impl Default for ConsoleUiState {
 #[derive(Resource)]
 struct ConsoleBuffer {
     buffer: SharedBuffer,
-    frame:  FrameCounter,
+    frame: FrameCounter,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,25 +140,25 @@ struct ConsoleBuffer {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct ConsolePlugin {
-    pub level:              tracing::Level,
+    pub level: tracing::Level,
     pub also_log_to_stderr: bool,
-    pub filter:             String,
+    pub filter: String,
 }
 
 impl Default for ConsolePlugin {
     fn default() -> Self {
         Self {
-            level:              tracing::Level::INFO,
+            level: tracing::Level::INFO,
             also_log_to_stderr: cfg!(debug_assertions),
-            filter:             "wgpu=warn,naga=warn".into(),
+            filter: "wgpu=warn,naga=warn".into(),
         }
     }
 }
 
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
-        let buffer: SharedBuffer  = SharedBuffer(Arc::new(Mutex::new(Vec::new())));
-        let frame:  FrameCounter  = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let buffer: SharedBuffer = SharedBuffer(Arc::new(Mutex::new(Vec::new())));
+        let frame: FrameCounter = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         // ── Tracing subscriber ────────────────────────────────────────────────
         {
@@ -165,19 +170,17 @@ impl Plugin for ConsolePlugin {
             } else {
                 format!("{},{}", self.level, self.filter)
             };
-            let env_filter = EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(&filter_str));
+            let env_filter =
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&filter_str));
 
             let console_layer = ConsoleLayer {
                 buffer: buffer.clone(),
-                frame:  frame.clone(),
+                frame: frame.clone(),
             };
 
             // Registry is required — it is the subscriber implementation that
             // provides LookupSpan, which ConsoleLayer depends on.
-            let subscriber = Registry::default()
-                .with(env_filter)
-                .with(console_layer);
+            let subscriber = Registry::default().with(env_filter).with(console_layer);
 
             #[cfg(feature = "trace")]
             let subscriber = subscriber.with(tracing_tracy::TracyLayer::new());
@@ -199,7 +202,8 @@ impl Plugin for ConsolePlugin {
         {
             let old = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                let loc = info.location()
+                let loc = info
+                    .location()
                     .map(|l| format!("{}:{}", l.file(), l.line()));
                 tracing::error!(
                     target: "panic",
@@ -215,8 +219,11 @@ impl Plugin for ConsolePlugin {
         app.insert_resource(ConsoleBuffer { buffer, frame })
             .insert_resource(ConsoleLog::default())
             .insert_resource(ConsoleUiState::default())
-            .add_systems(First,      tick_frame_counter)
-            .add_systems(PostUpdate, (flush_pending_logs, render_console_window).chain());
+            .add_systems(First, tick_frame_counter)
+            .add_systems(
+                PostUpdate,
+                (flush_pending_logs, render_console_window).chain(),
+            );
     }
 }
 
@@ -226,21 +233,24 @@ impl Plugin for ConsolePlugin {
 
 fn tick_frame_counter(mut log: ResMut<ConsoleLog>, cb: Res<ConsoleBuffer>) {
     log.frame_counter = log.frame_counter.wrapping_add(1);
-    cb.frame.store(log.frame_counter, std::sync::atomic::Ordering::Relaxed);
+    cb.frame
+        .store(log.frame_counter, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn flush_pending_logs(
-    cb:         Res<ConsoleBuffer>,
-    mut log:    ResMut<ConsoleLog>,
-    mut state:  ResMut<ConsoleUiState>,
+    cb: Res<ConsoleBuffer>,
+    mut log: ResMut<ConsoleLog>,
+    mut state: ResMut<ConsoleUiState>,
 ) {
     if state.clear_requested {
         log.entries.clear();
-        state.clear_requested  = false;
+        state.clear_requested = false;
         state.scroll_to_bottom = true;
     }
 
-    let Ok(mut pending) = cb.buffer.0.lock() else { return };
+    let Ok(mut pending) = cb.buffer.0.lock() else {
+        return;
+    };
     let max = state.max_entries;
     log.entries.extend(pending.drain(..));
 
@@ -283,12 +293,13 @@ fn render_console_window(
         let available = ui.content_region_avail()[0];
         // Approximate fixed costs: "Level:" "Schedule:" "Clear" "Auto-scroll" "Clear log" + separators
         let fixed_cost = 420.0; // tune this to taste
-        let n_stretchy = 3.0;   // level slider, schedule combo, text filter
+        let n_stretchy = 3.0; // level slider, schedule combo, text filter
         let stretch_w = ((available - fixed_cost) / n_stretchy).max(40.0);
 
         ui.set_next_item_width(stretch_w);
         let mut min_level = ui_state.min_level as i32;
-        if ui.slider_config("##level", 0, 4)
+        if ui
+            .slider_config("##level", 0, 4)
             .display_format(level_names[ui_state.min_level as usize])
             .build(&mut min_level)
         {
@@ -339,12 +350,8 @@ fn render_console_window(
 
                     // Text filter
                     if !filter_lc.is_empty() {
-                        let haystack = format!(
-                            "{} {}",
-                            entry.target,
-                            entry.message,
-                        )
-                        .to_lowercase();
+                        let haystack =
+                            format!("{} {}", entry.target, entry.message,).to_lowercase();
                         if !haystack.contains(&filter_lc) {
                             continue;
                         }
@@ -368,5 +375,5 @@ fn render_console_window(
                     ui.set_scroll_here_y_with_ratio(1.0);
                 }
             });
-        });
+    });
 }
