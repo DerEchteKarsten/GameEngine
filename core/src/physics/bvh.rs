@@ -4,7 +4,7 @@ use bevy::{
     ecs::system::{SystemParam, lifetimeless::Read},
     math::{
         VectorSpace,
-        bounding::{Aabb3d, BoundingVolume, RayCast3d},
+        bounding::{Aabb3d, BoundingVolume, IntersectsVolume, RayCast3d},
     },
     prelude::*,
 };
@@ -12,7 +12,12 @@ use bytemuck::{Pod, Zeroable, bytes_of};
 use itertools::Itertools;
 use tracing_log::log;
 
-use crate::{assets::Mesh, components::gizzmos::BoxGizzmo, render::{render::RenderSettings, world::Model}};
+use crate::{
+    assets::{GpuMeshletMesh, Scene, material::Material},
+    editor::gizzmos::{BoxGizzmo, DrawGizzmos},
+    render::render::RenderSettings,
+    scene::Instance,
+};
 #[derive(Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ChildType {
@@ -45,8 +50,6 @@ unsafe impl Zeroable for HasBlas {}
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct HasBlas {
-    transform: [f32; 16],
-    sub_instance_index: usize,
     blas_root_node_index: usize,
     entity: Entity,
 }
@@ -54,7 +57,7 @@ struct HasBlas {
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub(crate) struct HasLeaf {
-    pub(crate) meshlet: usize,
+    pub(crate) triangle: [[f32; 4]; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -134,7 +137,6 @@ impl NodeBuilder {
                 ChildData::HasLeaf(cdata) => data.extend_from_slice(bytes_of(cdata)),
             }
         }
-        data.extend_from_slice(bytes_of(&67u64));
         ptr
     }
     fn total_aabb(&self) -> Option<Aabb3d> {
@@ -210,7 +212,6 @@ impl<'a> Iterator for &mut ChildIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.child >= 8 {
             let offset = self.view.offset + self.data_offset;
-            assert!(67u64 == *bytemuck::from_bytes::<u64>(&self.view.data[offset..offset + 8]));
             return None;
         }
         let stype = self.view.get_type(self.child);
@@ -225,10 +226,12 @@ impl<'a> Iterator for &mut ChildIter<'a> {
     }
 }
 
-fn transform_ray(ray: &RayCast3d, mat: &Mat4) -> RayCast3d {
+fn transform_ray(ray: &RayCast3d, mat: &Mat4) -> Option<RayCast3d> {
     let origin = mat.transform_point3(ray.origin.into());
     let direction = mat.transform_vector3(ray.direction.to_vec3());
-    RayCast3d::new(origin, Dir3::new(direction).unwrap(), ray.max)
+    Dir3::new(direction)
+        .map(|direction| RayCast3d::new(origin, direction, ray.max))
+        .ok()
 }
 
 fn transform_aabb(aabb: &Aabb3d, mat: &Mat4) -> Aabb3d {
@@ -275,9 +278,6 @@ fn morton3d(x: u32, y: u32, z: u32) -> u64 {
 #[derive(Clone, Copy, Debug)]
 pub struct RayCastResult {
     pub entity: Entity,
-    pub sub_instance: usize,
-    pub meshlet: usize,
-    pub aabb: Aabb3d,
     pub t: f32,
 }
 
@@ -290,15 +290,15 @@ impl SceneBvh {
     fn raycast(
         &self,
         ray: &RayCast3d,
-        assets: &Assets<Mesh>,
-        models: &Query<&Model>,
+        meshes: &Assets<GpuMeshletMesh>,
+        instances: &Query<(&Instance, &GlobalTransform)>,
     ) -> Option<RayCastResult> {
         if self.bvh.is_empty() {
             return None;
         }
 
         let mut best: Option<RayCastResult> = None;
-        let mut stack: Vec<(usize, &[u8], f32)> = vec![(self.root, &self.bvh, 0.0)];
+        let mut stack: Vec<(usize, &[u8], f32)> = vec![(self.root, &self.bvh, ray.max)];
 
         while let Some((offset, bvh, t_entry)) = stack.pop() {
             if best.map_or(false, |b| t_entry >= b.t) {
@@ -308,7 +308,7 @@ impl SceneBvh {
             let view = NodeView::new(bvh, offset);
 
             // Gather intersecting children, sort closest-last for stack ordering
-            let mut hits: Vec<(f32, ChildData, Aabb3d)> = Vec::new();
+            let mut hits: Vec<(f32, ChildData)> = Vec::new();
             for (data, aabb) in &mut view.child_iter() {
                 let Some(t) = ray.aabb_intersection_at(&aabb) else {
                     continue;
@@ -316,33 +316,35 @@ impl SceneBvh {
                 if best.map_or(false, |b| t >= b.t) {
                     continue;
                 }
-                hits.push((t, data, aabb));
+                hits.push((t, data));
             }
-            hits.sort_unstable_by(|a, b| {
-                b.0.total_cmp(&a.0)
-            });
+            hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
-            for (t, data, _) in hits {
+            for (t, data) in hits {
                 match data {
                     ChildData::HasNode(node) => {
                         stack.push((node.ptr, bvh, t));
                     }
 
                     ChildData::HasBlas(blas) => {
-                        // Resolve the per-mesh BLAS buffer through the entity
-                        let Ok(model_handle) = models.get(blas.entity) else {
+                        let Ok((instance, transform)) = instances.get(blas.entity) else {
                             continue;
                         };
-                        let Some(model) = assets.get(&model_handle.model) else {
+                        let Some(mesh) = meshes.get(&instance.mesh) else {
                             continue;
                         };
-                        let mesh = &model.meshes[blas.sub_instance_index];
+
                         let blas_bvh: &[u8] = &mesh.colission_bvh;
 
-                        // Transform ray into local space of this instance
-                        let inv = Mat4::from_cols_array(&blas.transform).inverse();
-                        let local_ray = transform_ray(ray, &inv);
+                        let mat = transform.to_matrix();
+                        let inv = mat.inverse();
+                        let local_to_world_t =
+                            mat.transform_vector3(ray.direction.to_vec3()).length();
+                        let Some(mut local_ray) = transform_ray(ray, &inv) else {
+                            continue;
+                        };
 
+                        local_ray.max /= local_to_world_t;
                         // Traverse the BLAS inline — push its root onto the
                         // stack with the local ray. We can't mix rays though,
                         // so we do a nested traversal here rather than sharing
@@ -352,11 +354,11 @@ impl SceneBvh {
                             blas_bvh,
                             blas.blas_root_node_index,
                             blas.entity,
-                            blas.sub_instance_index,
-                            best.map(|b| b.t),
+                            best.map(|b| b.t / local_to_world_t),
                         );
 
-                        if let Some(result) = blas_result {
+                        if let Some(mut result) = blas_result {
+                            result.t *= local_to_world_t;
                             if best.map_or(true, |b| result.t < b.t) {
                                 best = Some(result);
                             }
@@ -378,7 +380,6 @@ fn raycast_blas(
     bvh: &[u8],
     root: usize,
     entity: Entity,
-    sub_instance: usize,
     t_max: Option<f32>,
 ) -> Option<RayCastResult> {
     let mut best: Option<RayCastResult> = None;
@@ -394,8 +395,7 @@ fn raycast_blas(
         }
 
         let view = NodeView::new(bvh, offset);
-
-        let mut hits: Vec<(f32, ChildData, Aabb3d)> = Vec::with_capacity(8);
+        let mut hits = Vec::new();
         for (data, aabb) in &mut view.child_iter() {
             let Some(t) = ray.aabb_intersection_at(&aabb) else {
                 continue;
@@ -406,24 +406,26 @@ fn raycast_blas(
             if t_max.map_or(false, |tm| t >= tm) {
                 continue;
             }
-            hits.push((t, data, aabb));
+            hits.push((t, data));
         }
         hits.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
 
-        for (t, data, aabb) in hits {
+        for (t, data) in hits {
             match data {
                 ChildData::HasNode(node) => {
                     stack.push((node.ptr, t));
                 }
                 ChildData::HasLeaf(leaf) => {
-                    if best.map_or(true, |b| t < b.t) {
-                        best = Some(RayCastResult {
-                            entity,
-                            sub_instance,
-                            meshlet: leaf.meshlet,
-                            aabb,
-                            t,
-                        });
+                    let hit = ray_triangle_intersect(
+                        ray,
+                        Vec4::from_array(leaf.triangle[0]).xyz().to_vec3a(),
+                        Vec4::from_array(leaf.triangle[1]).xyz().to_vec3a(),
+                        Vec4::from_array(leaf.triangle[2]).xyz().to_vec3a(),
+                    );
+                    if let Some(hit) = hit {
+                        if best.map_or(true, |b| hit < b.t) {
+                            best = Some(RayCastResult { entity, t: hit });
+                        }
                     }
                 }
                 ChildData::HasBlas(_) => {}
@@ -434,25 +436,65 @@ fn raycast_blas(
     best
 }
 
+pub fn ray_triangle_intersect(ray: &RayCast3d, v0: Vec3A, v1: Vec3A, v2: Vec3A) -> Option<f32> {
+    let e1 = v1 - v0;
+    let e2 = v2 - v0;
+
+    let h = ray.direction.cross(e2);
+    let det = e1.dot(h);
+
+    if det.abs() < 1e-8 {
+        return None;
+    }
+
+    let inv_det = 1.0 / det;
+    let s = ray.origin - v0;
+
+    let u = s.dot(h) * inv_det;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+
+    let q = s.cross(e1);
+    let v = ray.direction.dot(q) * inv_det;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+
+    let t = e2.dot(q) * inv_det;
+    if t <= 0.0 {
+        return None;
+    }
+
+    Some(t)
+}
+
 #[derive(SystemParam)]
 pub struct Raycast<'w, 's> {
-    meshes: Res<'w, Assets<Mesh>>,
-    models: Query<'w, 's, Read<Model>>,
+    meshes: Res<'w, Assets<GpuMeshletMesh>>,
+    instances: Query<'w, 's, (Read<Instance>, Read<GlobalTransform>)>,
     bvh: Res<'w, SceneBvh>,
 }
 
-impl<'w, 's> Raycast<'w, 's> {
+pub struct MeshRefrence<'a> {
+    pub mesh: &'a GpuMeshletMesh,
+    pub transform: Mat4,
+}
+
+impl<'w, 's> Raycast<'w, 's>
+where
+    'w: 's,
+{
     pub fn raycast(&self, ray: &RayCast3d) -> Option<RayCastResult> {
-        self.bvh.raycast(ray, &self.meshes, &self.models)
+        self.bvh.raycast(ray, &self.meshes, &self.instances)
     }
-    pub fn get_instance_transform(&self, hit: &RayCastResult) -> Mat4 {
-        let Ok(model) = self.models.get(hit.entity) else {
-            return Mat4::IDENTITY;
-        };
-        let Some(mesh) = self.meshes.get(&model.model) else {
-            return Mat4::IDENTITY;
-        };
-        mesh.instance_transforms[hit.sub_instance]
+    pub fn get_instance(&'s self, hit: &RayCastResult) -> Option<MeshRefrence<'s>> {
+        let (instance, transform) = self.instances.get(hit.entity).ok()?;
+        let mesh = self.meshes.get(&instance.mesh)?;
+        Some(MeshRefrence {
+            transform: transform.to_matrix(),
+            mesh,
+        })
     }
 }
 
@@ -527,63 +569,46 @@ pub(crate) fn build_bvh(
 }
 
 pub(crate) fn update_bvh(
-    assets: Res<Assets<Mesh>>,
-    models: Query<(Entity, &Model, &GlobalTransform)>,
+    assets: Res<Assets<GpuMeshletMesh>>,
+    instances: Query<(Entity, &Instance, &GlobalTransform)>,
     mut scene_bvh: ResMut<SceneBvh>,
 ) {
     scene_bvh.bvh.clear();
 
     let mut total_aabb: Option<Aabb3d> = None;
-    for (_, model, transform) in &models {
-        let Some(model) = assets.get(&model.model) else {
+    let mut meshes = Vec::new();
+    for (entity, mesh_handle, transform) in &instances {
+        let Some(mesh) = assets.get(&mesh_handle.mesh) else {
             continue;
         };
-        for instance in model.instance_mesh.iter().copied() {
-            let mesh = &model.meshes[instance as usize];
-            let aabb = transform_aabb(
-                &Aabb3d::new(
-                    Vec3A::from_array(mesh.header.aabb.center),
-                    Vec3A::from_array(mesh.header.aabb.half_extend),
-                ),
-                &model.instance_transforms[instance as usize],
-            );
-            if let Some(total_aabb) = &mut total_aabb {
-                *total_aabb = total_aabb.merge(&aabb);
-            } else {
-                total_aabb = Some(aabb);
-            }
+        let mat = transform.to_matrix();
+        let aabb = transform_aabb(
+            &Aabb3d::new(
+                Vec3A::from_array(mesh.header.aabb.center),
+                Vec3A::from_array(mesh.header.aabb.half_extend),
+            ),
+            &mat,
+        );
+        meshes.push((entity.clone(), mesh, aabb));
+        if let Some(total_aabb) = &mut total_aabb {
+            *total_aabb = total_aabb.merge(&aabb);
+        } else {
+            total_aabb = Some(aabb);
         }
     }
-
     let Some(total_aabb) = total_aabb else { return };
+
     let mut initial_nodes = Vec::new();
-    for (entity, model, transform) in &models {
-        let Some(model) = assets.get(&model.model) else {
-            continue;
-        };
-        for instance in model.instance_mesh.iter().copied() {
-            let mesh = &model.meshes[instance as usize];
-            let sub_transform = model.instance_transforms[instance as usize];
-            let total_transform = transform.to_matrix() * sub_transform;
-            let aabb = transform_aabb(
-                &Aabb3d::new(
-                    Vec3A::from_array(mesh.header.aabb.center),
-                    Vec3A::from_array(mesh.header.aabb.half_extend),
-                ),
-                &sub_transform,
-            );
-            initial_nodes.push(LeafData {
-                data: ChildData::HasBlas(HasBlas {
-                    entity,
-                    blas_root_node_index: mesh.header.colission_bvh_root_node as usize,
-                    sub_instance_index: instance as usize,
-                    transform: total_transform.to_cols_array(),
-                }),
-                typ: ChildType::HasBlas,
-                mortan_code: vec3_to_morton(aabb.center(), total_aabb.min, total_aabb.max, 1024),
-                aabb,
-            });
-        }
+    for (entity, mesh, aabb) in meshes {
+        initial_nodes.push(LeafData {
+            data: ChildData::HasBlas(HasBlas {
+                entity,
+                blas_root_node_index: mesh.header.colission_bvh_root_node as usize,
+            }),
+            typ: ChildType::HasBlas,
+            mortan_code: vec3_to_morton(aabb.center(), total_aabb.min, total_aabb.max, 1024),
+            aabb,
+        });
     }
     let nodes = build_intial_nodes(&mut initial_nodes, total_aabb);
     let root = build_bvh(nodes, total_aabb, &mut scene_bvh.bvh);
@@ -591,18 +616,23 @@ pub(crate) fn update_bvh(
 }
 
 pub(crate) fn debug_draw_scene_bvh(
-    mut cmd: Commands,
+    mut gizzmos: DrawGizzmos,
     scene_bvh: Res<SceneBvh>,
-    assets: Res<Assets<Mesh>>,
-    models: Query<&Model>,
+    assets: Res<Assets<GpuMeshletMesh>>,
+    models: Query<(&Instance, &GlobalTransform)>,
     setting: Res<RenderSettings>,
 ) {
-    if scene_bvh.bvh.is_empty() || !setting.draw_scene_bvh {
+    if scene_bvh.bvh.is_empty()
+        || (!setting.draw_scene_nodes
+            && !setting.draw_scene_blas_nodes
+            && !setting.draw_scene_leaf_nodes)
+    {
         return;
     }
 
     // (bvh buffer, node offset, transform)
-    let mut stack: Vec<(&[u8], usize, Mat4)> = vec![(&scene_bvh.bvh, scene_bvh.root, Mat4::IDENTITY)];
+    let mut stack: Vec<(&[u8], usize, Mat4)> =
+        vec![(&scene_bvh.bvh, scene_bvh.root, Mat4::IDENTITY)];
 
     while let Some((bvh, offset, transform)) = stack.pop() {
         let view = NodeView::new(bvh, offset);
@@ -610,36 +640,51 @@ pub(crate) fn debug_draw_scene_bvh(
 
         for i in 0..child_count {
             let aabb = view.get_aabb(i);
-            let Some(data) = view.get_data(i) else { continue };
-
-            let color = match data {
-                ChildData::HasNode(_) => Vec4::new(0.0, 1.0, 0.0, 0.2),
-                ChildData::HasBlas(_) => Vec4::new(0.0, 0.0, 1.0, 0.2),
-                ChildData::HasLeaf(_) => Vec4::new(1.0, 0.0, 0.0, 0.2),
+            let Some(data) = view.get_data(i) else {
+                continue;
             };
 
-            cmd.spawn(BoxGizzmo::with_local_tranform(
-                aabb.center().into(),
-                aabb.half_size().into(),
-                color,
-                transform,
-            ));
+            let color = match data {
+                ChildData::HasNode(_) if setting.draw_scene_nodes => {
+                    Some(Vec4::new(0.0, 1.0, 0.0, 0.2))
+                }
+                ChildData::HasBlas(_) if setting.draw_scene_blas_nodes => {
+                    Some(Vec4::new(0.0, 0.0, 1.0, 0.2))
+                }
+                ChildData::HasLeaf(_) if setting.draw_scene_leaf_nodes => {
+                    Some(Vec4::new(1.0, 0.0, 0.0, 0.2))
+                }
+                _ => None,
+            };
+
+            if let Some(color) = color {
+                gizzmos.draw_gizzmo_with_transform(
+                    &BoxGizzmo {
+                        center: aabb.center().into(),
+                        half_extend: aabb.half_size().into(),
+                        color,
+                    },
+                    transform,
+                );
+            }
 
             match data {
                 ChildData::HasNode(node) => {
                     stack.push((bvh, node.ptr, transform));
                 }
                 ChildData::HasBlas(blas) => {
-                    let Ok(model_handle) = models.get(blas.entity) else { continue };
-                    let Some(model) = assets.get(&model_handle.model) else { continue };
-                    let mesh = &model.meshes[blas.sub_instance_index];
-                    let blas_transform = Mat4::from_cols_array(&blas.transform);
-                    // SAFETY: we're pushing a reference to mesh data that lives in the
-                    // Assets collection. The borrow is valid for this system's duration.
-                    let blas_bvh: &[u8] = unsafe {
-                        std::slice::from_raw_parts(mesh.colission_bvh.as_ptr(), mesh.colission_bvh.len())
+                    let Ok((instance, transform)) = models.get(blas.entity) else {
+                        continue;
                     };
-                    stack.push((blas_bvh, blas.blas_root_node_index, blas_transform));
+                    let Some(mesh) = assets.get(&instance.mesh) else {
+                        continue;
+                    };
+
+                    stack.push((
+                        &mesh.colission_bvh,
+                        blas.blas_root_node_index,
+                        transform.to_matrix(),
+                    ));
                 }
                 ChildData::HasLeaf(_) => {}
             }

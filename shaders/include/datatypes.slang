@@ -40,7 +40,6 @@ struct Meshlet {
     uint8_t* triangle_index;
     uint vertex_count;
     uint triangle_count;
-    uint2 pad;
 }
 
 struct AabbError {
@@ -94,11 +93,10 @@ struct DispatchIndirectCommand {
     uint z;
 }
 
-struct DispatchParams {
-    uint node_head;
-    uint node_tail;
-    uint done;
-    uint meshlet_count;
-    DrawIndirectCommand indirect_draw;
-    DispatchIndirectCommand indirect_dispatch;
-}   
+struct InstanceHeader {
+    uint64_t meshlet_offset;
+    uint64_t cull_data_offset;
+}
+
+
+#define OUTLINE_BIT 0b1  

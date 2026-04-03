@@ -134,21 +134,21 @@ impl ComputePass for BvhCull {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct CDrawGizzmosBindings {
+pub struct CDrawAabbsBindings {
     pub world_to_clip: Mat4,
     pub gizzmos: u64,
 }
 
-pub struct DrawGizzmosBindings<'a> {
+pub struct DrawAabbsBindings<'a> {
     pub world_to_clip: Mat4,
     pub gizzmos: BufferSlice<'a, Gizzmo>,
 }
 
-unsafe impl bytemuck::Pod for CDrawGizzmosBindings {}
-unsafe impl bytemuck::Zeroable for CDrawGizzmosBindings {}
+unsafe impl bytemuck::Pod for CDrawAabbsBindings {}
+unsafe impl bytemuck::Zeroable for CDrawAabbsBindings {}
 
-impl Binding for CDrawGizzmosBindings {
-    type CpuBinding<'a> = DrawGizzmosBindings<'a>;
+impl Binding for CDrawAabbsBindings {
+    type CpuBinding<'a> = DrawAabbsBindings<'a>;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
@@ -172,17 +172,213 @@ ResourceState {
         ]
     }
 }
-pub struct DrawGizzmos;
+pub struct DrawAabbs;
 
 
-impl RasterPass for DrawGizzmos {
-    type GpuBinding = CDrawGizzmosBindings;
+impl RasterPass for DrawAabbs {
+    type GpuBinding = CDrawAabbsBindings;
 }
 
-impl RasterVertexShaderPass for DrawGizzmos {
+impl RasterVertexShaderPass for DrawAabbs {
     const VERTEX: &'static str = "vertex\0";
     const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_gizzmos.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_aabbs.slang.spv");
+    
+    fn module_cache() -> &'static OnceLock<VkShaderModule> {
+        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
+        &CACHE
+    }
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+        &CACHE
+    }
+}
+    
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CDrawArrowsBindings {
+    pub world_to_clip: Mat4,
+    pub gizzmos: u64,
+}
+
+pub struct DrawArrowsBindings<'a> {
+    pub world_to_clip: Mat4,
+    pub gizzmos: BufferSlice<'a, Gizzmo>,
+}
+
+unsafe impl bytemuck::Pod for CDrawArrowsBindings {}
+unsafe impl bytemuck::Zeroable for CDrawArrowsBindings {}
+
+impl Binding for CDrawArrowsBindings {
+    type CpuBinding<'a> = DrawArrowsBindings<'a>;
+
+    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
+        Self {
+            world_to_clip: bindings.world_to_clip,
+gizzmos: bindings.gizzmos.gpu_ptr,
+        }
+    }
+
+    fn resources<'a>(
+        bindings: &Self::CpuBinding<'a>,
+        stages: PipelineStageFlags2,
+    ) -> Vec<(ResourceHandle, ResourceState)> {
+        vec![
+            (bindings.gizzmos.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+        ]
+    }
+}
+pub struct DrawArrows;
+
+
+impl RasterPass for DrawArrows {
+    type GpuBinding = CDrawArrowsBindings;
+}
+
+impl RasterVertexShaderPass for DrawArrows {
+    const VERTEX: &'static str = "vertex\0";
+    const FRAGMENT: &'static str = "fragment\0";
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_arrows.slang.spv");
+    
+    fn module_cache() -> &'static OnceLock<VkShaderModule> {
+        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
+        &CACHE
+    }
+    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {
+        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
+        &CACHE
+    }
+}
+    
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CDrawOutlineBindings {
+    pub depth: BindlessHandle,
+    pub out: BindlessHandle,
+    pub outline_color_and_radius: Vec4,
+    pub view_port_offset: IVec2,
+    pub view_port_size: UVec2,
+    pub swpachain_size: UVec2,
+}
+
+pub struct DrawOutlineBindings<'a> {
+    pub depth: SampledImageViewBinding<'a>,
+    pub out: StorageImageViewBinding<'a>,
+    pub outline_color_and_radius: Vec4,
+    pub view_port_offset: IVec2,
+    pub view_port_size: UVec2,
+    pub swpachain_size: UVec2,
+}
+
+unsafe impl bytemuck::Pod for CDrawOutlineBindings {}
+unsafe impl bytemuck::Zeroable for CDrawOutlineBindings {}
+
+impl Binding for CDrawOutlineBindings {
+    type CpuBinding<'a> = DrawOutlineBindings<'a>;
+
+    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
+        Self {
+            depth: bindings.depth.handle,
+out: bindings.out.handle,
+outline_color_and_radius: bindings.outline_color_and_radius,
+view_port_offset: bindings.view_port_offset,
+view_port_size: bindings.view_port_size,
+swpachain_size: bindings.swpachain_size,
+        }
+    }
+
+    fn resources<'a>(
+        bindings: &Self::CpuBinding<'a>,
+        stages: PipelineStageFlags2,
+    ) -> Vec<(ResourceHandle, ResourceState)> {
+        vec![
+            (bindings.depth.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_SAMPLED_READ,
+    layout: bindings.depth.prefered_layout,
+    ..Default::default()
+}),
+(bindings.out.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_WRITE | AccessFlags2::SHADER_STORAGE_READ,
+    layout: bindings.out.prefered_layout,
+    ..Default::default()
+}),
+        ]
+    }
+}
+pub struct DrawOutline;
+
+
+impl ComputePass for DrawOutline {
+    type GpuBinding = CDrawOutlineBindings;
+
+    const ENTRY: &'static str = "computeMain\0";
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_outline.slang.spv");
+    fn cache() -> &'static OnceLock<VkPipeline> {
+        static CACHE: OnceLock<VkPipeline> = OnceLock::new();
+        &CACHE
+    }
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CDrawSpheresBindings {
+    pub world_to_clip: Mat4,
+    pub gizzmos: u64,
+}
+
+pub struct DrawSpheresBindings<'a> {
+    pub world_to_clip: Mat4,
+    pub gizzmos: BufferSlice<'a, Gizzmo>,
+}
+
+unsafe impl bytemuck::Pod for CDrawSpheresBindings {}
+unsafe impl bytemuck::Zeroable for CDrawSpheresBindings {}
+
+impl Binding for CDrawSpheresBindings {
+    type CpuBinding<'a> = DrawSpheresBindings<'a>;
+
+    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
+        Self {
+            world_to_clip: bindings.world_to_clip,
+gizzmos: bindings.gizzmos.gpu_ptr,
+        }
+    }
+
+    fn resources<'a>(
+        bindings: &Self::CpuBinding<'a>,
+        stages: PipelineStageFlags2,
+    ) -> Vec<(ResourceHandle, ResourceState)> {
+        vec![
+            (bindings.gizzmos.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+        ]
+    }
+}
+pub struct DrawSpheres;
+
+
+impl RasterPass for DrawSpheres {
+    type GpuBinding = CDrawSpheresBindings;
+}
+
+impl RasterVertexShaderPass for DrawSpheres {
+    const VERTEX: &'static str = "vertex\0";
+    const FRAGMENT: &'static str = "fragment\0";
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_spheres.slang.spv");
     
     fn module_cache() -> &'static OnceLock<VkShaderModule> {
         static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
@@ -526,15 +722,19 @@ impl RasterVertexShaderPass for RasterUi {
 pub struct CSkyboxBindings {
     pub inverse_proj: Mat4,
     pub inverse_view: Mat4,
-    pub window_size: Vec4,
     pub out: BindlessHandle,
+    pub view_port_offset: IVec2,
+    pub view_port_size: UVec2,
+    pub swpachain_size: UVec2,
 }
 
 pub struct SkyboxBindings<'a> {
     pub inverse_proj: Mat4,
     pub inverse_view: Mat4,
-    pub window_size: Vec4,
     pub out: StorageImageViewBinding<'a>,
+    pub view_port_offset: IVec2,
+    pub view_port_size: UVec2,
+    pub swpachain_size: UVec2,
 }
 
 unsafe impl bytemuck::Pod for CSkyboxBindings {}
@@ -547,8 +747,10 @@ impl Binding for CSkyboxBindings {
         Self {
             inverse_proj: bindings.inverse_proj,
 inverse_view: bindings.inverse_view,
-window_size: bindings.window_size,
 out: bindings.out.handle,
+view_port_offset: bindings.view_port_offset,
+view_port_size: bindings.view_port_size,
+swpachain_size: bindings.swpachain_size,
         }
     }
 
@@ -573,7 +775,7 @@ pub struct Skybox;
 impl ComputePass for Skybox {
     type GpuBinding = CSkyboxBindings;
 
-    const ENTRY: &'static str = "post\0";
+    const ENTRY: &'static str = "skybox\0";
     const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/skybox.slang.spv");
     fn cache() -> &'static OnceLock<VkPipeline> {
         static CACHE: OnceLock<VkPipeline> = OnceLock::new();
@@ -582,26 +784,35 @@ impl ComputePass for Skybox {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct CDrawAabbsBindings {
-    pub world_to_clip: Mat4,
-    pub gizzmos: u64,
+pub struct CRasterOutlineBindings {
+    pub view: Mat4,
+    pub proj: Mat4,
+    pub instance_transforms: u64,
+    pub meshlets: u64,
+    pub instance_flags: u64,
 }
 
-pub struct DrawAabbsBindings<'a> {
-    pub world_to_clip: Mat4,
-    pub gizzmos: BufferSlice<'a, Gizzmo>,
+pub struct RasterOutlineBindings<'a> {
+    pub view: Mat4,
+    pub proj: Mat4,
+    pub instance_transforms: BufferSlice<'a, Mat4>,
+    pub meshlets: BufferSlice<'a, InstancedMeshlet>,
+    pub instance_flags: BufferSlice<'a, u32>,
 }
 
-unsafe impl bytemuck::Pod for CDrawAabbsBindings {}
-unsafe impl bytemuck::Zeroable for CDrawAabbsBindings {}
+unsafe impl bytemuck::Pod for CRasterOutlineBindings {}
+unsafe impl bytemuck::Zeroable for CRasterOutlineBindings {}
 
-impl Binding for CDrawAabbsBindings {
-    type CpuBinding<'a> = DrawAabbsBindings<'a>;
+impl Binding for CRasterOutlineBindings {
+    type CpuBinding<'a> = RasterOutlineBindings<'a>;
 
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
-            world_to_clip: bindings.world_to_clip,
-gizzmos: bindings.gizzmos.gpu_ptr,
+            view: bindings.view,
+proj: bindings.proj,
+instance_transforms: bindings.instance_transforms.gpu_ptr,
+meshlets: bindings.meshlets.gpu_ptr,
+instance_flags: bindings.instance_flags.gpu_ptr,
         }
     }
 
@@ -610,7 +821,21 @@ gizzmos: bindings.gizzmos.gpu_ptr,
         stages: PipelineStageFlags2,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
-            (bindings.gizzmos.into(), 
+            (bindings.instance_transforms.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+(bindings.meshlets.into(), 
+ResourceState {
+    stages,
+    access: AccessFlags2::SHADER_STORAGE_READ,
+
+    ..Default::default()
+}),
+(bindings.instance_flags.into(), 
 ResourceState {
     stages,
     access: AccessFlags2::SHADER_STORAGE_READ,
@@ -620,141 +845,17 @@ ResourceState {
         ]
     }
 }
-pub struct DrawAabbs;
+pub struct RasterOutline;
 
 
-impl RasterPass for DrawAabbs {
-    type GpuBinding = CDrawAabbsBindings;
+impl RasterPass for RasterOutline {
+    type GpuBinding = CRasterOutlineBindings;
 }
 
-impl RasterVertexShaderPass for DrawAabbs {
+impl RasterVertexShaderPass for RasterOutline {
     const VERTEX: &'static str = "vertex\0";
     const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_aabbs.slang.spv");
-    
-    fn module_cache() -> &'static OnceLock<VkShaderModule> {
-        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
-        &CACHE
-    }
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
-        &CACHE
-    }
-}
-    
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct CDrawArrowsBindings {
-    pub world_to_clip: Mat4,
-    pub gizzmos: u64,
-}
-
-pub struct DrawArrowsBindings<'a> {
-    pub world_to_clip: Mat4,
-    pub gizzmos: BufferSlice<'a, Gizzmo>,
-}
-
-unsafe impl bytemuck::Pod for CDrawArrowsBindings {}
-unsafe impl bytemuck::Zeroable for CDrawArrowsBindings {}
-
-impl Binding for CDrawArrowsBindings {
-    type CpuBinding<'a> = DrawArrowsBindings<'a>;
-
-    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
-        Self {
-            world_to_clip: bindings.world_to_clip,
-gizzmos: bindings.gizzmos.gpu_ptr,
-        }
-    }
-
-    fn resources<'a>(
-        bindings: &Self::CpuBinding<'a>,
-        stages: PipelineStageFlags2,
-    ) -> Vec<(ResourceHandle, ResourceState)> {
-        vec![
-            (bindings.gizzmos.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
-
-    ..Default::default()
-}),
-        ]
-    }
-}
-pub struct DrawArrows;
-
-
-impl RasterPass for DrawArrows {
-    type GpuBinding = CDrawArrowsBindings;
-}
-
-impl RasterVertexShaderPass for DrawArrows {
-    const VERTEX: &'static str = "vertex\0";
-    const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_arrows.slang.spv");
-    
-    fn module_cache() -> &'static OnceLock<VkShaderModule> {
-        static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
-        &CACHE
-    }
-    fn pipeline_cache() -> &'static Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> {
-        static CACHE: Mutex<LazyCell<HashMap<RasterHash, VkPipeline>>> = Mutex::new(LazyCell::new(|| HashMap::new()));
-        &CACHE
-    }
-}
-    
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct CDrawSpheresBindings {
-    pub world_to_clip: Mat4,
-    pub gizzmos: u64,
-}
-
-pub struct DrawSpheresBindings<'a> {
-    pub world_to_clip: Mat4,
-    pub gizzmos: BufferSlice<'a, Gizzmo>,
-}
-
-unsafe impl bytemuck::Pod for CDrawSpheresBindings {}
-unsafe impl bytemuck::Zeroable for CDrawSpheresBindings {}
-
-impl Binding for CDrawSpheresBindings {
-    type CpuBinding<'a> = DrawSpheresBindings<'a>;
-
-    fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
-        Self {
-            world_to_clip: bindings.world_to_clip,
-gizzmos: bindings.gizzmos.gpu_ptr,
-        }
-    }
-
-    fn resources<'a>(
-        bindings: &Self::CpuBinding<'a>,
-        stages: PipelineStageFlags2,
-    ) -> Vec<(ResourceHandle, ResourceState)> {
-        vec![
-            (bindings.gizzmos.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
-
-    ..Default::default()
-}),
-        ]
-    }
-}
-pub struct DrawSpheres;
-
-
-impl RasterPass for DrawSpheres {
-    type GpuBinding = CDrawSpheresBindings;
-}
-
-impl RasterVertexShaderPass for DrawSpheres {
-    const VERTEX: &'static str = "vertex\0";
-    const FRAGMENT: &'static str = "fragment\0";
-    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/draw_spheres.slang.spv");
+    const BYTES: &[u8] = include_bytes!("/home/karsten/code/GameEngine/core/../shaders/bin/raster_outline.slang.spv");
     
     fn module_cache() -> &'static OnceLock<VkShaderModule> {
         static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
@@ -768,9 +869,67 @@ impl RasterVertexShaderPass for DrawSpheres {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
+pub struct InstanceMeshletIndex {
+    pub instance: u32,
+    pub meshlet: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstanceHeader {
+    pub meshlet_offset: u64,
+    pub cull_data_offset: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Gizzmo {
+    pub transform: Mat4,
+    pub color: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct AabbError {
+    pub center_and_error: Vec4,
+    pub half_extent: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct UIVertex {
+    pub pos: Vec2,
+    pub uv: Vec2,
+    pub color: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Vertex {
+    pub position_and_uv1: Vec4,
+    pub normal_and_uv2: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
 pub struct CullData {
     pub aabb: AabbError,
     pub lod_group_sphere: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct AabbPtr {
+    pub center_and_offset_high: Vec4,
+    pub half_extent_and_offset_low: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct BvhNode {
+    pub aabb_and_offsets: [AabbPtr; 8],
+    pub errors: [f32; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: UVec2,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstanceBvhRoot {
+    pub instance: u64,
+    pub node: u64,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -788,74 +947,15 @@ pub struct TraversalVariables {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct UIVertex {
-    pub pos: Vec2,
-    pub uv: Vec2,
-    pub color: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstanceBvhRoot {
-    pub instance: u64,
-    pub node: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
 pub struct Meshlet {
     pub vertex_index: u64,
     pub triangle_index: u64,
     pub vertex_count: u32,
     pub triangle_count: u32,
-    pub pad: UVec2,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct BvhNode {
-    pub aabb_and_offsets: [AabbPtr; 8],
-    pub errors: [f32; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: UVec2,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Vertex {
-    pub position_and_uv1: Vec4,
-    pub normal_and_uv2: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstanceHeader {
-    pub meshlet_offset: u64,
-    pub cull_data_offset: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstanceMeshletIndex {
-    pub instance: u32,
-    pub meshlet: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbError {
-    pub center_and_error: Vec4,
-    pub half_extent: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
 pub struct InstancedMeshlet {
     pub instance: u64,
     pub meshlet: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbPtr {
-    pub center_and_offset_high: Vec4,
-    pub half_extent_and_offset_low: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Gizzmo {
-    pub transform: Mat4,
-    pub color: Vec4,
 }

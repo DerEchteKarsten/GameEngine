@@ -154,6 +154,26 @@ impl Default for ConsolePlugin {
         }
     }
 }
+#[cfg(feature = "trace")]
+#[derive(Default)]
+struct TracyConfig(tracing_subscriber::fmt::format::DefaultFields);
+
+#[cfg(feature = "trace")]
+impl tracing_tracy::Config for TracyConfig {
+    type Formatter = tracing_subscriber::fmt::format::DefaultFields;
+    fn format_fields_in_zone_name(&self) -> bool {
+        true
+    }
+    fn formatter(&self) -> &Self::Formatter {
+        &self.0
+    }
+    fn on_error(&self, client: &tracy_client::Client, error: &'static str) {
+        client.color_message(error, 0xFF000000, 256);
+    }
+    fn stack_depth(&self, metadata: &tracing_core::Metadata<'_>) -> u16 {
+        16
+    }
+}
 
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
@@ -183,16 +203,25 @@ impl Plugin for ConsolePlugin {
             let subscriber = Registry::default().with(env_filter).with(console_layer);
 
             #[cfg(feature = "trace")]
-            let subscriber = subscriber.with(tracing_tracy::TracyLayer::new());
+            let subscriber =
+                subscriber.with(tracing_tracy::TracyLayer::new(TracyConfig::default()));
 
             if self.also_log_to_stderr {
                 let fmt = tracing_subscriber::fmt::layer()
                     .with_writer(std::io::stderr)
                     .with_target(true)
                     .with_ansi(true);
-                let _ = tracing::subscriber::set_global_default(subscriber.with(fmt));
+                if tracing::subscriber::set_global_default(subscriber.with(fmt)).is_err() {
+                    eprintln!(
+                        "WARNING: global tracing subscriber already set — ConsolePlugin lost"
+                    );
+                }
             } else {
-                let _ = tracing::subscriber::set_global_default(subscriber);
+                if tracing::subscriber::set_global_default(subscriber).is_err() {
+                    eprintln!(
+                        "WARNING: global tracing subscriber already set — ConsolePlugin lost"
+                    );
+                }
             }
 
             let _ = tracing_log::LogTracer::init();
@@ -224,6 +253,9 @@ impl Plugin for ConsolePlugin {
                 PostUpdate,
                 (flush_pending_logs, render_console_window).chain(),
             );
+
+        #[cfg(feature = "trace")]
+        app.add_systems(Last, frame_mark);
     }
 }
 
@@ -281,7 +313,7 @@ fn render_console_window(
         [1.0, 0.8, 0.2, 1.0], // warn  – yellow
         [1.0, 0.3, 0.3, 1.0], // error – red
     ];
-    ui.window("Console").build(|| {
+    ui.window("Console##console").build(|| {
         // ── Toolbar ──────────────────────────────────────────────────────────
 
         // --- Level filter ---
@@ -376,4 +408,8 @@ fn render_console_window(
                 }
             });
     });
+}
+#[cfg(feature = "trace")]
+fn frame_mark() {
+    tracy_client::frame_mark();
 }

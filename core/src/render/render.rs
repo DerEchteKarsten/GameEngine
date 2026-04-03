@@ -27,12 +27,16 @@ use bevy::ecs::system::SystemState;
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy::tasks::Task;
 use bevy::time::Time;
+use bevy::transform::components::Transform;
 use bevy::window::PrimaryWindow;
 use bevy::window::Window;
 
 use bevy::window::WindowResized;
+use glam::IVec2;
 use glam::Mat4;
 use glam::UVec2;
+use glam::UVec4;
+use glam::Vec3;
 use glam::Vec4;
 use imgui::TreeNodeFlags;
 use itertools::Itertools;
@@ -41,6 +45,8 @@ use lava::command_buffer::Filter;
 use lava::command_buffer::RasterVertexDispatch;
 use lava::command_buffer::ResourceHandle;
 use lava::command_buffer::ResourceState;
+use lava::command_buffer::Scissor;
+use lava::command_buffer::Viewport;
 use lava::image::Image;
 use lava::image::format;
 use lava::image::format::D32Sfloat;
@@ -51,7 +57,10 @@ use lava::image::slice::ImageView;
 use lava::image::usage::ColorAttachmentSampled;
 use lava::image::usage::ColorAttachmentStorage;
 use lava::image::usage::DepthAttachmentSampled;
+use lava::image::usage::Storage;
 use lava::state::Ctx;
+use lava::state::raw_vulkan::Extent2D;
+use lava::tracy_span;
 use lava::vkobjects;
 use lava::vkobjects::queue::Binary;
 use lava::vkobjects::queue::CommandBufferMemory;
@@ -73,7 +82,8 @@ use crate::bindings::BvhCull;
 use crate::bindings::BvhCullBindings;
 use crate::bindings::DrawAabbsBindings;
 use crate::bindings::DrawArrowsBindings;
-use crate::bindings::DrawGizzmosBindings;
+use crate::bindings::DrawOutline;
+use crate::bindings::DrawOutlineBindings;
 use crate::bindings::DrawSpheresBindings;
 use crate::bindings::InstanceBvhRoot;
 use crate::bindings::InstanceCull;
@@ -82,12 +92,16 @@ use crate::bindings::InstancedMeshlet;
 use crate::bindings::Meshlet;
 use crate::bindings::Raster;
 use crate::bindings::RasterBindings;
+use crate::bindings::RasterOutline;
+use crate::bindings::RasterOutlineBindings;
 use crate::bindings::RasterUi;
 use crate::bindings::RasterUiBindings;
 use crate::bindings::Skybox;
 use crate::bindings::SkyboxBindings;
 use crate::bindings::TraversalVariables;
 use crate::bindings::UIVertex;
+use crate::editor::gizzmos::GizzmoResources;
+use crate::editor::viewport::ViewPort;
 use crate::render::ExtractSchedule;
 use crate::render::MainWorld;
 use crate::render::Render;
@@ -95,14 +109,13 @@ use crate::render::RenderApp;
 use crate::render::RenderStartup;
 use crate::render::RenderSystems;
 use crate::render::extract_param::Extract;
-use crate::render::world::Gizzmos;
 use crate::render::world::InstanceManager;
 use crate::render::world::MAX_INSTANCES;
 use crate::render::world::UploadQueue;
 use crate::ui::UiBuilder;
 use crate::ui::UiContext;
 use crate::ui::UiResources;
-use crate::{components::camera::Camera, render::FRAMES_IN_FLIGHT};
+use crate::{render::FRAMES_IN_FLIGHT, scene::camera::Camera};
 use tracing::info;
 
 #[derive(Resource)]
@@ -157,7 +170,7 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    fn image(&self) -> ImageView<format::Swapchain, ColorAttachmentStorage> {
+    pub fn image(&self) -> ImageView<format::Swapchain, ColorAttachmentStorage> {
         self.images[self.image_index as usize]
     }
 }
@@ -195,26 +208,31 @@ pub fn resize_swapchain(
     mut swapchain: ResMut<Swapchain>,
     window: Extract<Single<&Window, With<PrimaryWindow>>>,
 ) {
-    let size = window.physical_size().to_array();
+    let size = window.physical_size();
     if size != swapchain.size {
         info!("Resized Swapchain");
         swapchain.swpachain.recreate(size);
     }
 }
 
-pub fn extract_camera(mut cmd: Commands, camera: Extract<Single<&Camera>>) {
-    let cam = camera.clone();
-    cmd.insert_resource(cam);
+#[derive(Resource)]
+pub(crate) struct RenderCamera {
+    pub(crate) camera: Camera,
+    pub(crate) transform: Transform,
+}
+
+pub fn extract_camera(mut cmd: Commands, camera: Extract<Single<(&Camera, &Transform)>>) {
+    cmd.insert_resource(RenderCamera {
+        camera: *camera.0,
+        transform: *camera.1,
+    });
 }
 
 pub fn init_render(mut cmd: Commands) {
     let swapchain = Swapchain {
         image_index: 0,
-        swpachain: vkobjects::swapchain::Swapchain::new(
-            None,
-            Some(INITIAL_WINDOW_SIZE.as_uvec2().to_array()),
-        )
-        .unwrap(),
+        swpachain: vkobjects::swapchain::Swapchain::new(None, Some(INITIAL_WINDOW_SIZE.as_uvec2()))
+            .unwrap(),
     };
     let num_images = swapchain.images.len();
     let queues = Queues {
@@ -264,7 +282,6 @@ pub struct ResourceStates {
 
 pub struct RenderResources {
     depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
-    // color_attachment: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
     meshlets: Buffer<InstancedMeshlet>,
     bvh_node_stack: Buffer<InstanceBvhRoot>,
     meshlet_batches: Buffer<u32>,
@@ -278,44 +295,63 @@ pub struct RenderValues {
     instance_count: u32,
 }
 
-#[derive(Resource, Default, Clone)]
+#[derive(Resource, Clone)]
 pub struct RenderSettings {
     pub freez_proj: Option<Mat4>,
     pub freez_view: Option<Mat4>,
     pub freez_pos: Option<Vec4>,
-    pub draw_scene_bvh: bool,
+    pub draw_scene_leaf_nodes: bool,
+    pub draw_scene_blas_nodes: bool,
+    pub draw_scene_nodes: bool,
+    pub outline_color: Vec3,
+    pub outline_radius: f32,
 }
 
-pub fn settings_ui(
+impl Default for RenderSettings {
+    fn default() -> Self {
+        Self {
+            draw_scene_blas_nodes: false,
+            draw_scene_leaf_nodes: false,
+            draw_scene_nodes: false,
+            freez_pos: None,
+            freez_proj: None,
+            freez_view: None,
+            outline_color: Vec3::new(0.8, 0.2, 0.1),
+            outline_radius: 2.0,
+        }
+    }
+}
+
+pub(crate) fn settings_ui(
     mut ui: ResMut<UiBuilder>,
     res: Res<RenderValues>,
     mut settings: ResMut<RenderSettings>,
-    cam: Single<&Camera>,
-    window: Single<&Window>,
+    cam: Single<(&Camera, &Transform)>,
 ) {
     let Some(ui) = ui.ui() else {
         return;
     };
-    ui.window("Render Settings")
-        .build(|| {
-            ui.text(format!("Num Meshlets: {}", res.meshlet_count));
-            ui.text(format!("Num Instances: {}", res.instance_count));
-            if ui.small_button("Freez Cam") {
-                settings.freez_proj =
-                    Some(cam.projection_matrix(glam::Vec2::new(window.width(), window.height())));
-                settings.freez_view = Some(cam.view_matrix());
-                settings.freez_pos = Some(cam.position.extend(0.0))
-            }
-            if ui.small_button("Unfreeze Cam") {
-                settings.freez_proj = None;
-                settings.freez_view = None;
-                settings.freez_pos = None;
-            }
-            if ui.small_button("Draw Scene Bvh") {
-                settings.draw_scene_bvh = !settings.draw_scene_bvh;
-            }
-        })
-        .unwrap();
+    ui.window("Render Settings##render_settings").build(|| {
+        ui.text(format!("Num Meshlets: {}", res.meshlet_count));
+        ui.text(format!("Num Instances: {}", res.instance_count));
+        if ui.small_button("Freez Cam") {
+            settings.freez_proj = Some(cam.0.proj);
+            settings.freez_view = Some(cam.0.view);
+            settings.freez_pos = Some(cam.1.translation.extend(0.0))
+        }
+        if ui.small_button("Unfreeze Cam") {
+            settings.freez_proj = None;
+            settings.freez_view = None;
+            settings.freez_pos = None;
+        }
+
+        ui.checkbox("Draw Scene Blas Nodes", &mut settings.draw_scene_blas_nodes);
+        ui.checkbox("Draw Scene Leaf Nodes", &mut settings.draw_scene_leaf_nodes);
+        ui.checkbox("Draw Scene Nodes", &mut settings.draw_scene_nodes);
+
+        ui.color_picker3("Outline Color", &mut settings.outline_color);
+        ui.slider("Outline Thickness", 0.0, 6.0, &mut settings.outline_radius);
+    });
 }
 
 pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<RenderValues>) {
@@ -323,27 +359,26 @@ pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<R
     cmd.insert_resource(world.get_resource::<RenderSettings>().unwrap().clone());
 }
 
-pub fn render(
-    camera: Res<Camera>,
+pub(super) fn render(
+    mut camera: ResMut<RenderCamera>,
     instances: Res<InstanceManager>,
     ui_resources: Res<UiResources>,
     queues: Res<Queues>,
-    gizzmos: Res<Gizzmos>,
+    gizzmos: Option<Res<GizzmoResources>>,
     mut resources: Local<Option<RenderResources>>,
     mut resource_states: ResMut<ResourceStates>,
     cmds: Res<CommandPools>,
     frame: Res<FrameCount>,
     sync: Res<SynchronizationResources>,
     swapchain: Res<Swapchain>,
-    mut values: ResMut<RenderValues>,
+    viewport: Res<ViewPort>,
+    mut values: Option<ResMut<RenderValues>>,
     setting: Res<RenderSettings>,
 ) {
     let frame_in_flight = frame.frame_in_flight();
     let resources = resources.get_or_insert_with(|| RenderResources {
         depth_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
             .unwrap(),
-        // color_attachment: Image::new(INITIAL_WINDOW_SIZE.x as u32, INITIAL_WINDOW_SIZE.y as u32)
-        //     .unwrap(),
         meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
         bvh_node_stack: Buffer::new(2 * 1024 * 1024, false).unwrap(),
         variables: Buffer::new(1, false).unwrap(),
@@ -351,8 +386,10 @@ pub fn render(
         candidate_meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
     });
 
-    values.instance_count = instances.instance_count as u32;
-    values.meshlet_count = resources.variables[0].visible_meshlet_count;
+    if let Some(values) = &mut values {
+        values.instance_count = instances.instance_count as u32;
+        values.meshlet_count = resources.variables[0].visible_meshlet_count;
+    }
 
     let states = queues.graphics.with(|queue| {
         queue
@@ -363,27 +400,22 @@ pub fn render(
                 &[sync.image_available[frame.frame_in_flight()].info()],
                 &[sync.render_finished[swapchain.image_index as usize].info()],
                 |cmd| {
-                    let proj =
-                        camera.projection_matrix(UVec2::from_array(swapchain.size).as_vec2());
-                    let view = camera.view_matrix();
-
+                    cmd.clear_image(swapchain.image(), [0.0; 4]);
                     cmd.compute::<Skybox>()
                         .bind(SkyboxBindings {
                             out: swapchain.image().as_storage(),
-                            inverse_proj: proj.inverse(),
-                            inverse_view: view.inverse(),
-                            window_size: Vec4::new(
-                                swapchain.size[0] as f32,
-                                swapchain.size[1] as f32,
-                                0.0,
-                                0.0,
-                            ),
+                            inverse_proj: camera.camera.proj_inv(),
+                            inverse_view: camera.camera.view_inv(),
+                            view_port_size: viewport.scissor_size,
+                            view_port_offset: viewport.view_pos,
+                            swpachain_size: swapchain.size,
                         })
                         .dispatch(
-                            swapchain.size[0].div_ceil(8),
-                            swapchain.size[1].div_ceil(8),
+                            viewport.scissor_size.x.div_ceil(8),
+                            viewport.scissor_size.y.div_ceil(8),
                             1,
                         );
+
                     // for i in resources.meshlets.range(0..10) {
                     //     log::info!("{:#?}", i);
                     // }
@@ -392,8 +424,8 @@ pub fn render(
                         cmd.fill_buffer(resources.bvh_node_stack.range(..), !0);
                         cmd.fill_buffer(resources.candidate_meshlets.range(..), !0);
                         cmd.fill_buffer(resources.meshlet_batches.range(..), 0);
-                        let cull_proj = setting.freez_proj.unwrap_or(proj.clone());
-                        let cull_view = setting.freez_view.unwrap_or(view.clone());
+                        let cull_proj = setting.freez_proj.unwrap_or(camera.camera.proj.clone());
+                        let cull_view = setting.freez_view.unwrap_or(camera.camera.view.clone());
 
                         cmd.update_buffer(
                             resources.variables.range(..),
@@ -431,18 +463,18 @@ pub fn render(
                         cmd.compute::<BvhCull>()
                             .bind(BvhCullBindings {
                                 instance_headers: instances
-                                    .instance_headers
+                                    .headers
                                     .range(MAX_INSTANCES * frame_in_flight..),
                                 visible_meshlets: resources.meshlets.range(..),
                                 queue: resources.bvh_node_stack.range(..),
                                 queue_state: resources.variables.range(..),
                                 camera_pos: setting
                                     .freez_pos
-                                    .unwrap_or(camera.position.extend(0.0)),
+                                    .unwrap_or(camera.transform.translation.extend(0.0)),
                                 proj: cull_proj,
                                 canidate_meshlets: resources.candidate_meshlets.range(..),
                                 clip_from_world,
-                                window_height: swapchain.size[1] as f32,
+                                window_height: viewport.view_size.y as f32,
                                 instance_transforms: instances
                                     .transforms
                                     .range(MAX_INSTANCES * frame_in_flight..),
@@ -451,91 +483,96 @@ pub fn render(
                             .dispatch(64, 1, 1);
                         cmd.raster::<Raster>()
                             .bind(RasterBindings {
-                                proj: proj.clone(),
-                                view: view.clone(),
+                                proj: camera.camera.proj,
+                                view: camera.camera.view,
                                 instance_transforms: instances
                                     .transforms
                                     .range(MAX_INSTANCES * frame_in_flight..),
                                 meshlets: resources.meshlets.range(..),
                             })
                             .color_attachment(swapchain.image(), None)
-                            .depth_attachment(resources.depth_attachment.view(), true)
+                            .depth_attachment(
+                                resources.depth_attachment.view(),
+                                Some([0.0; 4]),
+                                true,
+                            )
                             .backface_culling(true)
-                            .draw(
-                                swapchain.size[0],
-                                swapchain.size[1],
+                            .draw_with_dynstates(
                                 RasterVertexDispatch::DrawIndirect {
                                     buffer: resources
                                         .variables
                                         .byte_range(offset_of!(TraversalVariables, vertex_count)..)
                                         .cast(),
                                 },
+                                swapchain.size,
+                                &[Scissor {
+                                    extent: viewport.scissor_size,
+                                    offset: viewport.scissor_pos.as_ivec2(),
+                                }],
+                                Viewport {
+                                    extent: viewport.view_size,
+                                    offset: viewport.view_pos,
+                                },
                             );
-                        if gizzmos.aabb_range.len() > 0 {
-                            cmd.raster::<bindings::DrawAabbs>()
-                                .bind(DrawAabbsBindings {
-                                    world_to_clip: proj * view,
-                                    gizzmos: gizzmos.gizzmos.range(
-                                        (MAX_INSTANCES * frame_in_flight
-                                            + gizzmos.aabb_range.start)..,
-                                    ),
+
+                        if instances.any_outlined {
+                            cmd.raster::<RasterOutline>()
+                                .bind(RasterOutlineBindings {
+                                    proj: camera.camera.proj,
+                                    view: camera.camera.view,
+                                    instance_transforms: instances
+                                        .transforms
+                                        .range(MAX_INSTANCES * frame_in_flight..),
+                                    instance_flags: instances
+                                        .flags
+                                        .range(MAX_INSTANCES * frame_in_flight..),
+                                    meshlets: resources.meshlets.range(..),
                                 })
-                                .color_attachment(swapchain.image(), None)
-                                // .depth_attachment(resources.depth_attachment.view(), false)
-                                .backface_culling(false)
-                                .wire_frame(false)
-                                .draw(
-                                    swapchain.size[0],
-                                    swapchain.size[1],
-                                    RasterVertexDispatch::Draw {
-                                        vertex_count: 36,
-                                        instance_count: gizzmos.aabb_range.len() as u32,
+                                .backface_culling(true)
+                                .depth_attachment(
+                                    resources.depth_attachment.view(),
+                                    Some([0.0; 4]),
+                                    true,
+                                )
+                                .draw_with_dynstates(
+                                    RasterVertexDispatch::DrawIndirect {
+                                        buffer: resources
+                                            .variables
+                                            .byte_range(
+                                                offset_of!(TraversalVariables, vertex_count)..,
+                                            )
+                                            .cast(),
                                     },
+                                    swapchain.size,
+                                    &[Scissor {
+                                        extent: viewport.scissor_size,
+                                        offset: viewport.scissor_pos.as_ivec2(),
+                                    }],
+                                    Viewport {
+                                        extent: viewport.view_size,
+                                        offset: viewport.view_pos,
+                                    },
+                                );
+
+                            cmd.compute::<DrawOutline>()
+                                .bind(DrawOutlineBindings {
+                                    depth: resources.depth_attachment.view().as_sampled(),
+                                    out: swapchain.image().as_storage(),
+                                    view_port_size: viewport.scissor_size,
+                                    view_port_offset: viewport.view_pos,
+                                    swpachain_size: swapchain.size,
+                                    outline_color_and_radius: setting
+                                        .outline_color
+                                        .extend(setting.outline_radius),
+                                })
+                                .dispatch(
+                                    viewport.scissor_size.x.div_ceil(8),
+                                    viewport.scissor_size.y.div_ceil(8),
+                                    1,
                                 );
                         }
-                        if gizzmos.sphere_range.len() > 0 {
-                            cmd.raster::<bindings::DrawSpheres>()
-                                .bind(DrawSpheresBindings {
-                                    world_to_clip: proj * view,
-                                    gizzmos: gizzmos.gizzmos.range(
-                                        (MAX_INSTANCES * frame_in_flight
-                                            + gizzmos.sphere_range.start)..,
-                                    ),
-                                })
-                                .color_attachment(swapchain.image(), None)
-                                // .depth_attachment(resources.depth_attachment.view(), false)
-                                .backface_culling(false)
-                                .wire_frame(false)
-                                .draw(
-                                    swapchain.size[0],
-                                    swapchain.size[1],
-                                    RasterVertexDispatch::Draw {
-                                        vertex_count: 576,
-                                        instance_count: gizzmos.sphere_range.len() as u32,
-                                    },
-                                );
-                        }
-                        if gizzmos.arrow_range.len() > 0 {
-                            cmd.raster::<bindings::DrawArrows>()
-                                .bind(DrawArrowsBindings {
-                                    world_to_clip: proj * view,
-                                    gizzmos: gizzmos.gizzmos.range(
-                                        (MAX_INSTANCES * frame_in_flight
-                                            + gizzmos.arrow_range.start)..,
-                                    ),
-                                })
-                                .color_attachment(swapchain.image(), None)
-                                // .depth_attachment(resources.depth_attachment.view(), false)
-                                .backface_culling(false)
-                                .wire_frame(false)
-                                .draw(
-                                    swapchain.size[0],
-                                    swapchain.size[1],
-                                    RasterVertexDispatch::Draw {
-                                        vertex_count: 216,
-                                        instance_count: gizzmos.arrow_range.len() as u32,
-                                    },
-                                );
+                        if let Some(gizzmos) = gizzmos {
+                            gizzmos.draw(cmd, &swapchain, &camera, &viewport, frame_in_flight);
                         }
                     }
 
@@ -551,14 +588,17 @@ pub fn render(
                                 })
                                 .backface_culling(false)
                                 .color_attachment(swapchain.image(), None)
-                                .draw_scissored(
+                                .draw_with_dynstates(
                                     RasterVertexDispatch::Draw {
                                         vertex_count: list.count,
                                         instance_count: 1,
                                     },
-                                    swapchain.size[0],
-                                    swapchain.size[1],
+                                    swapchain.size,
                                     &[list.clip_rect],
+                                    Viewport {
+                                        extent: swapchain.size,
+                                        offset: IVec2::ZERO,
+                                    },
                                 );
                         }
                     }
@@ -599,17 +639,17 @@ pub fn RenderPassesPlugin(app: &mut App) {
             render.in_set(RenderSystems::Render),
         ),
     )
+    .insert_resource(RenderSettings::default())
     .add_systems(RenderStartup, init_render);
 }
 
 pub fn RenderDebugUi(app: &mut App) {
     app.insert_resource(RenderValues::default())
-        .insert_resource(RenderSettings::default())
-        .add_systems(Update, settings_ui);
+        .add_systems(Update, settings_ui)
+        .insert_resource(RenderSettings::default());
 
     let render_app = app.get_sub_app_mut(RenderApp).unwrap();
     render_app
         .add_systems(ExtractSchedule, extract_ui)
-        .insert_resource(RenderSettings::default())
         .insert_resource(RenderValues::default());
 }

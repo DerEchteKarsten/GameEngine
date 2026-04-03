@@ -345,6 +345,7 @@ pub fn generate_from_json_str(
 ) -> String {
     let file_name = file_name.split(".").next().unwrap();
     let Ok(root) = serde_json::from_str(json) else {
+        panic!();
         return "".into();
     };
 
@@ -495,7 +496,8 @@ fn capitalize_first(s: &str) -> String {
 fn main() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     println!("cargo:rerun-if-changed={manifest_dir}/src");
-    println!("cargo:rerun-if-changed={manifest_dir}/../shaders/");
+    println!("cargo:rerun-if-changed={manifest_dir}/../shaders/passes");
+    println!("cargo:rerun-if-changed={manifest_dir}/../shaders/include");
 
     let out = PathBuf::from("src/bindings.rs");
 

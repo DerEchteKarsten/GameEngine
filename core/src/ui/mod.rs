@@ -1,5 +1,5 @@
 use bevy::{
-    app::{App, Update},
+    app::{App, PreUpdate, Update},
     ecs::{
         message::MessageReader,
         query::With,
@@ -20,9 +20,9 @@ use bevy::{
 };
 use bytemuck::Zeroable;
 use futures::channel::oneshot;
-use glam::{IVec2, Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
+use glam::{FloatExt, IVec2, Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
-use imgui::{DrawCmd, FontSource, Io};
+use imgui::{ConfigFlags, DrawCmd, FontSource, Io, StyleColor};
 use lava::{
     bindless::BindlessHandle,
     buffer::{Buffer, slice::BufferSlice},
@@ -45,7 +45,7 @@ use std::{
     time::Instant,
 };
 use tracing::info;
-use tracing_log::log::error;
+use tracing_log::log::{self, error};
 
 use crate::{
     bindings::{self, UIVertex},
@@ -58,11 +58,24 @@ use crate::{
     },
 };
 
-pub mod console;
-
 #[derive(Resource)]
 pub struct UiContext {
-    ctx: imgui::Context,
+    pub(crate) ctx: imgui::Context,
+}
+
+impl UiContext {
+    pub fn want_capture_mouse(&self) -> bool {
+        self.ctx.io().want_capture_mouse
+    }
+    pub fn want_capture_keyboard(&self) -> bool {
+        self.ctx.io().want_capture_keyboard
+    }
+    pub fn want_text_input(&self) -> bool {
+        self.ctx.io().want_text_input
+    }
+    pub fn want_set_mouse_pos(&self) -> bool {
+        self.ctx.io().want_set_mouse_pos
+    }
 }
 
 unsafe impl Send for UiContext {}
@@ -302,7 +315,9 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
             let image = block_on(UploadQueue::push_image(data, image)).unwrap();
 
             resources.font_atlas = Some(image);
+            ctx.ctx.style_mut().colors[StyleColor::WindowBg as usize] = [0.0; 4];
             builder.ui = ctx.ctx.new_frame() as *mut _;
+            builder.ui().unwrap().dockspace_over_main_viewport();
             return;
         }
         let draw_data = ctx.ctx.render();
@@ -350,8 +365,10 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
                 }
             }
         }
+        ctx.ctx.style_mut().colors[StyleColor::WindowBg as usize] = [0.0; 4];
         builder.ui = ctx.ctx.new_frame() as *mut _;
-    });
+        builder.ui().unwrap().dockspace_over_main_viewport();
+    })
 }
 
 fn init(mut commands: Commands) {
@@ -391,6 +408,24 @@ pub struct UiResources {
     pub font_atlas: Option<Image<R8Unorm, Sampled>>,
 }
 
+pub const fn toRGBA(argb: u32) -> [f32; 4] {
+    let mut color = [0.0; 4];
+    color[0] = ((argb >> 16) & 0xFF) as f32 / 255.0;
+    color[1] = ((argb >> 8) & 0xFF) as f32 / 255.0;
+    color[2] = (argb & 0xFF) as f32 / 255.0;
+    color[3] = ((argb >> 24) & 0xFF) as f32 / 255.0;
+    color
+}
+
+fn lerp(a: &[f32], b: &[f32], t: f32) -> [f32; 4] {
+    [
+        a[0].lerp(b[0], t),
+        a[1].lerp(b[1], t),
+        a[2].lerp(b[2], t),
+        a[3].lerp(b[3], t),
+    ]
+}
+
 #[allow(non_snake_case)]
 pub fn UiPlugin(app: &mut App) {
     let sub_app = app.get_sub_app_mut(RenderApp).unwrap();
@@ -398,11 +433,82 @@ pub fn UiPlugin(app: &mut App) {
         .add_systems(RenderStartup, init)
         .add_systems(Render, write_ui_data.in_set(RenderSystems::PreRender))
         .add_systems(ExtractSchedule, extract_ui);
-    app.add_systems(Update, read_input)
+    app.add_systems(PreUpdate, read_input)
         .insert_resource({
             let mut ctx = imgui::Context::create();
+            ctx.io_mut().config_flags |= ConfigFlags::DOCKING_ENABLE;
             ctx.fonts()
                 .add_font(&[FontSource::DefaultFontData { config: None }]);
+
+            let style = ctx.style_mut();
+            style.window_border_size = 3.0;
+
+            // Rounding
+            style.frame_rounding = 3.0;
+            style.popup_rounding = 3.0;
+            style.scrollbar_rounding = 3.0;
+            style.grab_rounding = 3.0;
+
+            // Docking
+            // style.DockingSeparatorSize = 3.0;
+            let colors = &mut style.colors;
+            colors[StyleColor::Text as usize] = toRGBA(0xFFABB2BF);
+            colors[StyleColor::TextDisabled as usize] = toRGBA(0xFF565656);
+            colors[StyleColor::WindowBg as usize] = toRGBA(0xFF282C34);
+            colors[StyleColor::ChildBg as usize] = toRGBA(0xFF21252B);
+            colors[StyleColor::PopupBg as usize] = toRGBA(0xFF2E323A);
+            colors[StyleColor::Border as usize] = toRGBA(0xFF2E323A);
+            colors[StyleColor::BorderShadow as usize] = toRGBA(0x00000000);
+            colors[StyleColor::FrameBg as usize] = colors[StyleColor::ChildBg as usize];
+            colors[StyleColor::FrameBgHovered as usize] = toRGBA(0xFF484C52);
+            colors[StyleColor::FrameBgActive as usize] = toRGBA(0xFF54575D);
+            colors[StyleColor::TitleBg as usize] = colors[StyleColor::WindowBg as usize];
+            colors[StyleColor::TitleBgActive as usize] = colors[StyleColor::FrameBgActive as usize];
+            colors[StyleColor::TitleBgCollapsed as usize] = toRGBA(0x8221252B);
+            colors[StyleColor::MenuBarBg as usize] = colors[StyleColor::ChildBg as usize];
+            colors[StyleColor::ScrollbarBg as usize] = colors[StyleColor::PopupBg as usize];
+            colors[StyleColor::ScrollbarGrab as usize] = toRGBA(0xFF3E4249);
+            colors[StyleColor::ScrollbarGrabHovered as usize] = toRGBA(0xFF484C52);
+            colors[StyleColor::ScrollbarGrabActive as usize] = toRGBA(0xFF54575D);
+            colors[StyleColor::CheckMark as usize] = colors[StyleColor::Text as usize];
+            colors[StyleColor::SliderGrab as usize] = toRGBA(0xFF353941);
+            colors[StyleColor::SliderGrabActive as usize] = toRGBA(0xFF7A7A7A);
+            colors[StyleColor::Button as usize] = colors[StyleColor::SliderGrab as usize];
+            colors[StyleColor::ButtonHovered as usize] = colors[StyleColor::FrameBgActive as usize];
+            colors[StyleColor::ButtonActive as usize] =
+                colors[StyleColor::ScrollbarGrabActive as usize];
+            colors[StyleColor::Header as usize] = colors[StyleColor::ChildBg as usize];
+            colors[StyleColor::HeaderHovered as usize] = toRGBA(0xFF353941);
+            colors[StyleColor::HeaderActive as usize] = colors[StyleColor::FrameBgActive as usize];
+            colors[StyleColor::Separator as usize] = colors[StyleColor::FrameBgActive as usize];
+            colors[StyleColor::SeparatorHovered as usize] = toRGBA(0xFF3E4452);
+            colors[StyleColor::SeparatorActive as usize] =
+                colors[StyleColor::SeparatorHovered as usize];
+            colors[StyleColor::ResizeGrip as usize] = colors[StyleColor::Separator as usize];
+            colors[StyleColor::ResizeGripHovered as usize] =
+                colors[StyleColor::SeparatorHovered as usize];
+            colors[StyleColor::ResizeGripActive as usize] =
+                colors[StyleColor::SeparatorActive as usize];
+            colors[StyleColor::TabHovered as usize] = colors[StyleColor::HeaderHovered as usize];
+            colors[StyleColor::Tab as usize] = colors[StyleColor::FrameBgActive as usize];
+            colors[StyleColor::DockingPreview as usize] = colors[StyleColor::ChildBg as usize];
+            colors[StyleColor::DockingEmptyBg as usize] = colors[StyleColor::WindowBg as usize];
+            colors[StyleColor::PlotLines as usize] = [0.61, 0.61, 0.61, 1.00];
+            colors[StyleColor::PlotLinesHovered as usize] = [1.00, 0.43, 0.35, 1.00];
+            colors[StyleColor::PlotHistogram as usize] = [0.90, 0.70, 0.00, 1.00];
+            colors[StyleColor::PlotHistogramHovered as usize] = [1.00, 0.60, 0.00, 1.00];
+            colors[StyleColor::TableHeaderBg as usize] = colors[StyleColor::ChildBg as usize];
+            colors[StyleColor::TableBorderStrong as usize] =
+                colors[StyleColor::SliderGrab as usize];
+            colors[StyleColor::TableBorderLight as usize] =
+                colors[StyleColor::FrameBgActive as usize];
+            colors[StyleColor::TableRowBg as usize] = [0.00, 0.00, 0.00, 0.00];
+            colors[StyleColor::TableRowBgAlt as usize] = [1.00, 1.00, 1.00, 0.06];
+            colors[StyleColor::TextSelectedBg as usize] = toRGBA(0xFF243140);
+            colors[StyleColor::DragDropTarget as usize] = colors[StyleColor::Text as usize];
+            colors[StyleColor::NavWindowingHighlight as usize] = colors[StyleColor::Text as usize];
+            colors[StyleColor::NavWindowingDimBg as usize] = [0.80, 0.80, 0.80, 0.20];
+            colors[StyleColor::ModalWindowDimBg as usize] = toRGBA(0xC821252B);
             UiContext { ctx }
         })
         .insert_resource(UiBuilder {

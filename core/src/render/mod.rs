@@ -1,5 +1,4 @@
 use crate::{
-    components::camera::Camera,
     render::{
         render::{
             CommandPools, RenderDebugUi, RenderPassesPlugin, Swapchain, SynchronizationResources,
@@ -7,6 +6,7 @@ use crate::{
         },
         world::{InstanceManager, UploadQueue, WorldPlugin, init_world},
     },
+    scene::camera::Camera,
     ui::UiResources,
 };
 use async_std::channel::{Receiver, Sender};

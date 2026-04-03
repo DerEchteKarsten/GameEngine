@@ -44,8 +44,9 @@ impl Plugin for MeshAssets {
             .set_default_asset_processor::<LoadTransformAndSave<GltfMeshLoader, MeshTransformer, MeshSaver>>("glb")
             .register_asset_loader(GltfMeshLoader)
             .register_asset_loader(MeshLoader)
-            .init_asset::<Mesh>()
-            .init_asset::<GltfMesh>();
+            .init_asset::<Scene>()
+            .init_asset::<GltfMesh>()
+            .init_asset::<GpuMeshletMesh>();
     }
 }
 
@@ -67,6 +68,7 @@ pub struct Aabb {
     pub half_extend: [f32; 3],
 }
 
+#[derive(TypePath, Asset)]
 pub struct GpuMeshletMesh {
     pub header: MeshHeader,
     pub buffer: Buffer<u8>,
@@ -74,8 +76,8 @@ pub struct GpuMeshletMesh {
 }
 
 #[derive(Asset, TypePath)]
-pub struct Mesh {
-    pub meshes: Vec<GpuMeshletMesh>,
+pub struct Scene {
+    pub meshes: Vec<Handle<GpuMeshletMesh>>,
     pub instance_transforms: Vec<Mat4>,
     pub materials: Vec<Material>,
     pub instance_materials: Vec<u32>,
@@ -83,7 +85,7 @@ pub struct Mesh {
 }
 
 #[derive(Asset, TypePath)]
-pub struct FileMesh {
+pub struct FileScene {
     pub meshes: Vec<MeshletMesh>,
     pub instance_transforms: Vec<Mat4>,
     pub materials: Vec<Material>,
@@ -130,7 +132,7 @@ impl AssetLoader for GltfMeshLoader {
 struct MeshTransformer;
 impl AssetTransformer for MeshTransformer {
     type AssetInput = GltfMesh;
-    type AssetOutput = FileMesh;
+    type AssetOutput = FileScene;
     type Error = anyhow::Error;
     type Settings = ();
     async fn transform<'a>(
@@ -219,7 +221,7 @@ impl AssetTransformer for MeshTransformer {
             }
         }
 
-        let mesh = FileMesh {
+        let mesh = FileScene {
             instance_transforms: instance_transforms,
             instance_materials: instance_materials,
             instance_mesh: instance_mesh,
@@ -272,7 +274,7 @@ async fn read_len_slice<T: Pod>(
 #[derive(TypePath)]
 struct MeshSaver;
 impl AssetSaver for MeshSaver {
-    type Asset = FileMesh;
+    type Asset = FileScene;
     type Error = anyhow::Error;
     type Settings = ();
     type OutputLoader = MeshLoader;
@@ -283,12 +285,12 @@ impl AssetSaver for MeshSaver {
         _settings: &Self::Settings,
     ) -> std::result::Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
         let mesh = asset.get();
-        let len = mesh.meshes.len() as u64;
         write_slice(&mesh.instance_transforms, writer).await?;
         write_slice(&mesh.materials, writer).await?;
         write_slice(&mesh.instance_mesh, writer).await?;
         write_slice(&mesh.instance_materials, writer).await?;
-        writer.write_all(&len.to_le_bytes()).await?;
+        let num_meshes = mesh.meshes.len() as u64;
+        writer.write_all(&num_meshes.to_le_bytes()).await?;
         for mesh in mesh.meshes.iter() {
             writer.write_all(bytes_of(&mesh.header)).await?;
             write_slice(&mesh.data, writer).await?;
@@ -378,14 +380,14 @@ async fn read_range<'a>(
 #[derive(TypePath)]
 pub struct MeshLoader;
 impl AssetLoader for MeshLoader {
-    type Asset = Mesh;
+    type Asset = Scene;
     type Error = anyhow::Error;
     type Settings = ();
     async fn load(
         &self,
         reader: &mut dyn bevy::asset::io::Reader,
         _settings: &Self::Settings,
-        _load_context: &mut LoadContext<'_>,
+        load_context: &mut LoadContext<'_>,
     ) -> std::result::Result<Self::Asset, Self::Error> {
         let instance_transforms = read_slice(reader, None).await?;
         let materials = read_slice(reader, None).await?;
@@ -423,16 +425,6 @@ impl AssetLoader for MeshLoader {
             for i in 0..(header.meshlet_offset as usize / size_of::<BvhNode>()) {
                 let mut node = BvhNode::zeroed();
                 reader.read_exact(bytes_of_mut(&mut node)).await?;
-                // if node.errors.contains(&0.0) {
-                //     log::info!("Node: -----");
-                //     for i in 0..8 {
-                //         log::info!("    Child: {}", i);
-                //         log::info!("        ptr: {}", node.aabb_and_offsets[i].offset());
-                //         log::info!("        children: {}", node.child_counts(i));
-                //         log::info!("        error: {}", node.errors[i]);
-                //         log::info!("        bounds: {:?}", node.lod_bounds[i]);
-                //     }
-                // }
                 for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
                     let offset = aabb.offset();
                     aabb.set_offset(
@@ -471,44 +463,39 @@ impl AssetLoader for MeshLoader {
 
             let colission_bvh = read_slice(reader, Some(8)).await?;
 
-            let aabb = AabbError {
-                center_and_error: Vec3::from_array(header.aabb.center).extend(0.0),
-                half_extent: Vec3::from_array(header.aabb.half_extend).extend(0.0),
-            };
-
             if let Some(data) = data {
-                futures.push((
-                    UploadQueue::push_buffer(data, buffer),
-                    aabb,
-                    header,
-                    colission_bvh,
-                ));
+                futures.push((async move || {
+                    Ok((
+                        GpuMeshletMesh {
+                            buffer: UploadQueue::push_buffer(data, buffer).await?,
+                            colission_bvh,
+                            header,
+                        },
+                        i,
+                    ))
+                })());
             } else {
-                // #[cfg(debug_assertions)]
-                // {
-                //     let node = buffer.range(..).cast()[0];
-                //     let mut num_meshlets = meshlet_count;
-                //     // assert!(verify_bvh(buffer.range(..), node, &mut num_meshlets));
-                //     assert!(num_meshlets == 0);
-                // }
-                meshes.push(GpuMeshletMesh {
-                    buffer,
-                    colission_bvh,
-                    header,
-                })
+                let handle = load_context.add_labeled_asset(
+                    format!("mesh_{}", i),
+                    GpuMeshletMesh {
+                        buffer,
+                        colission_bvh,
+                        header,
+                    },
+                );
+                meshes.push(handle);
+            }
+        }
+        if futures.len() > 0 {
+            let iter = futures::future::join_all(futures.into_iter()).await;
+            for res in iter {
+                let (mesh, i) = res?;
+                let handle = load_context.add_labeled_asset(format!("mesh_{}", i), mesh);
+                meshes.push(handle);
             }
         }
 
-        for (receiver, aabb, header, colission_bvh) in futures {
-            let buffer = receiver.await?;
-            meshes.push(GpuMeshletMesh {
-                buffer,
-                header,
-                colission_bvh,
-            });
-        }
-
-        Ok(Mesh {
+        Ok(Scene {
             instance_transforms,
             instance_materials,
             instance_mesh,

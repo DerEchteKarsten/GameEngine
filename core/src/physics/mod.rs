@@ -1,6 +1,6 @@
 use bevy::app::{App, PreUpdate, Update};
 
-use crate::physics::bvh::{SceneBvh, debug_draw_scene_bvh, update_bvh};
+use crate::physics::bvh::{SceneBvh, update_bvh};
 
 pub mod bvh;
 
@@ -9,6 +9,5 @@ pub fn PhysicsPlugin(app: &mut App) {
         bvh: Vec::new(),
         root: 0,
     })
-    .add_systems(PreUpdate, update_bvh)
-    .add_systems(Update, debug_draw_scene_bvh);
+    .add_systems(PreUpdate, update_bvh);
 }

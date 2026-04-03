@@ -14,6 +14,7 @@ use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
 use std::{collections::HashMap, ops::Range};
 use std::{mem::ManuallyDrop, sync::Arc};
+use tracing_log::log;
 
 use crate::{
     assets::MeshHeader,
@@ -106,9 +107,13 @@ impl MeshletMesh {
 
         // Split the mesh into an initial list of meshlets (LOD 0)
 
-        let (mut meshlets, mut cull_data) =
-            compute_meshlets(&indices, &vertex_adapter, &position_only_vertex_remap, None);
-        let initial_cull_data = cull_data.len();
+        let (mut meshlets, mut cull_data) = compute_meshlets(
+            &indices,
+            &vertex_adapter,
+            vertices,
+            &position_only_vertex_remap,
+            None,
+        );
         let mut vertex_locks = vec![false; vertices.len()];
 
         // Build further LODs
@@ -179,6 +184,7 @@ impl MeshletMesh {
                 let new_meshlets = compute_meshlets(
                     &simplified_group_indices,
                     &vertex_adapter,
+                    vertices,
                     &position_only_vertex_remap,
                     Some((
                         BoundingSphere::new(group.lod_bounds.xyz(), group.lod_bounds.w),
@@ -231,13 +237,30 @@ impl MeshletMesh {
 
         let (bvh, aabb, depth) = bvh.build(&mut meshlets, all_groups, &mut cull_data);
 
-        let mut leafs = cull_data[..initial_cull_data]
+        let mut leafs = indices
             .iter()
-            .enumerate()
-            .map(|(i, c)| LeafData {
-                aabb: c.aabb,
-                data: ChildData::HasLeaf(HasLeaf { meshlet: i }),
-                mortan_code: vec3_to_morton(c.aabb.center(), aabb.min, aabb.max, 1024),
+            .tuples()
+            .map(|(a, b, c)| {
+                let points = [
+                    vertices[*a as usize].extend(0.0).to_array(),
+                    vertices[*b as usize].extend(0.0).to_array(),
+                    vertices[*c as usize].extend(0.0).to_array(),
+                ];
+                (
+                    Aabb3d::from_point_cloud(
+                        Isometry3d::IDENTITY,
+                        points
+                            .clone()
+                            .into_iter()
+                            .map(|v| Vec4::from_array(v).xyz().to_vec3a()),
+                    ),
+                    points,
+                )
+            })
+            .map(|(this_aabb, points)| LeafData {
+                aabb: this_aabb,
+                data: ChildData::HasLeaf(HasLeaf { triangle: points }),
+                mortan_code: vec3_to_morton(this_aabb.center(), aabb.min, aabb.max, 1024),
                 typ: ChildType::HasLeaf,
             })
             .collect::<Vec<_>>();
@@ -254,7 +277,6 @@ impl MeshletMesh {
                 triangle_index: meshlet.triangle_offset as u64,
                 vertex_count: meshlet.vertex_count,
                 vertex_index: meshlet.vertex_offset as u64,
-                pad: UVec2 { x: 0, y: 0 },
             })
             .collect();
         let verticies = vertices
@@ -329,10 +351,10 @@ fn triangles_in_meshlets(meshlets: &meshopt::Meshlets, ids: impl IntoIterator<It
         .map(|id| meshlets.get(id as _).triangles.len() as u32 / 3)
         .sum()
 }
-
 fn compute_meshlets(
     indices: &[u32],
     vertices: &VertexDataAdapter,
+    raw_vertices: &[Vec3],
     position_only_vertex_remap: &[u32],
     prev_lod_data: Option<(BoundingSphere, f32)>,
 ) -> (meshopt::Meshlets, Vec<TempMeshletCullData>) {
@@ -414,25 +436,18 @@ fn compute_meshlets(
         triangles: Vec::new(),
     };
     let mut cull_data = Vec::new();
-    let get_vertex = |&v: &u32| {
-        *bytemuck::from_bytes::<Vec3>(
-            &vertices.reader.get_ref()
-                [vertices.position_offset + v as usize * vertices.vertex_stride..][..12],
-        )
-    };
     for meshlet_indices in &indices_per_meshlet {
         let meshlet = build_meshlets(meshlet_indices, vertices, 256, 128, 0.0);
         for meshlet in meshlet.iter() {
             let (lod_group_sphere, error) = prev_lod_data.unwrap_or_else(|| {
                 let bounds = meshopt::compute_meshlet_bounds(meshlet, vertices);
-                assert!(bounds.radius >= 0.0);
                 (BoundingSphere::new(bounds.center, bounds.radius), 0.0)
             });
 
             cull_data.push(TempMeshletCullData {
                 aabb: Aabb3d::from_point_cloud(
                     Isometry3d::IDENTITY,
-                    meshlet.vertices.iter().map(get_vertex),
+                    meshlet.vertices.iter().map(|v| raw_vertices[*v as usize]),
                 ),
                 lod_group_sphere: lod_group_sphere.center.extend(lod_group_sphere.radius()),
                 error,

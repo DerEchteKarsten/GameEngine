@@ -1,11 +1,6 @@
 #include "bindless.slang"
 #include "datatypes.slang"
 
-struct InstanceHeader {
-    uint64_t meshlet_offset;
-    uint64_t cull_data_offset;
-}
-
 struct BvhCullBindings {
     MutBuf<InstanceBvhRoot> queue;
     MutBuf<TraversalVariables> queue_state;

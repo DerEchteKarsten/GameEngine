@@ -15,13 +15,16 @@ use bevy::asset::{AsAssetId, AssetId, Assets, Handle, LoadState};
 use bevy::ecs::component::Component;
 use bevy::ecs::entity::{Entities, Entity};
 use bevy::ecs::hierarchy::ChildOf;
-use bevy::ecs::query::With;
+use bevy::ecs::query::{Has, With};
 use bevy::ecs::resource::Resource;
 use bevy::ecs::schedule::IntoScheduleConfigs;
-use bevy::ecs::system::{Commands, Local, Query, Res, ResMut, SystemState};
+use bevy::ecs::system::{Commands, If, Local, Query, Res, ResMut, Single, SystemState};
 use bevy::ecs::world::EntityMut;
 use bevy::log;
+use bevy::reflect::Reflect;
 use bevy::transform::components::GlobalTransform;
+use bevy::window::Window;
+use bitflags::bitflags;
 use futures::channel::oneshot;
 use lava::image::Image;
 use lava::image::slice::AsImage;
@@ -32,7 +35,7 @@ use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, Scope, Task, TaskPool, block_on};
 use bytemuck::Pod;
 use futures::join;
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{IVec2, Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
 use gpu_allocator::vulkan::Allocation;
 use lava::buffer::Buffer;
 
@@ -49,13 +52,14 @@ use rand::random;
 use smallvec::SmallVec;
 use tracing::error;
 
-use crate::assets::MeshHeader;
 use crate::assets::mesh::MeshletMesh;
-use crate::assets::{Mesh, material::Material};
+use crate::assets::{GpuMeshletMesh, MeshHeader};
+use crate::assets::{Scene, material::Material};
 use crate::bindings::{
     self, AabbError, BvhNode, CullData, Gizzmo, InstanceBvhRoot, Meshlet, Vertex,
 };
-use crate::components::gizzmos::{ArrowGizzmo, BoxGizzmo, GizzmoShape, SphereGizzmo};
+use crate::editor::picking::Selected;
+use crate::editor::viewport::ViewPort;
 use crate::render::extract_param::Extract;
 use crate::render::render::{
     CommandPools, FrameCount, QueueStrategie, Queues, Swapchain, SynchronizationResources,
@@ -64,35 +68,34 @@ use crate::render::render::{
 use crate::render::{
     ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderStartup, RenderSystems,
 };
+use crate::scene::Instance;
 use crate::ui::UiContext;
-
-#[derive(Component, Clone)]
-pub struct Model {
-    pub model: Handle<Mesh>,
-}
-
-impl AsAssetId for Model {
-    type Asset = Mesh;
-    fn as_asset_id(&self) -> AssetId<Self::Asset> {
-        self.model.id()
-    }
-}
 
 #[derive(Resource)]
 pub struct InstanceManager {
     pub transforms: Buffer<Mat4>,
-    pub materials: Buffer<u32>,
     pub bvh_root_nodes: Buffer<u64>,
-    pub instance_headers: Buffer<bindings::InstanceHeader>,
+    pub headers: Buffer<bindings::InstanceHeader>,
     pub aabbs: Buffer<AabbError>,
+    pub flags: Buffer<u32>,
     pub instance_count: usize,
-    pub pending_instances: Vec<Instance>,
+    pub any_outlined: bool,
+    pending_instances: Vec<TempInstance>,
+}
+
+bitflags! {
+    #[derive(Copy, Clone)]
+    pub struct InstanceFlags: u32 {
+        const OUTLINE = 0b00000001;
+        // const B = 0b00000010;
+        // const C = 0b00000100;
+    }
 }
 
 #[derive(Clone, Copy)]
-struct Instance {
+struct TempInstance {
+    flags: InstanceFlags,
     transform: Mat4,
-    material: u32,
     bvh_root: u64,
     header: MeshHeader,
 }
@@ -415,149 +418,42 @@ impl UploadQueue {
     }
 }
 
-#[derive(Resource)]
-pub struct Gizzmos {
-    pub gizzmos: Buffer<Gizzmo>,
-    pub pendings_gizzmos: Vec<Gizzmo>,
-    pub aabb_range: Range<usize>,
-    pub sphere_range: Range<usize>,
-    pub arrow_range: Range<usize>,
-}
-
 pub(super) fn init_world(mut cmd: Commands) {
     cmd.insert_resource(InstanceManager {
-        instance_headers: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
+        headers: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         aabbs: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         transforms: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         bvh_root_nodes: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
-        materials: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
+        // materials: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         instance_count: 0,
+        any_outlined: false,
+        flags: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         pending_instances: Vec::with_capacity(MAX_INSTANCES),
-    });
-    cmd.insert_resource(Gizzmos {
-        gizzmos: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
-        pendings_gizzmos: Vec::with_capacity(MAX_INSTANCES),
-        aabb_range: 0..0,
-        arrow_range: 0..0,
-        sphere_range: 0..0,
     });
     cmd.init_resource::<FrameCount>();
 }
 
-fn resolve_transform(
-    local: Mat4,
-    transform: Option<&GlobalTransform>,
-    parent: Option<&ChildOf>,
-    p_query: &Query<&GlobalTransform>,
-) -> Mat4 {
-    if let Some(mat) = transform {
-        return mat.to_matrix() * local;
-    }
-    if let Some(parent) = parent {
-        if let Ok(mat) = p_query.get(parent.parent()) {
-            return mat.to_matrix() * local;
-        }
-    }
-    local
-}
-
-fn collect_gizzmos<S: GizzmoShape + Component>(
-    query: &Query<(Option<&ChildOf>, &S, Option<&GlobalTransform>)>,
-    p_query: &Query<&GlobalTransform>,
-    out: &mut Vec<Gizzmo>,
-) {
-    for (parent, shape, transform) in query {
-        let local = shape.local_transform();
-        let world = resolve_transform(local, transform, parent, p_query);
-        out.push(Gizzmo {
-            color: shape.color(),
-            transform: world,
-        });
-    }
-}
-fn extract_gizzmos(
-    mut gizzmos: ResMut<Gizzmos>,
-    aabb: Extract<Query<(Option<&ChildOf>, &BoxGizzmo, Option<&GlobalTransform>)>>,
-    sphere: Extract<Query<(Option<&ChildOf>, &SphereGizzmo, Option<&GlobalTransform>)>>,
-    arrow: Extract<Query<(Option<&ChildOf>, &ArrowGizzmo, Option<&GlobalTransform>)>>,
-    p_query: Extract<Query<&GlobalTransform>>,
-
-    aabb_entities: Extract<Query<Entity, With<BoxGizzmo>>>,
-    sphere_entities: Extract<Query<Entity, With<SphereGizzmo>>>,
-    arrow_entities: Extract<Query<Entity, With<ArrowGizzmo>>>,
-) {
-    gizzmos.pendings_gizzmos.clear();
-
-    let start = 0;
-    collect_gizzmos(&aabb, &p_query, &mut gizzmos.pendings_gizzmos);
-    let after_aabb = gizzmos.pendings_gizzmos.len();
-    gizzmos.aabb_range = start..after_aabb;
-
-    collect_gizzmos(&sphere, &p_query, &mut gizzmos.pendings_gizzmos);
-    let after_sphere = gizzmos.pendings_gizzmos.len();
-    gizzmos.sphere_range = after_aabb..after_sphere;
-
-    collect_gizzmos(&arrow, &p_query, &mut gizzmos.pendings_gizzmos);
-    gizzmos.arrow_range = after_sphere..gizzmos.pendings_gizzmos.len();
-}
-
-fn clear_gizzmos(
-    mut world: ResMut<MainWorld>,
-    mut system_state: Local<
-        Option<
-            SystemState<(
-                Query<Entity, With<BoxGizzmo>>,
-                Query<Entity, With<SphereGizzmo>>,
-                Query<Entity, With<ArrowGizzmo>>,
-            )>,
-        >,
-    >,
-) {
-    if system_state.is_none() {
-        *system_state = Some(SystemState::new(&mut world));
-    }
-    let system_state = system_state.as_mut().unwrap();
-    let (aabbs, spheres, arrows) = system_state.get(&world);
-    let aabbs = aabbs.iter().collect::<Vec<_>>();
-    let spheres = spheres.iter().collect::<Vec<_>>();
-    let arrows = arrows.iter().collect::<Vec<_>>();
-
-    for entity in aabbs {
-        world.entity_mut(entity).remove::<BoxGizzmo>();
-    }
-    for entity in spheres {
-        world.entity_mut(entity).remove::<SphereGizzmo>();
-    }
-    for entity in arrows {
-        world.entity_mut(entity).remove::<ArrowGizzmo>();
-    }
-}
-
 fn extract_meshlet_instances(
     mut instance_manager: ResMut<InstanceManager>,
-    mut main_world: ResMut<MainWorld>,
-    mut system_state: Local<
-        Option<SystemState<(Query<(&Model, &GlobalTransform)>, Res<Assets<Mesh>>)>>,
-    >,
+    instances: Extract<Query<(&Instance, &GlobalTransform, Has<Selected>)>>,
+    meshes: Extract<Res<Assets<GpuMeshletMesh>>>,
 ) {
-    if system_state.is_none() {
-        *system_state = Some(SystemState::new(&mut main_world));
-    }
-    let system_state = system_state.as_mut().unwrap();
-    let (instances_query, assets) = system_state.get_mut(&mut main_world);
-
-    for (instance, transform) in &instances_query {
-        if let Some(mesh) = assets.get(&instance.model) {
+    instance_manager.any_outlined = false;
+    for (instance, transform, selected) in &instances {
+        if let Some(mesh) = meshes.get(&instance.mesh) {
             let mat = transform.to_matrix();
-            for (i, mesh_index) in mesh.instance_mesh.iter().enumerate() {
-                let mat = mat * mesh.instance_transforms[i];
-                instance_manager.pending_instances.push(Instance {
-                    header: mesh.meshes[*mesh_index as usize].header,
-                    bvh_root: mesh.meshes[*mesh_index as usize].buffer.address,
-                    material: mesh.instance_materials[i],
-                    transform: mat,
-                });
-            }
+            let flags = if selected {
+                instance.flags | InstanceFlags::OUTLINE
+            } else {
+                instance.flags
+            };
+            instance_manager.any_outlined |= flags.contains(InstanceFlags::OUTLINE);
+            instance_manager.pending_instances.push(TempInstance {
+                bvh_root: mesh.buffer.address,
+                header: mesh.header,
+                transform: mat,
+                flags,
+            });
         }
     }
 }
@@ -567,43 +463,40 @@ fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res<FrameCount
     for slot in 0..instances.pending_instances.len() {
         let instance = instances.pending_instances[slot];
         instances.transforms[slot + frame_in_flight * MAX_INSTANCES] = instance.transform;
-        instances.materials[slot + frame_in_flight * MAX_INSTANCES] = instance.material;
         instances.bvh_root_nodes[slot + frame_in_flight * MAX_INSTANCES] = instance.bvh_root;
         instances.aabbs[slot + frame_in_flight * MAX_INSTANCES] = AabbError {
             center_and_error: Vec3::from_array(instance.header.aabb.center).extend(0.0),
             half_extent: Vec3::from_array(instance.header.aabb.half_extend).extend(0.0),
         };
-        instances.instance_headers[slot + frame_in_flight * MAX_INSTANCES] =
-            bindings::InstanceHeader {
-                meshlet_offset: instance.header.meshlet_offset as u64 + instance.bvh_root,
-                cull_data_offset: instance.header.cull_data_offset as u64 + instance.bvh_root,
-            };
+        instances.headers[slot + frame_in_flight * MAX_INSTANCES] = bindings::InstanceHeader {
+            meshlet_offset: instance.header.meshlet_offset as u64 + instance.bvh_root,
+            cull_data_offset: instance.header.cull_data_offset as u64 + instance.bvh_root,
+        };
+        instances.flags[slot + frame_in_flight * MAX_INSTANCES] = instance.flags.bits();
     }
     instances.instance_count = instances.pending_instances.len();
     instances.pending_instances.clear();
 }
 
-fn write_gizzmos(mut gizzmos: ResMut<Gizzmos>, frame: Res<FrameCount>) {
-    let frame_in_flight = frame.frame_in_flight();
-    for slot in 0..gizzmos.pendings_gizzmos.len() {
-        let gizz = gizzmos.pendings_gizzmos[slot];
-        gizzmos.gizzmos[slot + frame_in_flight * MAX_INSTANCES] = gizz;
-    }
+fn extract_view_port(
+    mut cmd: Commands,
+    view_port: Extract<Option<Res<ViewPort>>>,
+    window: Extract<Single<&Window>>,
+) {
+    cmd.insert_resource(view_port.as_deref().cloned().unwrap_or(ViewPort {
+        view_pos: IVec2::ZERO,
+        view_size: window.physical_size(),
+        scissor_size: window.physical_size(),
+        scissor_pos: UVec2::ZERO,
+        focused: true,
+    }));
 }
 
 pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
         .add_systems(
             ExtractSchedule,
-            (
-                extract_meshlet_instances,
-                extract_camera,
-                extract_gizzmos,
-                clear_gizzmos.after(extract_gizzmos),
-            ),
+            (extract_meshlet_instances, extract_camera, extract_view_port),
         )
-        .add_systems(
-            Render,
-            (wirte_instances, write_gizzmos).in_set(RenderSystems::PreRender),
-        );
+        .add_systems(Render, (wirte_instances).in_set(RenderSystems::PreRender));
 }

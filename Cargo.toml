@@ -4,4 +4,11 @@ members = ["core", "game", "lava"]
 
 
 [profile.release]
-debug = true
+debug = 2 
+strip = "none"
+split-debuginfo = "off"
+
+[profile.release.build-override]
+debug = 2 
+strip = "none"
+split-debuginfo = "off"
