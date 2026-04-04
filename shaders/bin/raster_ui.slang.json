@@ -13,7 +13,7 @@
         },
         {
             "name": "TextureHeap",
-            "binding": {"kind": "descriptorTableSlot", "index": 1},
+            "binding": {"kind": "descriptorTableSlot", "index": 2},
             "type": {
                 "kind": "array",
                 "elementCount": 0,
@@ -348,7 +348,7 @@
                 },
                 {
                     "name": "TextureHeap",
-                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                    "binding": {"kind": "descriptorTableSlot", "index": 2}
                 },
                 {
                     "name": "RWTextureHeap",
@@ -445,7 +445,7 @@
                 },
                 {
                     "name": "TextureHeap",
-                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                    "binding": {"kind": "descriptorTableSlot", "index": 2}
                 },
                 {
                     "name": "RWTextureHeap",

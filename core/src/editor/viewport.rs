@@ -8,7 +8,7 @@ use bevy::{
 use glam::{IVec2, UVec2, Vec2};
 use imgui::{StyleColor, WindowFlags};
 
-use crate::ui::{UiBuilder, UiContext, toRGBA};
+use crate::ui::{UiBuilder, UiContext};
 
 #[derive(Resource, Debug, Copy, Clone)]
 pub struct ViewPort {
@@ -71,7 +71,7 @@ pub(crate) fn update_view_port(
     }
     padding_token.pop();
     border_token.pop();
-    ctx.ctx.style_mut().colors[StyleColor::WindowBg as usize] = toRGBA(0xFF282C34);
+    ctx.ctx.style_mut().colors[StyleColor::WindowBg as usize] = [0.155, 0.155, 0.155, 1.0];
 }
 
 #[derive(SystemParam)]

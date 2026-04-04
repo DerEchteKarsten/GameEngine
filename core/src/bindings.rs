@@ -869,34 +869,26 @@ impl RasterVertexShaderPass for RasterOutline {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
+pub struct BvhNode {
+    pub aabb_and_offsets: [AabbPtr; 8],
+    pub errors: [f32; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: UVec2,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Meshlet {
+    pub vertex_index: u64,
+    pub triangle_index: u64,
+    pub vertex_count: u32,
+    pub triangle_count: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
 pub struct InstanceMeshletIndex {
     pub instance: u32,
     pub meshlet: u32,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstanceHeader {
-    pub meshlet_offset: u64,
-    pub cull_data_offset: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Gizzmo {
-    pub transform: Mat4,
-    pub color: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbError {
-    pub center_and_error: Vec4,
-    pub half_extent: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct UIVertex {
-    pub pos: Vec2,
-    pub uv: Vec2,
-    pub color: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -906,24 +898,9 @@ pub struct Vertex {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CullData {
-    pub aabb: AabbError,
-    pub lod_group_sphere: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbPtr {
-    pub center_and_offset_high: Vec4,
-    pub half_extent_and_offset_low: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct BvhNode {
-    pub aabb_and_offsets: [AabbPtr; 8],
-    pub errors: [f32; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: UVec2,
+pub struct Gizzmo {
+    pub transform: Mat4,
+    pub color: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -947,11 +924,34 @@ pub struct TraversalVariables {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct Meshlet {
-    pub vertex_index: u64,
-    pub triangle_index: u64,
-    pub vertex_count: u32,
-    pub triangle_count: u32,
+pub struct CullData {
+    pub aabb: AabbError,
+    pub lod_group_sphere: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct AabbPtr {
+    pub center_and_offset_high: Vec4,
+    pub half_extent_and_offset_low: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct AabbError {
+    pub center_and_error: Vec4,
+    pub half_extent: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstanceHeader {
+    pub meshlet_offset: u64,
+    pub cull_data_offset: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct UIVertex {
+    pub pos: Vec2,
+    pub uv: Vec2,
+    pub color: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]

@@ -22,7 +22,7 @@ use bytemuck::Zeroable;
 use futures::channel::oneshot;
 use glam::{FloatExt, IVec2, Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
-use imgui::{ConfigFlags, DrawCmd, FontSource, Io, StyleColor};
+use imgui::{ConfigFlags, DrawCmd, FontConfig, FontSource, Io, StyleColor};
 use lava::{
     bindless::BindlessHandle,
     buffer::{Buffer, slice::BufferSlice},
@@ -38,6 +38,7 @@ use lava::{
 
 use std::{
     collections::HashMap,
+    fs,
     ops::{Deref, DerefMut},
     ptr::NonNull,
     random::{self, random},
@@ -278,6 +279,7 @@ fn read_input(
     }
     io.font_global_scale = 1.0;
     io.display_size = size.to_array();
+    io.display_framebuffer_scale = [window.scale_factor(); 2];
 }
 
 fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
@@ -336,7 +338,7 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
                         v.col[2] as f32 / 255.0,
                         v.col[3] as f32 / 255.0,
                     ),
-                    pos: (((Vec2::new(v.pos[0], v.pos[1]) + transform) / scale) * 2.0
+                    pos: (((Vec2::new(v.pos[0], v.pos[1])/ scale + transform)) * 2.0
                         - Vec2::splat(1.0)),
                     uv: Vec2::new(v.uv[0], v.uv[1]),
                 });
@@ -408,24 +410,6 @@ pub struct UiResources {
     pub font_atlas: Option<Image<R8Unorm, Sampled>>,
 }
 
-pub const fn toRGBA(argb: u32) -> [f32; 4] {
-    let mut color = [0.0; 4];
-    color[0] = ((argb >> 16) & 0xFF) as f32 / 255.0;
-    color[1] = ((argb >> 8) & 0xFF) as f32 / 255.0;
-    color[2] = (argb & 0xFF) as f32 / 255.0;
-    color[3] = ((argb >> 24) & 0xFF) as f32 / 255.0;
-    color
-}
-
-fn lerp(a: &[f32], b: &[f32], t: f32) -> [f32; 4] {
-    [
-        a[0].lerp(b[0], t),
-        a[1].lerp(b[1], t),
-        a[2].lerp(b[2], t),
-        a[3].lerp(b[3], t),
-    ]
-}
-
 #[allow(non_snake_case)]
 pub fn UiPlugin(app: &mut App) {
     let sub_app = app.get_sub_app_mut(RenderApp).unwrap();
@@ -437,78 +421,113 @@ pub fn UiPlugin(app: &mut App) {
         .insert_resource({
             let mut ctx = imgui::Context::create();
             ctx.io_mut().config_flags |= ConfigFlags::DOCKING_ENABLE;
-            ctx.fonts()
-                .add_font(&[FontSource::DefaultFontData { config: None }]);
+            ctx.fonts().add_font(&[FontSource::TtfData {
+                data: &fs::read("/home/karsten/code/GameEngine/editor_font.ttf").unwrap(),
+                size_pixels: 18.0,  
+                config: Some(FontConfig {
+                    pixel_snap_h: true,
+                    ..Default::default()
+                }),
+            }]);
 
             let style = ctx.style_mut();
-            style.window_border_size = 3.0;
-
-            // Rounding
-            style.frame_rounding = 3.0;
-            style.popup_rounding = 3.0;
-            style.scrollbar_rounding = 3.0;
-            style.grab_rounding = 3.0;
-
-            // Docking
-            // style.DockingSeparatorSize = 3.0;
             let colors = &mut style.colors;
-            colors[StyleColor::Text as usize] = toRGBA(0xFFABB2BF);
-            colors[StyleColor::TextDisabled as usize] = toRGBA(0xFF565656);
-            colors[StyleColor::WindowBg as usize] = toRGBA(0xFF282C34);
-            colors[StyleColor::ChildBg as usize] = toRGBA(0xFF21252B);
-            colors[StyleColor::PopupBg as usize] = toRGBA(0xFF2E323A);
-            colors[StyleColor::Border as usize] = toRGBA(0xFF2E323A);
-            colors[StyleColor::BorderShadow as usize] = toRGBA(0x00000000);
-            colors[StyleColor::FrameBg as usize] = colors[StyleColor::ChildBg as usize];
-            colors[StyleColor::FrameBgHovered as usize] = toRGBA(0xFF484C52);
-            colors[StyleColor::FrameBgActive as usize] = toRGBA(0xFF54575D);
-            colors[StyleColor::TitleBg as usize] = colors[StyleColor::WindowBg as usize];
-            colors[StyleColor::TitleBgActive as usize] = colors[StyleColor::FrameBgActive as usize];
-            colors[StyleColor::TitleBgCollapsed as usize] = toRGBA(0x8221252B);
-            colors[StyleColor::MenuBarBg as usize] = colors[StyleColor::ChildBg as usize];
-            colors[StyleColor::ScrollbarBg as usize] = colors[StyleColor::PopupBg as usize];
-            colors[StyleColor::ScrollbarGrab as usize] = toRGBA(0xFF3E4249);
-            colors[StyleColor::ScrollbarGrabHovered as usize] = toRGBA(0xFF484C52);
-            colors[StyleColor::ScrollbarGrabActive as usize] = toRGBA(0xFF54575D);
-            colors[StyleColor::CheckMark as usize] = colors[StyleColor::Text as usize];
-            colors[StyleColor::SliderGrab as usize] = toRGBA(0xFF353941);
-            colors[StyleColor::SliderGrabActive as usize] = toRGBA(0xFF7A7A7A);
-            colors[StyleColor::Button as usize] = colors[StyleColor::SliderGrab as usize];
-            colors[StyleColor::ButtonHovered as usize] = colors[StyleColor::FrameBgActive as usize];
-            colors[StyleColor::ButtonActive as usize] =
-                colors[StyleColor::ScrollbarGrabActive as usize];
-            colors[StyleColor::Header as usize] = colors[StyleColor::ChildBg as usize];
-            colors[StyleColor::HeaderHovered as usize] = toRGBA(0xFF353941);
-            colors[StyleColor::HeaderActive as usize] = colors[StyleColor::FrameBgActive as usize];
-            colors[StyleColor::Separator as usize] = colors[StyleColor::FrameBgActive as usize];
-            colors[StyleColor::SeparatorHovered as usize] = toRGBA(0xFF3E4452);
-            colors[StyleColor::SeparatorActive as usize] =
-                colors[StyleColor::SeparatorHovered as usize];
-            colors[StyleColor::ResizeGrip as usize] = colors[StyleColor::Separator as usize];
-            colors[StyleColor::ResizeGripHovered as usize] =
-                colors[StyleColor::SeparatorHovered as usize];
-            colors[StyleColor::ResizeGripActive as usize] =
-                colors[StyleColor::SeparatorActive as usize];
-            colors[StyleColor::TabHovered as usize] = colors[StyleColor::HeaderHovered as usize];
-            colors[StyleColor::Tab as usize] = colors[StyleColor::FrameBgActive as usize];
-            colors[StyleColor::DockingPreview as usize] = colors[StyleColor::ChildBg as usize];
-            colors[StyleColor::DockingEmptyBg as usize] = colors[StyleColor::WindowBg as usize];
-            colors[StyleColor::PlotLines as usize] = [0.61, 0.61, 0.61, 1.00];
-            colors[StyleColor::PlotLinesHovered as usize] = [1.00, 0.43, 0.35, 1.00];
-            colors[StyleColor::PlotHistogram as usize] = [0.90, 0.70, 0.00, 1.00];
-            colors[StyleColor::PlotHistogramHovered as usize] = [1.00, 0.60, 0.00, 1.00];
-            colors[StyleColor::TableHeaderBg as usize] = colors[StyleColor::ChildBg as usize];
-            colors[StyleColor::TableBorderStrong as usize] =
-                colors[StyleColor::SliderGrab as usize];
-            colors[StyleColor::TableBorderLight as usize] =
-                colors[StyleColor::FrameBgActive as usize];
-            colors[StyleColor::TableRowBg as usize] = [0.00, 0.00, 0.00, 0.00];
-            colors[StyleColor::TableRowBgAlt as usize] = [1.00, 1.00, 1.00, 0.06];
-            colors[StyleColor::TextSelectedBg as usize] = toRGBA(0xFF243140);
-            colors[StyleColor::DragDropTarget as usize] = colors[StyleColor::Text as usize];
-            colors[StyleColor::NavWindowingHighlight as usize] = colors[StyleColor::Text as usize];
-            colors[StyleColor::NavWindowingDimBg as usize] = [0.80, 0.80, 0.80, 0.20];
-            colors[StyleColor::ModalWindowDimBg as usize] = toRGBA(0xC821252B);
+            // Neutrals
+            let bg =          [0.155, 0.155, 0.155, 1.0]; // #272727 – slightly darker bg
+            let bg_dark =     [0.130, 0.130, 0.130, 1.0]; // #212121
+            let s0 =          [0.220, 0.220, 0.220, 1.0]; // #383838 – buttons/frames, bigger jump from bg
+            let s1 =          [0.260, 0.260, 0.260, 1.0]; // #424242 – hovered
+            let s2 =          [0.300, 0.300, 0.300, 1.0]; // #3c3c50 – active
+            let grab =        [0.370, 0.370, 0.370, 1.0]; // #5e5e5e
+            let grab_hot =    [0.490, 0.490, 0.490, 1.0]; // #7d7d7d
+            let text =        [0.880, 0.880, 0.880, 1.0]; // #e0e0e0
+            let text_dim =    [0.550, 0.550, 0.550, 1.0]; // #8c8c8c
+
+            // Accents
+            let blue =        [0.118, 0.565, 0.831, 1.0]; // #1e90d4 – UE blue
+            let blue_dim =    [0.118, 0.565, 0.831, 0.6]; // UE blue dimmed
+            let blue_realy_dim = [0.118, 0.565, 0.831, 0.35];
+
+            colors[StyleColor::WindowBg as usize]              = bg;
+            colors[StyleColor::ChildBg as usize]               = bg;
+            colors[StyleColor::PopupBg as usize]               = s0;
+            colors[StyleColor::Border as usize]                = s1;
+            colors[StyleColor::BorderShadow as usize]          = [0.0, 0.0, 0.0, 0.0];
+            colors[StyleColor::FrameBg as usize]               = s0;
+            colors[StyleColor::FrameBgHovered as usize]        = s1;
+            colors[StyleColor::FrameBgActive as usize]         = s2;
+            colors[StyleColor::TitleBg as usize]               = bg_dark;
+            colors[StyleColor::TitleBgActive as usize]         = bg;
+            colors[StyleColor::TitleBgCollapsed as usize]      = bg_dark;
+            colors[StyleColor::MenuBarBg as usize]             = bg_dark;
+            colors[StyleColor::ScrollbarBg as usize]           = bg;
+            colors[StyleColor::ScrollbarGrab as usize]         = grab;
+            colors[StyleColor::ScrollbarGrabHovered as usize]  = grab_hot;
+            colors[StyleColor::ScrollbarGrabActive as usize]   = text_dim;
+            colors[StyleColor::CheckMark as usize]             = blue;
+            colors[StyleColor::SliderGrab as usize]            = blue_dim;
+            colors[StyleColor::SliderGrabActive as usize]      = blue; // brighter blue
+            colors[StyleColor::Button as usize]                = s0;
+            colors[StyleColor::ButtonHovered as usize]         = s1;
+            colors[StyleColor::ButtonActive as usize]          = s2;
+            colors[StyleColor::Header as usize]                = s0;
+            colors[StyleColor::HeaderHovered as usize]         = s1;
+            colors[StyleColor::HeaderActive as usize]          = s2;
+            colors[StyleColor::Separator as usize]             = s1;
+            colors[StyleColor::SeparatorHovered as usize]      = blue_dim;
+            colors[StyleColor::SeparatorActive as usize]       = blue;
+            colors[StyleColor::ResizeGrip as usize]            = s2;
+            colors[StyleColor::ResizeGripHovered as usize]     = blue_dim;
+            colors[StyleColor::ResizeGripActive as usize]      = blue;
+            colors[StyleColor::Tab as usize]                   = bg_dark;
+            colors[StyleColor::TabHovered as usize]            = blue;
+            colors[StyleColor::TabActive as usize]             = blue_dim;
+            colors[StyleColor::TabUnfocused as usize]          = bg_dark;
+            colors[StyleColor::TabUnfocusedActive as usize]    = s0;
+            colors[StyleColor::DockingPreview as usize]        = blue_dim;
+            colors[StyleColor::DockingEmptyBg as usize]        = bg_dark;
+            colors[StyleColor::PlotLines as usize]             = blue_dim;
+            colors[StyleColor::PlotLinesHovered as usize]      = blue;
+            colors[StyleColor::PlotHistogram as usize]         = blue_dim;
+            colors[StyleColor::PlotHistogramHovered as usize]  = blue;
+            colors[StyleColor::TableHeaderBg as usize]         = bg_dark;
+            colors[StyleColor::TableBorderStrong as usize]     = s1;
+            colors[StyleColor::TableBorderLight as usize]      = s0;
+            colors[StyleColor::TableRowBg as usize]            = [0.0, 0.0, 0.0, 0.0];
+            colors[StyleColor::TableRowBgAlt as usize]         = [1.0, 1.0, 1.0, 0.04];
+            colors[StyleColor::TextSelectedBg as usize]        = blue_realy_dim; // blue selection
+            colors[StyleColor::DragDropTarget as usize]        = blue;
+            colors[StyleColor::NavHighlight as usize]          = blue;
+            colors[StyleColor::NavWindowingHighlight as usize] = [1.0, 1.0, 1.0, 0.7];
+            colors[StyleColor::NavWindowingDimBg as usize]     = [0.0, 0.0, 0.0, 0.2];
+            colors[StyleColor::ModalWindowDimBg as usize]      = [0.0, 0.0, 0.0, 0.45];
+            colors[StyleColor::Text as usize]                  = text;
+            colors[StyleColor::TextDisabled as usize]          = text_dim;
+
+            // Rounded corners
+            style.window_rounding = 3.0;
+            style.child_rounding = 1.0;
+            style.frame_rounding = 1.0;
+            style.popup_rounding = 1.0;
+            style.scrollbar_rounding = 1.0;
+            style.grab_rounding = 1.0;
+            style.tab_rounding = 1.0;
+
+            // Padding and spacing
+            style.window_padding = [8.0, 8.0];
+            style.frame_padding = [5.0, 3.0];
+            style.item_spacing = [8.0, 4.0];
+            style.item_inner_spacing = [4.0, 4.0];
+            style.indent_spacing = 21.0;
+            style.scrollbar_size = 14.0;
+            style.grab_min_size = 10.0;
+
+            // Borders
+            style.window_border_size = 1.0;
+            style.child_border_size = 1.0;
+            style.popup_border_size = 1.0;
+            style.frame_border_size = 1.0;
+            style.tab_border_size = 0.0;
             UiContext { ctx }
         })
         .insert_resource(UiBuilder {

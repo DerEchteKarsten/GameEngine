@@ -2,34 +2,36 @@ use bevy::{
     app::{App, PostUpdate, Update},
     asset::{Assets, Handle},
     ecs::{
-        component::Component,
-        entity::Entity,
-        system::{Commands, Query, Res},
+        component::Component, entity::Entity, resource::Resource, system::{Commands, Query, Res}
     },
     reflect::{self, Reflect},
     transform::components::Transform,
 };
 
+use lava::image::{Image, format, usage};
+
 use crate::{
-    assets::{GpuMeshletMesh, Scene},
+    assets::{mesh::GpuMesh, mesh::Scene},
     render::world::InstanceFlags,
     scene::camera::update_camera,
 };
-
+use bevy::prelude::ReflectComponent;
 pub mod camera;
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
 pub struct SpawnScene {
     pub scene: Handle<Scene>,
 }
 
-use bevy::ecs::reflect::ReflectComponent;
 
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Instance {
-    pub mesh: Handle<GpuMeshletMesh>,
+    pub mesh: Handle<GpuMesh>,
     pub flags: InstanceFlags,
 }
+
 
 fn add_sub_instances(
     mut commands: Commands,
@@ -61,5 +63,12 @@ fn add_sub_instances(
 
 pub fn ScenePlugin(app: &mut App) {
     app.add_systems(PostUpdate, update_camera)
-        .add_systems(Update, add_sub_instances);
+        .add_systems(Update, add_sub_instances).register_type::<Instance>()
+    .register_type::<InstanceFlags>()
+    .register_type::<SpawnScene>();
+}
+
+#[derive(Resource)]
+pub struct Skybox {
+    image: Image<format::R8G8B8A8Srgb, usage::Sampled>,
 }

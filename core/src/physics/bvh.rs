@@ -13,7 +13,7 @@ use itertools::Itertools;
 use tracing_log::log;
 
 use crate::{
-    assets::{GpuMeshletMesh, Scene, material::Material},
+    assets::{mesh::GpuMesh, mesh::Scene, material::Material},
     editor::gizzmos::{BoxGizzmo, DrawGizzmos},
     render::render::RenderSettings,
     scene::Instance,
@@ -290,7 +290,7 @@ impl SceneBvh {
     fn raycast(
         &self,
         ray: &RayCast3d,
-        meshes: &Assets<GpuMeshletMesh>,
+        meshes: &Assets<GpuMesh>,
         instances: &Query<(&Instance, &GlobalTransform)>,
     ) -> Option<RayCastResult> {
         if self.bvh.is_empty() {
@@ -471,13 +471,13 @@ pub fn ray_triangle_intersect(ray: &RayCast3d, v0: Vec3A, v1: Vec3A, v2: Vec3A) 
 
 #[derive(SystemParam)]
 pub struct Raycast<'w, 's> {
-    meshes: Res<'w, Assets<GpuMeshletMesh>>,
+    meshes: Res<'w, Assets<GpuMesh>>,
     instances: Query<'w, 's, (Read<Instance>, Read<GlobalTransform>)>,
     bvh: Res<'w, SceneBvh>,
 }
 
 pub struct MeshRefrence<'a> {
-    pub mesh: &'a GpuMeshletMesh,
+    pub mesh: &'a GpuMesh,
     pub transform: Mat4,
 }
 
@@ -569,7 +569,7 @@ pub(crate) fn build_bvh(
 }
 
 pub(crate) fn update_bvh(
-    assets: Res<Assets<GpuMeshletMesh>>,
+    assets: Res<Assets<GpuMesh>>,
     instances: Query<(Entity, &Instance, &GlobalTransform)>,
     mut scene_bvh: ResMut<SceneBvh>,
 ) {
@@ -618,7 +618,7 @@ pub(crate) fn update_bvh(
 pub(crate) fn debug_draw_scene_bvh(
     mut gizzmos: DrawGizzmos,
     scene_bvh: Res<SceneBvh>,
-    assets: Res<Assets<GpuMeshletMesh>>,
+    assets: Res<Assets<GpuMesh>>,
     models: Query<(&Instance, &GlobalTransform)>,
     setting: Res<RenderSettings>,
 ) {

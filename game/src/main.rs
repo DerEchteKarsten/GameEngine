@@ -1,6 +1,6 @@
 use core::{
     CorePlugin,
-    assets::Scene,
+    assets::mesh::Scene,
     editor::{
         camera::EditorCamera,
         gizzmos::{ArrowGizzmo, BoxGizzmo, DrawGizzmos, SphereGizzmo},

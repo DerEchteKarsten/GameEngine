@@ -316,7 +316,7 @@ impl Default for RenderSettings {
             freez_pos: None,
             freez_proj: None,
             freez_view: None,
-            outline_color: Vec3::new(0.8, 0.2, 0.1),
+            outline_color: Vec3::new(0.920, 0.640, 0.118),
             outline_radius: 2.0,
         }
     }

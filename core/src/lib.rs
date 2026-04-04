@@ -12,21 +12,12 @@ use std::{
 #[cfg(feature = "bevy_window")]
 use bevy::a11y::AccessibilityPlugin;
 use bevy::{
-    a11y::AccessibilityPlugin,
-    app::{AppLabel, PanicHandlerPlugin},
-    diagnostic::{DiagnosticsPlugin, FrameCountPlugin},
-    ecs::{
+    a11y::AccessibilityPlugin, app::{App, AppLabel, PanicHandlerPlugin, TaskPoolPlugin}, asset::{AssetMode, AssetPlugin}, diagnostic::{DiagnosticsPlugin, FrameCountPlugin}, ecs::{
         schedule::{ScheduleBuildSettings, ScheduleLabel},
         system::NonSendMarker,
-    },
-    input::InputPlugin,
-    log::{Level, LogPlugin},
-    prelude::*,
-    time::TimePlugin,
-    window::{PrimaryWindow, WindowResized, WindowResolution},
-    winit::{WinitPlugin, WinitWindows},
+    }, input::InputPlugin, log::{Level, LogPlugin}, time::TimePlugin, transform::TransformPlugin, window::{PrimaryWindow, Window, WindowPlugin, WindowResized, WindowResolution}, winit::{WinitPlugin, WinitWindows}
 };
-use bevy::{prelude::*, window::RawHandleWrapperHolder};
+use bevy::{window::RawHandleWrapperHolder};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
 use lava::{command_buffer::RasterVertexDispatch, state::Ctx};
@@ -38,8 +29,8 @@ use crate::{
     assets::MeshAssets,
     editor::EditorPlugin,
     physics::PhysicsPlugin,
-    render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi},
-    scene::{ScenePlugin, camera::Camera},
+    render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi, world::InstanceFlags},
+    scene::{Instance, ScenePlugin, SpawnScene, camera::Camera},
     ui::{UiBuilder, UiContext, UiPlugin, UiResources},
 };
 

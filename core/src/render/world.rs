@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
 use std::fmt::Debug;
@@ -21,10 +22,9 @@ use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::{Commands, If, Local, Query, Res, ResMut, Single, SystemState};
 use bevy::ecs::world::EntityMut;
 use bevy::log;
-use bevy::reflect::Reflect;
+use bevy::reflect::{PartialReflect, Reflect, StructInfo, TupleStructInfo, TypePath, Typed, UnnamedField};
 use bevy::transform::components::GlobalTransform;
 use bevy::window::Window;
-use bitflags::bitflags;
 use futures::channel::oneshot;
 use lava::image::Image;
 use lava::image::slice::AsImage;
@@ -53,8 +53,8 @@ use smallvec::SmallVec;
 use tracing::error;
 
 use crate::assets::mesh::MeshletMesh;
-use crate::assets::{GpuMeshletMesh, MeshHeader};
-use crate::assets::{Scene, material::Material};
+use crate::assets::{mesh::GpuMesh, mesh::MeshHeader};
+use crate::assets::{mesh::Scene, material::Material};
 use crate::bindings::{
     self, AabbError, BvhNode, CullData, Gizzmo, InstanceBvhRoot, Meshlet, Vertex,
 };
@@ -83,12 +83,29 @@ pub struct InstanceManager {
     pending_instances: Vec<TempInstance>,
 }
 
-bitflags! {
-    #[derive(Copy, Clone)]
-    pub struct InstanceFlags: u32 {
-        const OUTLINE = 0b00000001;
-        // const B = 0b00000010;
-        // const C = 0b00000100;
+#[derive(Reflect, Clone, Copy)]
+pub struct InstanceFlags(pub u32);
+
+impl InstanceFlags {
+    const OUTLINE: InstanceFlags = InstanceFlags(0b00000001);
+    pub fn contains(&self, v: InstanceFlags) -> bool {
+        (self.0 & v.0) > 0
+    }
+    pub fn insert(&mut self, v: InstanceFlags) {
+        self.0 |= v.0;
+    }
+    pub fn remove(&mut self, v: InstanceFlags) {
+        self.0 &= !v.0;
+    }
+    pub fn empty() -> Self{
+        Self(0)
+    }
+}
+
+impl std::ops::BitOr for InstanceFlags {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
     }
 }
 
@@ -436,7 +453,7 @@ pub(super) fn init_world(mut cmd: Commands) {
 fn extract_meshlet_instances(
     mut instance_manager: ResMut<InstanceManager>,
     instances: Extract<Query<(&Instance, &GlobalTransform, Has<Selected>)>>,
-    meshes: Extract<Res<Assets<GpuMeshletMesh>>>,
+    meshes: Extract<Res<Assets<GpuMesh>>>,
 ) {
     instance_manager.any_outlined = false;
     for (instance, transform, selected) in &instances {
@@ -472,7 +489,7 @@ fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res<FrameCount
             meshlet_offset: instance.header.meshlet_offset as u64 + instance.bvh_root,
             cull_data_offset: instance.header.cull_data_offset as u64 + instance.bvh_root,
         };
-        instances.flags[slot + frame_in_flight * MAX_INSTANCES] = instance.flags.bits();
+        instances.flags[slot + frame_in_flight * MAX_INSTANCES] = instance.flags.0;
     }
     instances.instance_count = instances.pending_instances.len();
     instances.pending_instances.clear();

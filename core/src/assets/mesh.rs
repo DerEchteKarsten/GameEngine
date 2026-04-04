@@ -1,10 +1,9 @@
 use bevy::{
-    math::bounding::{Aabb3d, BoundingSphere, BoundingVolume},
-    prelude::*,
-    tasks::{AsyncComputeTaskPool, ParallelSlice},
+    asset::{Asset, AssetLoader, Handle, LoadContext, saver::AssetSaver, transformer::AssetTransformer}, math::{Isometry3d, bounding::{Aabb3d, BoundingSphere, BoundingVolume}}, reflect::TypePath, tasks::{AsyncComputeTaskPool, ParallelSlice}
 };
-use bytemuck::{Pod, Zeroable, try_cast_vec};
-use glam::{Vec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
+use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut, try_cast_vec};
+use futures::{AsyncReadExt, AsyncWriteExt, future::JoinAll};
+use glam::{Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
 use itertools::Itertools;
 use meshopt::{
     SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_position_remap,
@@ -12,22 +11,369 @@ use meshopt::{
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
-use std::{collections::HashMap, ops::Range};
+use tracing::debug_span;
+use core::slice;
+use std::{alloc::Layout, collections::HashMap, ops::Range};
 use std::{mem::ManuallyDrop, sync::Arc};
 use tracing_log::log;
+use lava::{buffer::{Buffer, slice::BufferSlice}, state::Ctx};
 
 use crate::{
-    assets::MeshHeader,
-    bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex},
-    physics::{
+    assets::{material::Material, read_range, read_slice, read_u64, write_slice}, bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex}, physics::{
         self,
         bvh::{
             ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
         },
-    },
+    }, render::world::UploadQueue
 };
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
+
+#[derive(Pod, Zeroable, Clone, Copy, Debug)]
+#[repr(C)]
+pub struct MeshHeader {
+    pub meshlet_offset: u32,
+    pub vertex_offset: u32,
+    pub index_offset: u32,
+    pub cull_data_offset: u32,
+    pub colission_bvh_root_node: u32,
+    pub aabb: Aabb,
+}
+
+#[derive(Pod, Zeroable, Clone, Copy, Debug)]
+#[repr(C)]
+pub struct Aabb {
+    pub center: [f32; 3],
+    pub half_extend: [f32; 3],
+}
+
+#[derive(TypePath, Asset)]
+pub struct GpuMesh {
+    pub header: MeshHeader,
+    pub buffer: Buffer<u8>,
+    pub colission_bvh: Vec<u8>,
+}
+
+#[derive(Asset, TypePath)]
+pub struct Scene {
+    pub meshes: Vec<Handle<GpuMesh>>,
+    pub instance_transforms: Vec<Mat4>,
+    pub materials: Vec<Material>,
+    pub instance_materials: Vec<u32>,
+    pub instance_mesh: Vec<u32>,
+}
+
+#[derive(Asset, TypePath)]
+pub struct FileScene {
+    pub meshes: Vec<MeshletMesh>,
+    pub instance_transforms: Vec<Mat4>,
+    pub materials: Vec<Material>,
+    pub instance_materials: Vec<u32>,
+    pub instance_mesh: Vec<u32>,
+}
+
+#[derive(Asset, TypePath)]
+pub struct GltfMesh {
+    document: gltf::Document,
+    buffers: Vec<gltf::buffer::Data>,
+    _images: Vec<gltf::image::Data>,
+}
+
+#[derive(TypePath)]
+pub struct GltfMeshLoader;
+impl AssetLoader for GltfMeshLoader {
+    type Asset = GltfMesh;
+    type Error = gltf::Error;
+    type Settings = ();
+
+    async fn load(
+        &self,
+        reader: &mut dyn bevy::asset::io::Reader,
+        _settings: &(),
+        _load_context: &mut bevy::asset::LoadContext<'_>,
+    ) -> gltf::Result<Self::Asset> {
+        let mut file_buf = Vec::new();
+        reader.read_to_end(&mut file_buf).await?;
+        let (document, buffers, images) = gltf::import_slice(file_buf)?;
+        gltf::Result::Ok(GltfMesh {
+            document,
+            buffers,
+            _images: images,
+        })
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["glb"]
+    }
+}
+
+#[derive(TypePath)]
+pub struct MeshTransformer;
+impl AssetTransformer for MeshTransformer {
+    type AssetInput = GltfMesh;
+    type AssetOutput = FileScene;
+    type Error = anyhow::Error;
+    type Settings = ();
+    async fn transform<'a>(
+        &'a self,
+        asset: bevy::asset::transformer::TransformedAsset<Self::AssetInput>,
+        _settings: &'a Self::Settings,
+    ) -> std::result::Result<
+        bevy::asset::transformer::TransformedAsset<Self::AssetOutput>,
+        Self::Error,
+    > {
+        let mut remap = HashMap::new();
+        let mut meshes = Vec::new();
+        for mesh in asset.document.meshes() {
+            for primitive in mesh.primitives() {
+                let index = (mesh.index(), primitive.index());
+                if remap.get(&index).is_some() {
+                    continue;
+                }
+
+                let reader = primitive.reader(|buffer| Some(&asset.buffers[buffer.index()]));
+                let Some(normals) = reader.read_normals() else {
+                    continue;
+                };
+                let normals = normals.flatten().collect::<Vec<_>>();
+
+                let verticies = reader
+                    .read_positions()
+                    .unwrap()
+                    .map(|e| Vec3::from(e))
+                    .collect::<Vec<_>>();
+
+                assert_eq!(verticies.len() * 3, normals.len());
+
+                let uvs = reader
+                    .read_tex_coords(0)
+                    .map(|e| e.into_f32().flatten().collect::<Vec<_>>());
+                let uvs = uvs.unwrap_or(vec![0.0; verticies.len() * 2]);
+                assert_eq!(verticies.len() * 2, uvs.len());
+
+                let indicies = reader
+                    .read_indices()
+                    .unwrap()
+                    .into_u32()
+                    .collect::<Vec<_>>();
+
+                remap.insert(index, meshes.len() as u32);
+
+                let mesh = MeshletMesh::new(&indicies, &verticies, &normals, &uvs);
+                meshes.push(mesh);
+            }
+        }
+
+        let mut instance_transforms = vec![];
+        let mut materials = vec![];
+        let mut instance_materials = vec![];
+        let mut instance_mesh = vec![];
+        for node in asset.document.nodes().filter(|n| n.mesh().is_some()) {
+            let transform = node.transform().matrix();
+            let gltf_mesh = node.mesh().unwrap();
+
+            for primitive in gltf_mesh.primitives() {
+                let material = materials.len();
+                let pmaterial = primitive.material();
+                let pbr = pmaterial.pbr_metallic_roughness();
+                materials.push(Material {
+                    color: [
+                        pbr.base_color_factor()[0],
+                        pbr.base_color_factor()[1],
+                        pbr.base_color_factor()[2],
+                    ],
+                    metalic_factor: pbr.metallic_factor(),
+                    roughness_factor: pbr.roughness_factor(),
+                    texture_offset: pbr
+                        .base_color_texture()
+                        .map(|v| v.texture().index() as u32)
+                        .unwrap_or(!0u32),
+                });
+
+                let Some(mesh) = remap.get(&(gltf_mesh.index(), primitive.index())) else {
+                    continue;
+                };
+
+                instance_materials.push(material as u32);
+                instance_mesh.push(mesh.clone());
+                instance_transforms.push(Mat4::from_cols_array_2d(&transform));
+            }
+        }
+
+        let mesh = FileScene {
+            instance_transforms: instance_transforms,
+            instance_materials: instance_materials,
+            instance_mesh: instance_mesh,
+            materials: materials,
+            meshes: meshes,
+        };
+
+        let asset = asset.replace_asset(mesh);
+        return Ok(asset);
+    }
+}
+
+#[derive(TypePath)]
+pub struct MeshSaver;
+impl AssetSaver for MeshSaver {
+    type Asset = FileScene;
+    type Error = anyhow::Error;
+    type Settings = ();
+    type OutputLoader = MeshLoader;
+    async fn save(
+        &self,
+        writer: &mut bevy::asset::io::Writer,
+        asset: bevy::asset::saver::SavedAsset<'_, Self::Asset>,
+        _settings: &Self::Settings,
+    ) -> std::result::Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
+        let mesh = asset.get();
+        write_slice(&mesh.instance_transforms, writer).await?;
+        write_slice(&mesh.materials, writer).await?;
+        write_slice(&mesh.instance_mesh, writer).await?;
+        write_slice(&mesh.instance_materials, writer).await?;
+        let num_meshes = mesh.meshes.len() as u64;
+        writer.write_all(&num_meshes.to_le_bytes()).await?;
+        for mesh in mesh.meshes.iter() {
+            writer.write_all(bytes_of(&mesh.header)).await?;
+            write_slice(&mesh.data, writer).await?;
+            write_slice(&mesh.colission_bvh, writer).await?;
+        }
+
+        return Ok(());
+    }
+}
+
+#[derive(TypePath)]
+pub struct MeshLoader;
+impl AssetLoader for MeshLoader {
+    type Asset = Scene;
+    type Error = anyhow::Error;
+    type Settings = ();
+    async fn load(
+        &self,
+        reader: &mut dyn bevy::asset::io::Reader,
+        _settings: &Self::Settings,
+        load_context: &mut LoadContext<'_>,
+    ) -> std::result::Result<Self::Asset, Self::Error> {
+        let instance_transforms = read_slice(reader, None).await?;
+        let materials = read_slice(reader, None).await?;
+        let instance_mesh = read_slice(reader, None).await?;
+        let instance_materials = read_slice(reader, None).await?;
+
+        let num_meshes = read_u64(reader).await?;
+        let mut futures = Vec::with_capacity(num_meshes as usize);
+        let mut meshes = Vec::with_capacity(num_meshes as usize);
+        for i in 0..num_meshes {
+            let mut header = MeshHeader::zeroed();
+            reader.read_exact(bytes_of_mut(&mut header)).await?;
+            let len = read_u64(reader).await? as usize;
+
+            let buffer = Buffer::new(len, false).unwrap();
+            let mut slice = buffer.range(..);
+            let address = buffer.address;
+
+            fn push_data<T: Pod>(v: T, data: &mut Option<Vec<u8>>, buffer: &mut BufferSlice<u8>) {
+                let bytes = bytes_of(&v);
+                if let Some(data) = data {
+                    data.extend_from_slice(bytes);
+                } else {
+                    buffer.copy_from(&bytes);
+                    *buffer = buffer.range(bytes.len()..);
+                }
+            }
+
+            let mut data = if Ctx::features().rebar {
+                None
+            } else {
+                Some(Vec::with_capacity(len))
+            };
+
+            for i in 0..(header.meshlet_offset as usize / size_of::<BvhNode>()) {
+                let mut node = BvhNode::zeroed();
+                reader.read_exact(bytes_of_mut(&mut node)).await?;
+                for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
+                    let offset = aabb.offset();
+                    aabb.set_offset(
+                        if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
+                            offset * size_of::<BvhNode>() as u64 + address
+                        } else {
+                            offset
+                        },
+                    );
+                }
+                push_data(node, &mut data, &mut slice);
+            }
+
+            let meshlet_count =
+                (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
+
+            for _ in 0..meshlet_count {
+                let mut meshlet = Meshlet::zeroed();
+                reader.read_exact(bytes_of_mut(&mut meshlet)).await?;
+                meshlet.triangle_index =
+                    meshlet.triangle_index + header.index_offset as u64 + address;
+                meshlet.vertex_index = meshlet.vertex_index * size_of::<Vertex>() as u64
+                    + header.vertex_offset as u64
+                    + address;
+                push_data(meshlet, &mut data, &mut slice);
+            }
+
+            read_range(
+                reader,
+                &mut data,
+                slice,
+                header.cull_data_offset,
+                len as u32,
+            )
+            .await?;
+
+            let colission_bvh = read_slice(reader, Some(8)).await?;
+
+            if let Some(data) = data {
+                futures.push((async move || -> Result<(GpuMesh, u64), futures::channel::oneshot::Canceled> {
+                    Ok((
+                        GpuMesh {
+                            buffer: UploadQueue::push_buffer(data, buffer).await?,
+                            colission_bvh,
+                            header,
+                        },
+                        i,
+                    ))
+                })());
+            } else {
+                let handle = load_context.add_labeled_asset(
+                    format!("mesh_{}", i),
+                    GpuMesh {
+                        buffer,
+                        colission_bvh,
+                        header,
+                    },
+                );
+                meshes.push(handle);
+            }
+        }
+        if futures.len() > 0 {
+            let iter = futures::future::join_all(futures.into_iter()).await;
+            for res in iter {
+                let (mesh, i) = res?;
+                let handle = load_context.add_labeled_asset(format!("mesh_{}", i), mesh);
+                meshes.push(handle);
+            }
+        }
+
+        Ok(Scene {
+            instance_transforms,
+            instance_materials,
+            instance_mesh,
+            materials,
+            meshes,
+        })
+    }
+    fn extensions(&self) -> &[&str] {
+        &["mesh"]
+    }
+}
+
 
 impl Default for AabbPtr {
     fn default() -> Self {
@@ -335,7 +681,7 @@ impl MeshletMesh {
                 index_offset,
                 vertex_offset,
                 colission_bvh_root_node: colission_bvh_root_node as u32,
-                aabb: crate::assets::Aabb {
+                aabb: Aabb {
                     center: aabb.center().to_array(),
                     half_extend: aabb.half_size().to_array(),
                 },

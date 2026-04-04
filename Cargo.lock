@@ -1507,7 +1507,6 @@ dependencies = [
  "anyhow",
  "async-std",
  "bevy",
- "bitflags 2.11.0",
  "bytemuck",
  "bytemuck_derive",
  "futures",

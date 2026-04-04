@@ -1,7 +1,7 @@
-use std::ops::DerefMut;
+use std::{ops::DerefMut, sync::Arc};
 
 use crate::{
-    assets::GpuMeshletMesh,
+    assets::mesh::GpuMesh,
     editor::{
         gizzmos::{ArrowGizzmo, DrawGizzmos, SphereGizzmo},
         viewport::ViewPortProxy,
@@ -12,7 +12,7 @@ use crate::{
     ui::{UiBuilder, UiContext},
 };
 use bevy::{
-    asset::Assets,
+    asset::{AssetId, Assets, Handle, StrongHandle},
     ecs::{
         archetype::Archetypes,
         component::{Component, ComponentId},
@@ -39,8 +39,8 @@ use bevy::{
     },
     window::Window,
 };
-use glam::{Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
-use imgui::{TreeNodeFlags, Ui};
+use glam::{Affine3A, Mat3A, Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
+use imgui::{TreeNodeFlags, Ui, drag_drop::{DragDropPayload, DragDropPayloadPod}};
 
 #[derive(Component, Reflect)]
 #[reflect(Component)]
@@ -53,7 +53,7 @@ pub(crate) fn selected_ui(world: &mut World) {
     let type_registry = world.resource::<AppTypeRegistry>().clone();
     let registry = type_registry.read();
 
-    let components: Vec<(String, ComponentId, Option<Box<dyn Reflect>>)> =
+    let mut components: Vec<(bool, String, ComponentId, Option<Box<dyn Reflect>>)> =
         if let Some(entity) = entity {
             let entity_ref = world.entity(entity);
             entity_ref
@@ -67,6 +67,7 @@ pub(crate) fn selected_ui(world: &mut World) {
                         let reflect_component = registration.data::<ReflectComponent>()?;
                         let reflected = reflect_component.reflect(entity_ref)?;
                         Some((
+                            info.mutable(),
                             registration
                                 .type_info()
                                 .type_path_table()
@@ -77,6 +78,7 @@ pub(crate) fn selected_ui(world: &mut World) {
                         ))
                     } else {
                         Some((
+                            false,
                             world.components().get_name(*component_id)?.to_string(),
                             *component_id,
                             None,
@@ -98,22 +100,27 @@ pub(crate) fn selected_ui(world: &mut World) {
                 ui.text(format!("Entity: {:?}", entity));
                 ui.separator();
 
-                for (name, component_id, mut reflected) in components {
+                for (mutable, name, component_id, reflected) in components {
+                    let mutable = mutable && name != "Children";
                     if let Some(mut reflected) = reflected {
-                        if ui.collapsing_header(&name, TreeNodeFlags::DEFAULT_OPEN) {
-                            let changed = draw_reflect_value_mut(
-                                ui,
-                                &name,
-                                &format!("{}", component_id.index()),
-                                Some(reflected.as_mut() as &mut dyn PartialReflect),
-                                &registry,
-                            );
-                            if changed {
-                                mutations.push((component_id, reflected));
-                            }
+                        let changed = draw_reflect_value_mut(
+                            !mutable,
+                            ui,
+                            None,
+                            &format!("{}", component_id.index()),
+                            Some(reflected.as_mut() as &mut dyn PartialReflect),
+                            &registry,
+                        );
+                        if changed && mutable {
+                            mutations.push((component_id, reflected));
                         }
                     } else {
-                        ui.text(name);
+                        let _dis = ui.begin_disabled(true);
+                        ui.collapsing_header(format!("{}##{}", name.split("::").last().unwrap_or("?"), component_id.index()), 
+        TreeNodeFlags::SPAN_AVAIL_WIDTH
+        | TreeNodeFlags::FRAME_PADDING
+        | TreeNodeFlags::FRAMED
+        | TreeNodeFlags::LEAF);
                     }
                 }
             } else {
@@ -133,93 +140,209 @@ pub(crate) fn selected_ui(world: &mut World) {
     }
 }
 
-/// Returns true if any field was changed
 fn draw_reflect_value_mut(
+    disabled: bool,
     ui: &imgui::Ui,
-    name: &str,
+    name: Option<&str>,
     id: &str,
-    value: Option<&mut dyn PartialReflect>,
+    mut value: Option<&mut dyn PartialReflect>,
     registry: &TypeRegistry,
 ) -> bool {
+    let _disabled = ui.begin_disabled(disabled && name.is_some());
     let mut changed = false;
-    let module_name = value
-        .as_ref()
-        .and_then(|n| n.reflect_crate_name().map(|v| v.to_owned()));
-    let type_ident = value
-        .as_ref()
-        .and_then(|n| n.reflect_type_ident().map(|v| v.to_owned()));
+
+    let module_name = value.as_ref().and_then(|n| n.reflect_crate_name().map(|v| v.to_owned()));
+    let type_ident  = value.as_ref().and_then(|n| n.reflect_type_ident().map(|v| v.to_owned()));
+    let type_short  = value.as_ref().map(|n| n.reflect_short_type_path().to_owned() ).unwrap_or_default();
+
+    let is_primitive = if let Some(ref m) = module_name && let Some(ref t) = type_ident {
+        m == "glam" || t == "Handle"
+    } else { false };
+
+    if let Some(value) = &mut value && is_primitive {
+        return draw_primitive_mut(disabled, ui, name.unwrap_or(""), id, *value);
+    }
+
     match value.map(|v| v.reflect_mut()) {
         Some(ReflectMut::Struct(s)) => {
-            if let Some(module_name) = module_name
-                && module_name == "glam"
-            {
-                changed |= draw_primitive_mut(ui, name, id, s);
-            } else {
-                let field_count = s.field_len();
+            let field_count = s.field_len();
+            if let Some(_toke) = draw_reflect_header(ui, name, &type_short, id, field_count == 0) {
+                ui.indent();
                 for i in 0..field_count {
                     let field_name = s.name_at(i).unwrap_or("?").to_string();
-                    let field_val = s.field_at_mut(i);
-                    let id = format!("{}_{}", id, i);
-                    let name = format!("{field_name}");
-                    changed |= draw_reflect_value_mut(ui, &name, &id, field_val, registry);
+                    let field_val  = s.field_at_mut(i);
+                    let child_id   = format!("{}_{}", id, i);
+                    changed |= draw_reflect_value_mut(disabled, ui, Some(&field_name), &child_id, field_val, registry);
                 }
+                ui.unindent();
             }
         }
         Some(ReflectMut::TupleStruct(ts)) => {
             let field_count = ts.field_len();
-            for i in 0..field_count {
-                let field_val = ts.field_mut(i);
-                let id = format!("{}{}", id, i);
-                let name = format!("[{}]", i);
-                changed |= draw_reflect_value_mut(ui, &name, &id, field_val, registry);
+            if let Some(_toke) = draw_reflect_header(ui, name, &type_short, id, field_count == 0) {
+                ui.indent();
+                for i in 0..field_count {
+                    let field_val = ts.field_mut(i);
+                    let child_id  = format!("{}{}", id, i);
+                    let fname     = format!("({})", i);
+                    changed |= draw_reflect_value_mut(disabled, ui, Some(&fname), &child_id, field_val, registry);
+                }
+                ui.unindent();
             }
         }
         Some(ReflectMut::Tuple(t)) => {
             let field_count = t.field_len();
-            for i in 0..field_count {
-                let field_val = t.field_mut(i);
-                let id = format!("{}{}", id, i);
-                let name = format!("({})", i);
-                changed |= draw_reflect_value_mut(ui, &name, &id, field_val, registry);
+            if let Some(_toke) = draw_reflect_header(ui, name, &type_short, id, field_count == 0) {
+                ui.indent();
+                for i in 0..field_count {
+                    let field_val = t.field_mut(i);
+                    let child_id  = format!("{}{}", id, i);
+                    let fname     = format!("({})", i);
+                    changed |= draw_reflect_value_mut(disabled, ui, Some(&fname), &child_id, field_val, registry);
+                }
+                ui.unindent();
             }
         }
         Some(ReflectMut::Enum(e)) => {
-            ui.text(format!("variant: {}", e.variant_name()));
+            let variant     = e.variant_name().to_string();
+            let header_name = format!("{}::{}", type_short, variant);
             let field_count = e.field_len();
-            for i in 0..field_count {
-                let field_name = e.name_at(i).unwrap_or("?").to_string();
-                let field_val = e.field_at_mut(i);
-                let id = format!("{}::{}", id, field_name);
-                let name = format!("::{}", field_name);
-                changed |= draw_reflect_value_mut(ui, &id, &name, field_val, registry);
+            if let Some(_toke) = draw_reflect_header(ui, name, &header_name, id, field_count == 0) {
+                ui.indent();
+                for i in 0..field_count {
+                    let field_name = e.name_at(i).unwrap_or("?").to_string();
+                    let field_val  = e.field_at_mut(i);
+                    let child_id   = format!("{}::{}", id, field_name);
+                    let fname      = format!("::{}", field_name);
+                    changed |= draw_reflect_value_mut(disabled, ui, Some(&fname), &child_id, field_val, registry);
+                }
+                ui.unindent();
             }
         }
         Some(ReflectMut::List(l)) => {
             let len = l.len();
-            for i in 0..len {
-                let item = l.get_mut(i);
-                let id = format!("{}{}", id, i);
-                let name = format!("[{}]", i);
-                changed |= draw_reflect_value_mut(ui, &name, &id, item, registry);
+            let header_name = format!("{}[{}]", type_short, len);
+            if let Some(_toke) = draw_reflect_header(ui, name, &header_name, id, len == 0) {
+                ui.indent();
+                for i in 0..len {
+                    let item     = l.get_mut(i);
+                    let child_id = format!("{}{}", id, i);
+                    let fname    = format!("[{}]", i);
+                    changed |= draw_reflect_value_mut(disabled, ui, Some(&fname), &child_id, item, registry);
+                }
+                ui.unindent();
             }
         }
         Some(ReflectMut::Opaque(v)) => {
-            changed |= draw_primitive_mut(ui, name, id, v);
+            changed |= draw_primitive_mut(disabled, ui, name.unwrap_or(""), id, v);
         }
         _ => {
-            ui.text(format!("{}##{}", name, id));
+            if let Some(name) = name {
+                ui.text_disabled(format!("{name}: {type_short}"));
+            }else {
+                ui.text_disabled(format!("{type_short}"));
+            }
         }
     }
     changed
 }
 
+fn object_field<T: Copy + 'static>(
+    disabled: bool,
+    ui: &Ui,
+    id: &str,
+    label: &str,
+    content: Option<&str>,
+    type_name: &str,
+    dnd_name: &str,
+    payload_handler: impl FnOnce(DragDropPayloadPod<T>),
+) -> bool{
+    let bg_color     = [0.140, 0.140, 0.140, 1.0];
+     let text_color = if disabled        { [0.550, 0.550, 0.550, 1.0] }
+                     else if content.is_some() { [0.880, 0.880, 0.880, 1.0] }
+                     else               { [0.550, 0.550, 0.550, 1.0] };
+    let default_label = format!("None ({})", type_name);
+    let display_text = content.unwrap_or(&default_label);
+    let draw = ui.get_window_draw_list();
+    let pos = ui.cursor_screen_pos();
+    let available = (ui.content_region_avail()[0] - ui.calc_text_size(label)[0]).min(240.0);
+    let height = 20.0;
+    let size = [available, height];
+
+    draw.add_rect(
+        pos,
+        [pos[0] + size[0], pos[1] + size[1]],
+        bg_color,
+    )
+    .rounding(1.0)
+    .build();
+
+    ui.invisible_button(id, size);
+    let hovered = ui.is_item_hovered();
+
+    let border_color = if disabled      { [0.220, 0.220, 0.220, 1.0] } 
+                       else if hovered  { [0.118, 0.565, 0.831, 1.0] }
+                       else             { [0.300, 0.300, 0.300, 1.0] };
+    draw.add_rect(pos, [pos[0] + size[0], pos[1] + size[1]], border_color)
+        .rounding(1.0)
+        .thickness(1.0)
+        .build();
+
+    let text_pos = [pos[0] + 6.0, pos[1] + (height - ui.text_line_height()) * 0.5];
+    draw.add_text(text_pos, text_color, display_text);
+
+    let mut changed = false;
+    if let Some(target) = ui.drag_drop_target() {
+        if let Some(payload) =
+            target.accept_payload::<T, _>(dnd_name, imgui::DragDropFlags::empty())
+        {
+            if let Ok(playoad) = payload {
+                payload_handler(playoad);
+                changed = true;
+            }
+        }
+    }
+
+    ui.same_line();
+    ui.text(label);
+    changed
+}
+
+fn draw_reflect_header<'a>(
+    ui: &'a imgui::Ui,
+    field_name: Option<&str>,
+    type_name: &str,
+    id: &str,
+    is_leaf: bool,
+) -> Option<imgui::TreeNodeToken<'a>> {
+    let label = format!("{type_name}##{id}");
+    if let Some(field_name) = field_name {
+        ui.text(format!("{field_name}:"));
+        ui.same_line();
+    }
+    
+    let flags = TreeNodeFlags::OPEN_ON_ARROW
+        | TreeNodeFlags::SPAN_AVAIL_WIDTH
+        | TreeNodeFlags::DEFAULT_OPEN
+        | TreeNodeFlags::FRAME_PADDING
+        | TreeNodeFlags::FRAMED
+        | if is_leaf { TreeNodeFlags::LEAF } else { TreeNodeFlags::empty() };
+   
+    ui.tree_node_config(&label)
+        .flags(flags)
+        .push()
+}
+
 fn draw_primitive_mut(
+    disabled: bool,
     ui: &imgui::Ui,
     name: &str,
     id: &str,
     value: &mut dyn PartialReflect,
 ) -> bool {
     let label = format!("{}##{}", name, id);
+    let _disabled = ui.begin_disabled(disabled);
+
     if let Some(v) = value.try_downcast_mut::<f32>() {
         let mut val = *v;
         if ui.input_float(label, &mut val).build() {
@@ -291,9 +414,9 @@ fn draw_primitive_mut(
         }
     } else if let Some(v) = value.try_downcast_mut::<glam::f32::Mat4>() {
         let mut changed = false;
-        let mut cols = v.to_cols_array_2d();
+        let mut cols = v.transpose().to_cols_array_2d();
         for (i, col) in cols.iter_mut().enumerate() {
-            let id = format!("{}[{}]", label, i);
+            let id = format!("{}[{}]##{}", name, i, id);
             if ui.input_float4(&id, col).build() {
                 changed = true;
             }
@@ -302,33 +425,51 @@ fn draw_primitive_mut(
             *v = glam::f32::Mat4::from_cols_array_2d(&cols);
             return true;
         }
-    } else if let Some(v) = value.try_downcast_mut::<Entity>() {
-        ui.text(format!("{}: Entity {}", name, *v));
-        if let Some(target) = ui.drag_drop_target() {
-            if let Some(payload) =
-                target.accept_payload::<u64, _>("ENTITY_DND", imgui::DragDropFlags::empty())
-            {
-                if let Ok(bits) = payload {
-                    let dragged = Entity::from_bits(bits.data);
-                    *v = dragged;
-                    return true;
-                }
+    } else if let Some(v) = value.try_downcast_mut::<glam::f32::Affine3A>() {
+        let mut changed = false;
+        let mut mat = v.matrix3.transpose().to_cols_array_2d();
+        for (i, row) in mat.iter_mut().enumerate() {
+            let id = format!("{} Matrix[{}]##{}", name, i, id);
+            if ui.input_float3(id, row).build() {
+                changed = true;
             }
         }
+        let id = format!("{} Translation##{}", name, id);
+        if ui.input_float3(&id, &mut v.translation).build() {
+            changed = true;
+        }
+        if changed {
+            *v = Affine3A {
+                matrix3: Mat3A::from_cols_array_2d(&mat).transpose(),
+                translation: v.translation,
+            };
+            return true;
+        }
+    } else if let Some(v) = value.try_downcast_mut::<Entity>() {
+        let label = format!("{}", name); 
+        let val = format!("Entity {}", v.index());
+        if object_field::<u64>(disabled, ui, id, &label, Some(&val), "Entity", "ENTITY_DND", |payload| {
+            let dragged = Entity::from_bits(payload.data);
+            *v = dragged;
+        }) {
+            return true;
+        }
+    } else if let Some(v) = value.try_downcast_mut::<Handle<GpuMesh>>() {
+        let content = v.path().map(|p| p.to_string()); 
+        if object_field::<usize>(disabled, ui, id, &name, content.as_deref(), "Mesh", "MESH_DND", |payload| {
+            *v = unsafe { Handle::Strong(Arc::from_raw(payload.data as *const StrongHandle)) };
+        }) {
+            return true;
+        }
     } else {
-        ui.text(format!("{}: <{}>", name, value.reflect_type_path()));
+        ui.text(format!("<{}> {}", value.reflect_type_path(), name));
     }
-    false
-}
 
-#[derive(Default)]
-pub struct HierarchyState {
-    context_target: Option<Entity>,
+    false
 }
 
 pub(crate) fn hierarchy_ui(
     mut ui: ResMut<UiBuilder>,
-    mut state: Local<HierarchyState>,
     mut cmd: Commands,
     mut instances: Query<(
         Entity,
@@ -366,26 +507,9 @@ pub(crate) fn hierarchy_ui(
                 roots.sort();
 
                 for root in roots {
-                    draw_entity_node(&mut cmd, ui, root, &mut instances, &selected, &mut state);
+                    draw_entity_node(&mut cmd, ui, root, &mut instances, &selected);
                 }
             });
-            if let Some(target) = state.context_target {
-                ui.popup("##entity_context", || {
-                    // if ui.menu_item("Duplicate") {
-                    //     state.context_target = None;
-                    // }
-                    // if ui.menu_item("Delete") {
-                    //     commands.entity(target).despawn();
-                    //     state.context_target = None;
-                    // }
-                    // if ui.menu_item("Rename") {
-                    //     state.rename_target = Some(target);
-                    //     state.rename_buf = format!("{:?}", target);
-                    //     state.context_target = None;
-                    // }
-                    ui.text("test");
-                });
-            }
             if let Some(target) = ui.drag_drop_target() {
                 if let Some(payload) =
                     target.accept_payload::<u64, _>("ENTITY_DND", imgui::DragDropFlags::empty())
@@ -412,7 +536,6 @@ fn draw_entity_node(
         Option<&Instance>,
     )>,
     selected: &Query<Entity, With<Selected>>,
-    state: &mut HierarchyState,
 ) {
     let Ok((_, is_selected, name, children, _, instance)) = instances.get(this_entity) else {
         return;
@@ -457,11 +580,6 @@ fn draw_entity_node(
         cmd.entity(this_entity).insert(Selected);
     }
 
-    if ui.is_item_clicked_with_button(imgui::MouseButton::Right) {
-        state.context_target = Some(this_entity);
-        ui.open_popup("##entity_context");
-    }
-
     if let Some(_drag) = ui
         .drag_drop_source_config("ENTITY_DND")
         .flags(imgui::DragDropFlags::SOURCE_ALLOW_NULL_ID)
@@ -489,7 +607,7 @@ fn draw_entity_node(
         let mut children = children.iter().copied().collect::<Vec<_>>();
         children.sort();
         for child in children {
-            draw_entity_node(cmd, ui, child, instances, selected, state);
+            draw_entity_node(cmd, ui, child, instances, selected);
         }
     }
 }
@@ -512,9 +630,8 @@ pub(crate) fn picking(
     touches: Res<Touches>,
     viewport: ViewPortProxy,
     camera: Single<(&Camera, &GlobalTransform)>,
-    assets: Res<Assets<GpuMeshletMesh>>,
-    ui: Res<UiContext>,
-    mut picked: Query<(Entity, &GlobalTransform, &Instance, &mut Transform), With<Selected>>,
+    assets: Res<Assets<GpuMesh>>,
+    mut picked: Query<(Entity, &GlobalTransform, Option<&Instance>, &mut Transform), With<Selected>>,
     all_picked: Query<Entity, With<Selected>>,
     mut local: Local<Option<DragState>>,
 ) {
@@ -556,10 +673,18 @@ pub(crate) fn picking(
             }
         }
 
-        let Some(mesh) = assets.get(&instance.mesh) else {
-            return;
+        let center = if let Some(instance) = instance && let Some(mesh) = assets.get(&instance.mesh) {
+            Vec3::from(mesh.header.aabb.center)
+        } else {
+            global_transfrom.translation()
         };
-        let center = Vec3::from(mesh.header.aabb.center);
+
+        if global_transfrom.affine().matrix3.row(0).length() == 0.0
+            || global_transfrom.affine().matrix3.row(1).length() == 0.0
+            || global_transfrom.affine().matrix3.row(2).length() == 0.0 {
+                return;
+            }
+
         let directions = [
             (global_transfrom.right(), transform.right()),
             (global_transfrom.up(), transform.up()),
