@@ -71,7 +71,7 @@ pub(crate) fn update_view_port(
     }
     padding_token.pop();
     border_token.pop();
-    ctx.ctx.style_mut().colors[StyleColor::WindowBg as usize] = [0.155, 0.155, 0.155, 1.0];
+    ctx.ctx.style_mut().colors[StyleColor::WindowBg as usize] = UiBuilder::BG;
 }
 
 #[derive(SystemParam)]
@@ -100,18 +100,23 @@ impl<'s, 'w> ViewPortProxy<'s, 'w> {
             .unwrap_or(self.window.physical_size())
     }
     pub fn cursor_position(&self) -> Option<Vec2> {
-        let cp = self.window.cursor_position()?;
+        let cp = self.window.cursor_position();
+        cp.and_then(|pos| self.to_viewport_pos(pos))
+    }
+    
+    pub fn to_viewport_pos(&self, pos: Vec2) -> Option<Vec2> {
         if let Some(vp) = &self.view_port {
-            let position = cp - vp.view_pos.as_vec2();
+            let position = pos - vp.view_pos.as_vec2();
             if position.cmpgt(vp.view_size.as_vec2()).any() || position.cmple(Vec2::ZERO).any() {
                 None
             } else {
                 Some(position)
             }
-        } else {
-            Some(cp)
+        }else {
+            Some(pos)
         }
     }
+
     pub fn focused(&self) -> bool {
         self.view_port.as_ref().map(|vp| vp.focused).unwrap_or(true)
     }

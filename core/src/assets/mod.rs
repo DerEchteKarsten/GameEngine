@@ -90,22 +90,11 @@ async fn read_len_slice<T: Pod>(
 }
 
 
-async fn read_range<'a>(
+async fn read_slice_to_buffer<'a>(
     reader: &mut dyn bevy::asset::io::Reader,
-    data: &mut Option<Vec<u8>>,
     slice: BufferSlice<'a, u8>,
-    start_offset: u32,
-    end_offset: u32,
 ) -> Result<()> {
-    let len = (end_offset - start_offset) as usize;
-    if let Some(data) = data {
-        let mut slice =
-            unsafe { slice::from_raw_parts_mut(data.as_mut_ptr().add(start_offset as usize), len) };
-        reader.read_exact(&mut slice).await?;
-        unsafe { data.set_len(len) };
-    } else {
-        let mut mem_slice = unsafe { slice::from_raw_parts_mut(slice.ptr(), len) };
-        reader.read_exact(&mut mem_slice).await?;
-    }
+    let mut mem_slice = unsafe { slice::from_raw_parts_mut(slice.ptr(), slice.len()) };
+    reader.read_exact(&mut mem_slice).await?;
     Ok(())
 }

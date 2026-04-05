@@ -19,7 +19,7 @@ use tracing_log::log;
 use lava::{buffer::{Buffer, slice::BufferSlice}, state::Ctx};
 
 use crate::{
-    assets::{material::Material, read_range, read_slice, read_u64, write_slice}, bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex}, physics::{
+    assets::{material::Material, read_slice_to_buffer, read_slice, read_u64, write_slice}, bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex}, physics::{
         self,
         bvh::{
             ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
@@ -272,25 +272,21 @@ impl AssetLoader for MeshLoader {
             let mut slice = buffer.range(..);
             let address = buffer.address;
 
-            fn push_data<T: Pod>(v: T, data: &mut Option<Vec<u8>>, buffer: &mut BufferSlice<u8>) {
-                let bytes = bytes_of(&v);
-                if let Some(data) = data {
-                    data.extend_from_slice(bytes);
-                } else {
-                    buffer.copy_from(&bytes);
-                    *buffer = buffer.range(bytes.len()..);
-                }
-            }
-
             let mut data = if Ctx::features().rebar {
-                None
+                Vec::with_capacity(header.cull_data_offset as usize)
             } else {
-                Some(Vec::with_capacity(len))
+                Vec::with_capacity(len)
             };
 
-            for i in 0..(header.meshlet_offset as usize / size_of::<BvhNode>()) {
-                let mut node = BvhNode::zeroed();
-                reader.read_exact(bytes_of_mut(&mut node)).await?;
+            let ptr = data.as_mut_ptr();
+            reader.read_exact(unsafe {
+                std::slice::from_raw_parts_mut(ptr, header.cull_data_offset as usize)
+            }).await?;
+            unsafe { data.set_len(data.capacity()) };
+
+            let bvh_node_count = (header.meshlet_offset as usize / size_of::<BvhNode>());
+            for i in 0..bvh_node_count {
+                let node: &mut BvhNode = bytemuck::from_bytes_mut(&mut data[i * size_of::<BvhNode>()..(i+1) * size_of::<BvhNode>()]);
                 for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
                     let offset = aabb.offset();
                     aabb.set_offset(
@@ -301,35 +297,31 @@ impl AssetLoader for MeshLoader {
                         },
                     );
                 }
-                push_data(node, &mut data, &mut slice);
             }
 
             let meshlet_count =
                 (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
-
-            for _ in 0..meshlet_count {
-                let mut meshlet = Meshlet::zeroed();
-                reader.read_exact(bytes_of_mut(&mut meshlet)).await?;
+            for i in 0..meshlet_count {
+                let offset = header.meshlet_offset as usize + i * size_of::<Meshlet>();
+                let meshlet: &mut Meshlet = bytemuck::from_bytes_mut(&mut data[offset..offset+size_of::<Meshlet>()]);
                 meshlet.triangle_index =
                     meshlet.triangle_index + header.index_offset as u64 + address;
                 meshlet.vertex_index = meshlet.vertex_index * size_of::<Vertex>() as u64
                     + header.vertex_offset as u64
                     + address;
-                push_data(meshlet, &mut data, &mut slice);
             }
 
-            read_range(
-                reader,
-                &mut data,
-                slice,
-                header.cull_data_offset,
-                len as u32,
-            )
-            .await?;
+            if Ctx::features().rebar {
+                read_slice_to_buffer(
+                    reader,
+                    slice.range(header.cull_data_offset as usize..),
+                )
+                .await?;
+            }
 
             let colission_bvh = read_slice(reader, Some(8)).await?;
 
-            if let Some(data) = data {
+            if Ctx::features().rebar {
                 futures.push((async move || -> Result<(GpuMesh, u64), futures::channel::oneshot::Canceled> {
                     Ok((
                         GpuMesh {

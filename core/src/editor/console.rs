@@ -307,11 +307,11 @@ fn render_console_window(
 
     let level_names = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
     let level_colors: [[f32; 4]; 5] = [
-        [0.380, 0.380, 0.380, 1.0], // trace    
-        [0.400, 0.560, 0.700, 1.0], // debug 
-        [0.820, 0.820, 0.820, 1.0], // info   
-        [0.980, 0.760, 0.110, 1.0], // warn   
-        [0.950, 0.180, 0.180, 1.0], // error 
+        UiBuilder::TRACE,
+        UiBuilder::DEBUG,
+        UiBuilder::INFO,
+        UiBuilder::WARN,
+        UiBuilder::ERROR,
     ];
     ui.window("Console##console").build(|| {
         // ── Toolbar ──────────────────────────────────────────────────────────

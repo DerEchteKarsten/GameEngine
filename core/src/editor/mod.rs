@@ -1,31 +1,19 @@
 use bevy::{
-    app::{Plugin, PreUpdate, Update},
-    ecs::{
-        resource::Resource,
-        schedule::IntoScheduleConfigs,
-        system::{Res, ResMut},
-    },
-    time::Time,
+    app::{Plugin, PreUpdate, Update}, asset::Handle, ecs::{
+        entity::Entity, resource::Resource, schedule::IntoScheduleConfigs, system::{Res, ResMut}
+    }, time::Time
 };
 use glam::{IVec2, UVec2};
 use lava::buffer::Buffer;
 use tracing::Level;
 
 use crate::{
-    INITIAL_WINDOW_SIZE,
-    editor::{
-        camera::{CameraSettings, update_camera},
-        console::ConsolePlugin,
-        gizzmos::{Gizzmos, extract_gizzmos, init_gizzmos, write_gizzmos},
-        picking::{hierarchy_ui, picking, selected_ui},
-        viewport::{ViewPort, update_view_port},
-    },
-    physics::bvh::debug_draw_scene_bvh,
-    render::{
+    INITIAL_WINDOW_SIZE, assets::mesh::{GpuMesh, Scene}, editor::{
+        asset_browser::{AssetDND, asset_browser}, camera::{CameraSettings, update_camera}, console::ConsolePlugin, gizzmos::{Gizzmos, extract_gizzmos, init_gizzmos, write_gizzmos}, picking::{hierarchy_ui, picking}, selected::{ReflectEditorView, selected_ui}, viewport::{ViewPort, update_view_port}
+    }, physics::bvh::debug_draw_scene_bvh, render::{
         ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderApp, RenderStartup, RenderSystems,
         extract_param::Extract, render::RenderDebugUi, world::MAX_INSTANCES,
-    },
-    ui::{UiBuilder, UiContext},
+    }, ui::{UiBuilder, UiContext}
 };
 
 pub mod camera;
@@ -33,6 +21,9 @@ pub mod console;
 pub mod gizzmos;
 pub(crate) mod picking;
 pub mod viewport;
+pub mod asset_browser;
+pub mod selected;
+
 pub struct EditorPlugin {
     pub camera_settings: CameraSettings,
 }
@@ -86,6 +77,12 @@ fn frame_histogram(mut ui: ResMut<UiBuilder>, mut state: ResMut<UiState>, time: 
     }
 }
 
+macro_rules! register_editor_views {
+    ($app:expr, $($t:ty),*) => {
+        $($app.register_type_data::<$t, ReflectEditorView>();)*
+    };
+}
+
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.insert_resource(Gizzmos {
@@ -108,6 +105,7 @@ impl Plugin for EditorPlugin {
             scissor_pos: UVec2::ZERO,
             focused: true,
         })
+        .insert_resource(AssetDND(None))
         .add_systems(
             Update,
             (
@@ -116,12 +114,14 @@ impl Plugin for EditorPlugin {
                 selected_ui,
                 hierarchy_ui,
                 frame_histogram,
+                asset_browser,
                 picking
                     .after(update_camera)
                     .after(selected_ui)
                     .after(hierarchy_ui)
                     .after(frame_histogram),
             ),
+            
         )
         .add_systems(PreUpdate, update_view_port);
         app.get_sub_app_mut(RenderApp)
@@ -129,5 +129,11 @@ impl Plugin for EditorPlugin {
             .add_systems(ExtractSchedule, extract_gizzmos)
             .add_systems(Render, write_gizzmos.in_set(RenderSystems::PreRender))
             .add_systems(RenderStartup, init_gizzmos);
+
+        register_editor_views!(app,
+            f32, f64, i32, u32, u64, bool, String,
+            glam::Vec2, glam::Vec3, glam::Vec4, glam::Quat, glam::Mat4, glam::Affine3A,
+            Entity, Handle<GpuMesh>, Handle<Scene>
+        );
     }
 }
