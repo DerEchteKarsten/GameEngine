@@ -103,7 +103,7 @@ impl<'s, 'w> ViewPortProxy<'s, 'w> {
         let cp = self.window.cursor_position();
         cp.and_then(|pos| self.to_viewport_pos(pos))
     }
-    
+
     pub fn to_viewport_pos(&self, pos: Vec2) -> Option<Vec2> {
         if let Some(vp) = &self.view_port {
             let position = pos - vp.view_pos.as_vec2();
@@ -112,7 +112,7 @@ impl<'s, 'w> ViewPortProxy<'s, 'w> {
             } else {
                 Some(position)
             }
-        }else {
+        } else {
             Some(pos)
         }
     }

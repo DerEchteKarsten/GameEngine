@@ -1,4 +1,3 @@
-#include "random.slang"
 #include "datatypes.slang"
 #include "bindless.slang"
 
@@ -16,16 +15,14 @@ struct UIVertex {
 
 struct RasterMeshUiBindings {
     Buf<UIVertex> verticies;
-    Buf<uint> indicies;
     Tex2D<float> font_atlas;
 }
 
 [[vk::push_constant]] RasterMeshUiBindings b;
 
 [shader("vertex")]
-VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
+VSOutput vertex(uint instance_index: SV_InstanceID, uint index : SV_VertexID)
 {
-    let index = b.indicies.val[vertex_index];
     let vertex = b.verticies.val[index];
     VSOutput output;
     output.position = float4(vertex.pos.xy, 0.5, 1.0);
@@ -42,6 +39,6 @@ struct PSOutput {
 PSOutput fragment(in VSOutput input)
 {
     PSOutput output;
-    output.color = input.color * b.font_atlas.Sample(input.uv);
+    output.color = float4(input.color.xyz, input.color.a * b.font_atlas.Sample(input.uv));
     return output;
 }

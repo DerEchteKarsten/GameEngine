@@ -113,8 +113,7 @@ use crate::render::world::InstanceManager;
 use crate::render::world::MAX_INSTANCES;
 use crate::render::world::UploadQueue;
 use crate::ui::UiBuilder;
-use crate::ui::UiContext;
-use crate::ui::UiResources;
+use crate::ui::{UiResources, new_ui::NUiResources};
 use crate::{render::FRAMES_IN_FLIGHT, scene::camera::Camera};
 use tracing::info;
 
@@ -374,6 +373,7 @@ pub(super) fn render(
     viewport: Res<ViewPort>,
     mut values: Option<ResMut<RenderValues>>,
     setting: Res<RenderSettings>,
+    nui_resources: Res<NUiResources>,
 ) {
     let frame_in_flight = frame.frame_in_flight();
     let resources = resources.get_or_insert_with(|| RenderResources {
@@ -581,16 +581,19 @@ pub(super) fn render(
                             cmd.raster::<RasterUi>()
                                 .bind(RasterUiBindings {
                                     font_atlas: font_atlas.as_sampled(),
-                                    indicies: ui_resources.indicies[frame.frame_in_flight()]
-                                        .range(list.start_index as usize..),
                                     verticies: ui_resources.verticies[frame.frame_in_flight()]
                                         .range(list.start_vertex as usize..),
                                 })
                                 .backface_culling(false)
                                 .color_attachment(swapchain.image(), None)
                                 .draw_with_dynstates(
-                                    RasterVertexDispatch::Draw {
-                                        vertex_count: list.count,
+                                    RasterVertexDispatch::DrawIndexed {
+                                        index_buffer: ui_resources.indicies
+                                            [frame.frame_in_flight()]
+                                        .range(
+                                            list.start_index as usize
+                                                ..(list.start_index as usize + list.count as usize),
+                                        ),
                                         instance_count: 1,
                                     },
                                     swapchain.size,
@@ -601,7 +604,25 @@ pub(super) fn render(
                                     },
                                 );
                         }
+                        // cmd.blit_image(font_atlas.whole(), swapchain.image().region(UVec2::new(font_atlas.extent.width, font_atlas.extent.height)), Filter::Nearest);
                     }
+
+                    cmd.raster::<RasterUi>()
+                        .bind(RasterUiBindings {
+                            font_atlas: nui_resources.font_atlas.as_sampled(),
+                            verticies: nui_resources.verticies[frame.frame_in_flight()].range(..),
+                        })
+                        .backface_culling(false)
+                        .color_attachment(swapchain.image(), None)
+                        .draw(
+                            swapchain.size,
+                            RasterVertexDispatch::DrawIndexed {
+                                instance_count: 1,
+                                index_buffer: nui_resources.indicies[frame.frame_in_flight()]
+                                    .range(..nui_resources.num_indicies),
+                            },
+                        );
+                    // cmd.blit_image(nui_resources.font_atlas.whole(), swapchain.image().region(UVec2::new(nui_resources.font_atlas.extent.width, nui_resources.font_atlas.extent.height)), Filter::Nearest);
                     cmd.present(swapchain.image());
                 },
             )

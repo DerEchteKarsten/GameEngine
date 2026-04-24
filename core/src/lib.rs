@@ -11,13 +11,23 @@ use std::{
 
 #[cfg(feature = "bevy_window")]
 use bevy::a11y::AccessibilityPlugin;
+use bevy::{app::Startup, ecs::{entity::Entity, query::With, system::{Commands, Single}}, window::{CursorIcon, RawHandleWrapperHolder, SystemCursorIcon, WindowTheme}};
 use bevy::{
-    a11y::AccessibilityPlugin, app::{App, AppLabel, PanicHandlerPlugin, TaskPoolPlugin}, asset::{AssetMode, AssetPlugin}, diagnostic::{DiagnosticsPlugin, FrameCountPlugin}, ecs::{
+    a11y::AccessibilityPlugin,
+    app::{App, AppLabel, PanicHandlerPlugin, TaskPoolPlugin},
+    asset::{AssetMode, AssetPlugin},
+    diagnostic::{DiagnosticsPlugin, FrameCountPlugin},
+    ecs::{
         schedule::{ScheduleBuildSettings, ScheduleLabel},
         system::NonSendMarker,
-    }, input::InputPlugin, log::{Level, LogPlugin}, time::TimePlugin, transform::TransformPlugin, window::{PrimaryWindow, Window, WindowPlugin, WindowResized, WindowResolution}, winit::{WinitPlugin, WinitWindows}
+    },
+    input::InputPlugin,
+    log::{Level, LogPlugin},
+    time::TimePlugin,
+    transform::TransformPlugin,
+    window::{PrimaryWindow, Window, WindowPlugin, WindowResized, WindowResolution},
+    winit::{WinitPlugin, WinitWindows},
 };
-use bevy::{window::RawHandleWrapperHolder};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
 use lava::{command_buffer::RasterVertexDispatch, state::Ctx};
@@ -81,5 +91,8 @@ pub fn CorePlugin(app: &mut App) {
         PhysicsPlugin,
         EditorPlugin::default(),
         ScenePlugin,
-    ));
+    ))
+    .add_systems(Startup, |mut cmd: Commands, window: Single<Entity, With<PrimaryWindow>>| {
+        cmd.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
+    });
 }

@@ -642,13 +642,11 @@ impl RasterVertexShaderPass for Raster {
 #[repr(C)]
 pub struct CRasterUiBindings {
     pub verticies: u64,
-    pub indicies: u64,
     pub font_atlas: BindlessHandle,
 }
 
 pub struct RasterUiBindings<'a> {
     pub verticies: BufferSlice<'a, UIVertex>,
-    pub indicies: BufferSlice<'a, u32>,
     pub font_atlas: SampledImageViewBinding<'a>,
 }
 
@@ -661,7 +659,6 @@ impl Binding for CRasterUiBindings {
     fn from_cpu_binding<'a>(bindings: &Self::CpuBinding<'a>) -> Self {
         Self {
             verticies: bindings.verticies.gpu_ptr,
-indicies: bindings.indicies.gpu_ptr,
 font_atlas: bindings.font_atlas.handle,
         }
     }
@@ -672,13 +669,6 @@ font_atlas: bindings.font_atlas.handle,
     ) -> Vec<(ResourceHandle, ResourceState)> {
         vec![
             (bindings.verticies.into(), 
-ResourceState {
-    stages,
-    access: AccessFlags2::SHADER_STORAGE_READ,
-
-    ..Default::default()
-}),
-(bindings.indicies.into(), 
 ResourceState {
     stages,
     access: AccessFlags2::SHADER_STORAGE_READ,
@@ -869,9 +859,27 @@ impl RasterVertexShaderPass for RasterOutline {
     
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstanceMeshletIndex {
-    pub instance: u32,
-    pub meshlet: u32,
+pub struct InstanceHeader {
+    pub meshlet_offset: u64,
+    pub cull_data_offset: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Gizzmo {
+    pub transform: Mat4,
+    pub color: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct CullData {
+    pub aabb: AabbError,
+    pub lod_group_sphere: Vec4,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Vertex {
+    pub position_and_uv1: Vec4,
+    pub normal_and_uv2: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -883,21 +891,9 @@ pub struct Meshlet {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct Vertex {
-    pub position_and_uv1: Vec4,
-    pub normal_and_uv2: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstanceHeader {
-    pub meshlet_offset: u64,
-    pub cull_data_offset: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Gizzmo {
-    pub transform: Mat4,
-    pub color: Vec4,
+pub struct InstancedMeshlet {
+    pub instance: u64,
+    pub meshlet: u64,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -915,24 +911,21 @@ pub struct TraversalVariables {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct CullData {
-    pub aabb: AabbError,
-    pub lod_group_sphere: Vec4,
+pub struct InstanceBvhRoot {
+    pub instance: u64,
+    pub node: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstanceMeshletIndex {
+    pub instance: u32,
+    pub meshlet: u32,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
 pub struct AabbPtr {
     pub center_and_offset_high: Vec4,
     pub half_extent_and_offset_low: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct BvhNode {
-    pub aabb_and_offsets: [AabbPtr; 8],
-    pub errors: [f32; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: UVec2,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -949,13 +942,10 @@ pub struct UIVertex {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstanceBvhRoot {
-    pub instance: u64,
-    pub node: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct InstancedMeshlet {
-    pub instance: u64,
-    pub meshlet: u64,
+pub struct BvhNode {
+    pub aabb_and_offsets: [AabbPtr; 8],
+    pub errors: [f32; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: UVec2,
 }

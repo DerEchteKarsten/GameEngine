@@ -1,5 +1,5 @@
 use bevy::{
-    app::{App, PreUpdate, Update},
+    app::{App, Last, PostUpdate, PreUpdate, Update},
     ecs::{
         message::MessageReader,
         query::With,
@@ -9,16 +9,14 @@ use bevy::{
         world::Mut,
     },
     input::{
-        ButtonState,
-        keyboard::{KeyCode, KeyboardInput},
-        mouse::{MouseButton, MouseButtonInput, MouseWheel},
-        touch::{TouchInput, TouchPhase},
+        ButtonState, InputSystems, keyboard::{KeyCode, KeyboardInput}, mouse::{MouseButton, MouseButtonInput, MouseWheel}, touch::{TouchInput, TouchPhase}
     },
     tasks::block_on,
     time::Time,
     window::{CursorMoved, PrimaryWindow, Window, WindowEvent},
 };
 use bytemuck::Zeroable;
+use fontdue::FontSettings;
 use futures::channel::oneshot;
 use glam::{FloatExt, IVec2, Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
@@ -40,6 +38,7 @@ use std::{
     collections::HashMap,
     fs,
     ops::{Deref, DerefMut},
+    path::PathBuf,
     ptr::NonNull,
     random::{self, random},
     sync::{Arc, Mutex},
@@ -57,9 +56,13 @@ use crate::{
         render::{FrameCount, Swapchain},
         world::UploadQueue,
     },
+    ui::new_ui::{
+        NUiContext, NUiResources, Style, TestWindow, UiWindow, create_ui_resources, nextract_ui,
+        nwrite_ui_data, test_ui, update_windows,
+    },
 };
 
-mod new_ui;
+pub mod new_ui;
 
 #[derive(Resource)]
 pub struct UiContext {
@@ -340,7 +343,7 @@ fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) 
                         v.col[2] as f32 / 255.0,
                         v.col[3] as f32 / 255.0,
                     ),
-                    pos: (((Vec2::new(v.pos[0], v.pos[1])/ scale + transform)) * 2.0
+                    pos: ((Vec2::new(v.pos[0], v.pos[1]) / scale + transform) * 2.0
                         - Vec2::splat(1.0)),
                     uv: Vec2::new(v.uv[0], v.uv[1]),
                 });
@@ -413,25 +416,25 @@ pub struct UiResources {
 }
 
 impl UiBuilder {
-    pub const BG: [f32; 4] =          [0.155, 0.155, 0.155, 1.0]; // #272727 – slightly darker bg
-    pub const BG_DARK: [f32; 4] =     [0.130, 0.130, 0.130, 1.0]; // #212121
-    pub const S0: [f32; 4] =          [0.220, 0.220, 0.220, 1.0]; // #383838 – buttons/frames, bigger jump from bg
-    pub const S1: [f32; 4] =          [0.260, 0.260, 0.260, 1.0]; // #424242 – hovered
-    pub const S2: [f32; 4] =          [0.300, 0.300, 0.300, 1.0]; // #3c3c50 – active
-    pub const GRAB: [f32; 4] =        [0.370, 0.370, 0.370, 1.0]; // #5e5e5e
-    pub const GRAB_HOT: [f32; 4] =    [0.490, 0.490, 0.490, 1.0]; // #7d7d7d
-    pub const TEXT: [f32; 4] =        [0.880, 0.880, 0.880, 1.0]; // #e0e0e0
-    pub const TEXT_DIM: [f32; 4] =    [0.550, 0.550, 0.550, 1.0]; // #8c8c8c
+    pub const BG: [f32; 4] = [0.155, 0.155, 0.155, 1.0]; // #272727 – slightly darker bg
+    pub const BG_DARK: [f32; 4] = [0.130, 0.130, 0.130, 1.0]; // #212121
+    pub const S0: [f32; 4] = [0.220, 0.220, 0.220, 1.0]; // #383838 – buttons/frames, bigger jump from bg
+    pub const S1: [f32; 4] = [0.260, 0.260, 0.260, 1.0]; // #424242 – hovered
+    pub const S2: [f32; 4] = [0.300, 0.300, 0.300, 1.0]; // #3c3c50 – active
+    pub const GRAB: [f32; 4] = [0.370, 0.370, 0.370, 1.0]; // #5e5e5e
+    pub const GRAB_HOT: [f32; 4] = [0.490, 0.490, 0.490, 1.0]; // #7d7d7d
+    pub const TEXT: [f32; 4] = [0.880, 0.880, 0.880, 1.0]; // #e0e0e0
+    pub const TEXT_DIM: [f32; 4] = [0.550, 0.550, 0.550, 1.0]; // #8c8c8c
 
-    pub const BLUE: [f32; 4] =        [0.118, 0.565, 0.831, 1.0]; // #1e90d4 – UE blue
-    pub const BLUE_DIM: [f32; 4] =    [0.118, 0.565, 0.831, 0.6]; // UE blue dimmed
+    pub const BLUE: [f32; 4] = [0.118, 0.565, 0.831, 1.0]; // #1e90d4 – UE blue
+    pub const BLUE_DIM: [f32; 4] = [0.118, 0.565, 0.831, 0.6]; // UE blue dimmed
     pub const BLUE_REALY_DIM: [f32; 4] = [0.118, 0.565, 0.831, 0.35];
 
     pub const TRACE: [f32; 4] = [0.380, 0.380, 0.380, 1.0]; // trace    
     pub const DEBUG: [f32; 4] = [0.400, 0.560, 0.700, 1.0]; // debug 
     pub const INFO: [f32; 4] = [0.820, 0.820, 0.820, 1.0]; // info   
     pub const WARN: [f32; 4] = [0.980, 0.760, 0.110, 1.0]; // warn   
-    pub const ERROR: [f32; 4] = [0.950, 0.180, 0.180, 1.0]; // error 
+    pub const ERROR: [f32; 4] = [0.950, 0.180, 0.180, 1.0]; // error
 }
 
 #[allow(non_snake_case)]
@@ -439,80 +442,82 @@ pub fn UiPlugin(app: &mut App) {
     let sub_app = app.get_sub_app_mut(RenderApp).unwrap();
     sub_app
         .add_systems(RenderStartup, init)
-        .add_systems(Render, write_ui_data.in_set(RenderSystems::PreRender))
-        .add_systems(ExtractSchedule, extract_ui);
-    app.add_systems(PreUpdate, read_input)
+        .add_systems(
+            Render,
+            (nwrite_ui_data, write_ui_data).in_set(RenderSystems::PreRender),
+        )
+        .add_systems(
+            ExtractSchedule,
+            (extract_ui, nextract_ui, create_ui_resources),
+        );
+    app.add_systems(PreUpdate, read_input.after(InputSystems))
         .insert_resource({
             let mut ctx = imgui::Context::create();
             ctx.io_mut().config_flags |= ConfigFlags::DOCKING_ENABLE;
             ctx.fonts().add_font(&[FontSource::TtfData {
                 data: &fs::read("/home/karsten/code/GameEngine/editor_font.ttf").unwrap(),
-                size_pixels: 18.0,  
-                config: Some(FontConfig {
-                    pixel_snap_h: true,
-                    ..Default::default()
-                }),
+                size_pixels: 18.0,
+                config: Some(FontConfig::default()),
             }]);
 
             let style = ctx.style_mut();
             let colors = &mut style.colors;
-            
 
-            colors[StyleColor::WindowBg as usize]              = UiBuilder::BG;
-            colors[StyleColor::ChildBg as usize]               = UiBuilder::BG;
-            colors[StyleColor::PopupBg as usize]               = UiBuilder::S0;
-            colors[StyleColor::Border as usize]                = UiBuilder::S1;
-            colors[StyleColor::BorderShadow as usize]          = [0.0, 0.0, 0.0, 0.0];
-            colors[StyleColor::FrameBg as usize]               = UiBuilder::S0;
-            colors[StyleColor::FrameBgHovered as usize]        = UiBuilder::S1;
-            colors[StyleColor::FrameBgActive as usize]         = UiBuilder::S2;
-            colors[StyleColor::TitleBg as usize]               = UiBuilder::BG_DARK;
-            colors[StyleColor::TitleBgActive as usize]         = UiBuilder::BG;
-            colors[StyleColor::TitleBgCollapsed as usize]      = UiBuilder::BG_DARK;
-            colors[StyleColor::MenuBarBg as usize]             = UiBuilder::BG_DARK;
-            colors[StyleColor::ScrollbarBg as usize]           = UiBuilder::BG;
-            colors[StyleColor::ScrollbarGrab as usize]         = UiBuilder::GRAB;
-            colors[StyleColor::ScrollbarGrabHovered as usize]  = UiBuilder::GRAB_HOT;
-            colors[StyleColor::ScrollbarGrabActive as usize]   = UiBuilder::TEXT_DIM;
-            colors[StyleColor::CheckMark as usize]             = UiBuilder::BLUE;
-            colors[StyleColor::SliderGrab as usize]            = UiBuilder::BLUE_DIM;
-            colors[StyleColor::SliderGrabActive as usize]      = UiBuilder::BLUE; // brighter blue
-            colors[StyleColor::Button as usize]                = UiBuilder::S0;
-            colors[StyleColor::ButtonHovered as usize]         = UiBuilder::S1;
-            colors[StyleColor::ButtonActive as usize]          = UiBuilder::S2;
-            colors[StyleColor::Header as usize]                = UiBuilder::S0;
-            colors[StyleColor::HeaderHovered as usize]         = UiBuilder::S1;
-            colors[StyleColor::HeaderActive as usize]          = UiBuilder::S2;
-            colors[StyleColor::Separator as usize]             = UiBuilder::S1;
-            colors[StyleColor::SeparatorHovered as usize]      = UiBuilder::BLUE_DIM;
-            colors[StyleColor::SeparatorActive as usize]       = UiBuilder::BLUE;
-            colors[StyleColor::ResizeGrip as usize]            = UiBuilder::S2;
-            colors[StyleColor::ResizeGripHovered as usize]     = UiBuilder::BLUE_DIM;
-            colors[StyleColor::ResizeGripActive as usize]      = UiBuilder::BLUE;
-            colors[StyleColor::Tab as usize]                   = UiBuilder::BG_DARK;
-            colors[StyleColor::TabHovered as usize]            = UiBuilder::BLUE;
-            colors[StyleColor::TabActive as usize]             = UiBuilder::BLUE_DIM;
-            colors[StyleColor::TabUnfocused as usize]          = UiBuilder::BG_DARK;
-            colors[StyleColor::TabUnfocusedActive as usize]    = UiBuilder::S0;
-            colors[StyleColor::DockingPreview as usize]        = UiBuilder::BLUE_DIM;
-            colors[StyleColor::DockingEmptyBg as usize]        = UiBuilder::BG_DARK;
-            colors[StyleColor::PlotLines as usize]             = UiBuilder::BLUE_DIM;
-            colors[StyleColor::PlotLinesHovered as usize]      = UiBuilder::BLUE;
-            colors[StyleColor::PlotHistogram as usize]         = UiBuilder::BLUE_DIM;
-            colors[StyleColor::PlotHistogramHovered as usize]  = UiBuilder::BLUE;
-            colors[StyleColor::TableHeaderBg as usize]         = UiBuilder::BG_DARK;
-            colors[StyleColor::TableBorderStrong as usize]     = UiBuilder::S1;
-            colors[StyleColor::TableBorderLight as usize]      = UiBuilder::S0;
-            colors[StyleColor::TableRowBg as usize]            = [0.0, 0.0, 0.0, 0.0];
-            colors[StyleColor::TableRowBgAlt as usize]         = [1.0, 1.0, 1.0, 0.04];
-            colors[StyleColor::TextSelectedBg as usize]        = UiBuilder::BLUE_REALY_DIM; // UiBuilder::BLUE selection
-            colors[StyleColor::DragDropTarget as usize]        = UiBuilder::BLUE;
-            colors[StyleColor::NavHighlight as usize]          = UiBuilder::BLUE;
+            colors[StyleColor::WindowBg as usize] = UiBuilder::BG;
+            colors[StyleColor::ChildBg as usize] = UiBuilder::BG;
+            colors[StyleColor::PopupBg as usize] = UiBuilder::S0;
+            colors[StyleColor::Border as usize] = UiBuilder::S1;
+            colors[StyleColor::BorderShadow as usize] = [0.0, 0.0, 0.0, 0.0];
+            colors[StyleColor::FrameBg as usize] = UiBuilder::S0;
+            colors[StyleColor::FrameBgHovered as usize] = UiBuilder::S1;
+            colors[StyleColor::FrameBgActive as usize] = UiBuilder::S2;
+            colors[StyleColor::TitleBg as usize] = UiBuilder::BG_DARK;
+            colors[StyleColor::TitleBgActive as usize] = UiBuilder::BG;
+            colors[StyleColor::TitleBgCollapsed as usize] = UiBuilder::BG_DARK;
+            colors[StyleColor::MenuBarBg as usize] = UiBuilder::BG_DARK;
+            colors[StyleColor::ScrollbarBg as usize] = UiBuilder::BG;
+            colors[StyleColor::ScrollbarGrab as usize] = UiBuilder::GRAB;
+            colors[StyleColor::ScrollbarGrabHovered as usize] = UiBuilder::GRAB_HOT;
+            colors[StyleColor::ScrollbarGrabActive as usize] = UiBuilder::TEXT_DIM;
+            colors[StyleColor::CheckMark as usize] = UiBuilder::BLUE;
+            colors[StyleColor::SliderGrab as usize] = UiBuilder::BLUE_DIM;
+            colors[StyleColor::SliderGrabActive as usize] = UiBuilder::BLUE; // brighter blue
+            colors[StyleColor::Button as usize] = UiBuilder::S0;
+            colors[StyleColor::ButtonHovered as usize] = UiBuilder::S1;
+            colors[StyleColor::ButtonActive as usize] = UiBuilder::S2;
+            colors[StyleColor::Header as usize] = UiBuilder::S0;
+            colors[StyleColor::HeaderHovered as usize] = UiBuilder::S1;
+            colors[StyleColor::HeaderActive as usize] = UiBuilder::S2;
+            colors[StyleColor::Separator as usize] = UiBuilder::S1;
+            colors[StyleColor::SeparatorHovered as usize] = UiBuilder::BLUE_DIM;
+            colors[StyleColor::SeparatorActive as usize] = UiBuilder::BLUE;
+            colors[StyleColor::ResizeGrip as usize] = UiBuilder::S2;
+            colors[StyleColor::ResizeGripHovered as usize] = UiBuilder::BLUE_DIM;
+            colors[StyleColor::ResizeGripActive as usize] = UiBuilder::BLUE;
+            colors[StyleColor::Tab as usize] = UiBuilder::BG_DARK;
+            colors[StyleColor::TabHovered as usize] = UiBuilder::BLUE;
+            colors[StyleColor::TabActive as usize] = UiBuilder::BLUE_DIM;
+            colors[StyleColor::TabUnfocused as usize] = UiBuilder::BG_DARK;
+            colors[StyleColor::TabUnfocusedActive as usize] = UiBuilder::S0;
+            colors[StyleColor::DockingPreview as usize] = UiBuilder::BLUE_DIM;
+            colors[StyleColor::DockingEmptyBg as usize] = UiBuilder::BG_DARK;
+            colors[StyleColor::PlotLines as usize] = UiBuilder::BLUE_DIM;
+            colors[StyleColor::PlotLinesHovered as usize] = UiBuilder::BLUE;
+            colors[StyleColor::PlotHistogram as usize] = UiBuilder::BLUE_DIM;
+            colors[StyleColor::PlotHistogramHovered as usize] = UiBuilder::BLUE;
+            colors[StyleColor::TableHeaderBg as usize] = UiBuilder::BG_DARK;
+            colors[StyleColor::TableBorderStrong as usize] = UiBuilder::S1;
+            colors[StyleColor::TableBorderLight as usize] = UiBuilder::S0;
+            colors[StyleColor::TableRowBg as usize] = [0.0, 0.0, 0.0, 0.0];
+            colors[StyleColor::TableRowBgAlt as usize] = [1.0, 1.0, 1.0, 0.04];
+            colors[StyleColor::TextSelectedBg as usize] = UiBuilder::BLUE_REALY_DIM; // UiBuilder::BLUE selection
+            colors[StyleColor::DragDropTarget as usize] = UiBuilder::BLUE;
+            colors[StyleColor::NavHighlight as usize] = UiBuilder::BLUE;
             colors[StyleColor::NavWindowingHighlight as usize] = [1.0, 1.0, 1.0, 0.7];
-            colors[StyleColor::NavWindowingDimBg as usize]     = [0.0, 0.0, 0.0, 0.2];
-            colors[StyleColor::ModalWindowDimBg as usize]      = [0.0, 0.0, 0.0, 0.45];
-            colors[StyleColor::Text as usize]                  = UiBuilder::TEXT;
-            colors[StyleColor::TextDisabled as usize]          = UiBuilder::TEXT_DIM;
+            colors[StyleColor::NavWindowingDimBg as usize] = [0.0, 0.0, 0.0, 0.2];
+            colors[StyleColor::ModalWindowDimBg as usize] = [0.0, 0.0, 0.0, 0.45];
+            colors[StyleColor::Text as usize] = UiBuilder::TEXT;
+            colors[StyleColor::TextDisabled as usize] = UiBuilder::TEXT_DIM;
 
             // Rounded corners
             style.window_rounding = 3.0;
@@ -542,5 +547,23 @@ pub fn UiPlugin(app: &mut App) {
         })
         .insert_resource(UiBuilder {
             ui: std::ptr::null_mut(),
-        });
+        })
+        .add_systems(Update, test_ui)
+        .add_systems(PreUpdate, update_windows.after(InputSystems))
+        .insert_resource(NUiContext {
+            atlas_size: Vec2::ZERO,
+            atlas_lut: HashMap::new(),
+            font: std::env::current_dir()
+                .unwrap()
+                .join("editor_font.ttf"),
+            font_settings: FontSettings {
+                ..Default::default()
+            },
+            style: Style::default(),
+            new_line_size: 0.0,
+            acent: 0.0,
+            decent: 0.0,
+        })
+        .register_type::<UiWindow>()
+        .register_type::<TestWindow>();
 }

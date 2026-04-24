@@ -13,7 +13,7 @@ use itertools::Itertools;
 use tracing_log::log;
 
 use crate::{
-    assets::{mesh::GpuMesh, mesh::Scene, material::Material},
+    assets::{material::Material, mesh::GpuMesh, mesh::Scene},
     editor::gizzmos::{BoxGizzmo, DrawGizzmos},
     render::render::RenderSettings,
     scene::Instance,

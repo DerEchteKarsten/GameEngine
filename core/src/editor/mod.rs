@@ -1,28 +1,45 @@
 use bevy::{
-    app::{Plugin, PreUpdate, Update}, asset::Handle, ecs::{
-        entity::Entity, resource::Resource, schedule::IntoScheduleConfigs, system::{Res, ResMut}
-    }, time::Time
+    app::{Plugin, PreUpdate, Update},
+    asset::Handle,
+    ecs::{
+        entity::Entity,
+        resource::Resource,
+        schedule::IntoScheduleConfigs,
+        system::{Res, ResMut},
+    },
+    time::Time,
 };
 use glam::{IVec2, UVec2};
 use lava::buffer::Buffer;
 use tracing::Level;
 
 use crate::{
-    INITIAL_WINDOW_SIZE, assets::mesh::{GpuMesh, Scene}, editor::{
-        asset_browser::{AssetDND, asset_browser}, camera::{CameraSettings, update_camera}, console::ConsolePlugin, gizzmos::{Gizzmos, extract_gizzmos, init_gizzmos, write_gizzmos}, picking::{hierarchy_ui, picking}, selected::{ReflectEditorView, selected_ui}, viewport::{ViewPort, update_view_port}
-    }, physics::bvh::debug_draw_scene_bvh, render::{
+    INITIAL_WINDOW_SIZE,
+    assets::mesh::{GpuMesh, Scene},
+    editor::{
+        asset_browser::{AssetDND, asset_browser},
+        camera::{CameraSettings, update_camera},
+        console::ConsolePlugin,
+        gizzmos::{Gizzmos, extract_gizzmos, init_gizzmos, write_gizzmos},
+        picking::{hierarchy_ui, picking},
+        selected::{ReflectEditorView, selected_ui},
+        viewport::{ViewPort, update_view_port},
+    },
+    physics::bvh::debug_draw_scene_bvh,
+    render::{
         ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderApp, RenderStartup, RenderSystems,
         extract_param::Extract, render::RenderDebugUi, world::MAX_INSTANCES,
-    }, ui::{UiBuilder, UiContext}
+    },
+    ui::{UiBuilder, UiContext},
 };
 
+pub mod asset_browser;
 pub mod camera;
 pub mod console;
 pub mod gizzmos;
 pub(crate) mod picking;
-pub mod viewport;
-pub mod asset_browser;
 pub mod selected;
+pub mod viewport;
 
 pub struct EditorPlugin {
     pub camera_settings: CameraSettings,
@@ -90,7 +107,7 @@ impl Plugin for EditorPlugin {
         })
         .add_plugins((
             ConsolePlugin {
-                also_log_to_stderr: false,
+                also_log_to_stderr: true,
                 level: Level::DEBUG,
                 ..Default::default()
             },
@@ -121,7 +138,6 @@ impl Plugin for EditorPlugin {
                     .after(hierarchy_ui)
                     .after(frame_histogram),
             ),
-            
         )
         .add_systems(PreUpdate, update_view_port);
         app.get_sub_app_mut(RenderApp)
@@ -130,10 +146,24 @@ impl Plugin for EditorPlugin {
             .add_systems(Render, write_gizzmos.in_set(RenderSystems::PreRender))
             .add_systems(RenderStartup, init_gizzmos);
 
-        register_editor_views!(app,
-            f32, f64, i32, u32, u64, bool, String,
-            glam::Vec2, glam::Vec3, glam::Vec4, glam::Quat, glam::Mat4, glam::Affine3A,
-            Entity, Handle<GpuMesh>, Handle<Scene>
+        register_editor_views!(
+            app,
+            f32,
+            f64,
+            i32,
+            u32,
+            u64,
+            bool,
+            String,
+            glam::Vec2,
+            glam::Vec3,
+            glam::Vec4,
+            glam::Quat,
+            glam::Mat4,
+            glam::Affine3A,
+            Entity,
+            Handle<GpuMesh>,
+            Handle<Scene>
         );
     }
 }

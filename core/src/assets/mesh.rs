@@ -1,30 +1,44 @@
 use bevy::{
-    asset::{Asset, AssetLoader, Handle, LoadContext, saver::AssetSaver, transformer::AssetTransformer}, math::{Isometry3d, bounding::{Aabb3d, BoundingSphere, BoundingVolume}}, reflect::TypePath, tasks::{AsyncComputeTaskPool, ParallelSlice}
+    asset::{
+        Asset, AssetLoader, Handle, LoadContext, saver::AssetSaver, transformer::AssetTransformer,
+    },
+    math::{
+        Isometry3d,
+        bounding::{Aabb3d, BoundingSphere, BoundingVolume},
+    },
+    reflect::TypePath,
+    tasks::{AsyncComputeTaskPool, ParallelSlice},
 };
 use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut, try_cast_vec};
+use core::slice;
 use futures::{AsyncReadExt, AsyncWriteExt, future::JoinAll};
 use glam::{Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
 use itertools::Itertools;
+use lava::{
+    buffer::{Buffer, slice::BufferSlice},
+    state::Ctx,
+};
 use meshopt::{
     SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_position_remap,
     generate_vertex_remap_multi, simplify_with_attributes_and_locks,
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
-use tracing::debug_span;
-use core::slice;
 use std::{alloc::Layout, collections::HashMap, ops::Range};
 use std::{mem::ManuallyDrop, sync::Arc};
+use tracing::debug_span;
 use tracing_log::log;
-use lava::{buffer::{Buffer, slice::BufferSlice}, state::Ctx};
 
 use crate::{
-    assets::{material::Material, read_slice_to_buffer, read_slice, read_u64, write_slice}, bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex}, physics::{
+    assets::{material::Material, read_slice, read_slice_to_buffer, read_u64, write_slice},
+    bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex},
+    physics::{
         self,
         bvh::{
             ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
         },
-    }, render::world::UploadQueue
+    },
+    render::world::UploadQueue,
 };
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
@@ -279,14 +293,18 @@ impl AssetLoader for MeshLoader {
             };
 
             let ptr = data.as_mut_ptr();
-            reader.read_exact(unsafe {
-                std::slice::from_raw_parts_mut(ptr, header.cull_data_offset as usize)
-            }).await?;
+            reader
+                .read_exact(unsafe {
+                    std::slice::from_raw_parts_mut(ptr, header.cull_data_offset as usize)
+                })
+                .await?;
             unsafe { data.set_len(data.capacity()) };
 
             let bvh_node_count = (header.meshlet_offset as usize / size_of::<BvhNode>());
             for i in 0..bvh_node_count {
-                let node: &mut BvhNode = bytemuck::from_bytes_mut(&mut data[i * size_of::<BvhNode>()..(i+1) * size_of::<BvhNode>()]);
+                let node: &mut BvhNode = bytemuck::from_bytes_mut(
+                    &mut data[i * size_of::<BvhNode>()..(i + 1) * size_of::<BvhNode>()],
+                );
                 for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
                     let offset = aabb.offset();
                     aabb.set_offset(
@@ -303,7 +321,8 @@ impl AssetLoader for MeshLoader {
                 (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
             for i in 0..meshlet_count {
                 let offset = header.meshlet_offset as usize + i * size_of::<Meshlet>();
-                let meshlet: &mut Meshlet = bytemuck::from_bytes_mut(&mut data[offset..offset+size_of::<Meshlet>()]);
+                let meshlet: &mut Meshlet =
+                    bytemuck::from_bytes_mut(&mut data[offset..offset + size_of::<Meshlet>()]);
                 meshlet.triangle_index =
                     meshlet.triangle_index + header.index_offset as u64 + address;
                 meshlet.vertex_index = meshlet.vertex_index * size_of::<Vertex>() as u64
@@ -312,11 +331,8 @@ impl AssetLoader for MeshLoader {
             }
 
             if Ctx::features().rebar {
-                read_slice_to_buffer(
-                    reader,
-                    slice.range(header.cull_data_offset as usize..),
-                )
-                .await?;
+                read_slice_to_buffer(reader, slice.range(header.cull_data_offset as usize..))
+                    .await?;
             }
 
             let colission_bvh = read_slice(reader, Some(8)).await?;
@@ -365,7 +381,6 @@ impl AssetLoader for MeshLoader {
         &["mesh"]
     }
 }
-
 
 impl Default for AabbPtr {
     fn default() -> Self {

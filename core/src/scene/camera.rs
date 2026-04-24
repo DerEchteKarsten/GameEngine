@@ -12,7 +12,8 @@ use lava::state::Ctx;
 
 use crate::editor::viewport::ViewPortProxy;
 
-#[derive(Debug, Clone, Copy, PartialEq, Component)]
+#[derive(Debug, Clone, Copy, PartialEq, Component, Reflect)]
+#[reflect(Component)]
 pub struct Camera {
     pub view: Mat4,
     pub proj: Mat4,

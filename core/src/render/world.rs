@@ -22,7 +22,9 @@ use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::{Commands, If, Local, Query, Res, ResMut, Single, SystemState};
 use bevy::ecs::world::EntityMut;
 use bevy::log;
-use bevy::reflect::{PartialReflect, Reflect, StructInfo, TupleStructInfo, TypePath, Typed, UnnamedField};
+use bevy::reflect::{
+    PartialReflect, Reflect, StructInfo, TupleStructInfo, TypePath, Typed, UnnamedField,
+};
 use bevy::transform::components::GlobalTransform;
 use bevy::window::Window;
 use futures::channel::oneshot;
@@ -53,8 +55,8 @@ use smallvec::SmallVec;
 use tracing::error;
 
 use crate::assets::mesh::MeshletMesh;
+use crate::assets::{material::Material, mesh::Scene};
 use crate::assets::{mesh::GpuMesh, mesh::MeshHeader};
-use crate::assets::{mesh::Scene, material::Material};
 use crate::bindings::{
     self, AabbError, BvhNode, CullData, Gizzmo, InstanceBvhRoot, Meshlet, Vertex,
 };
@@ -97,7 +99,7 @@ impl InstanceFlags {
     pub fn remove(&mut self, v: InstanceFlags) {
         self.0 &= !v.0;
     }
-    pub fn empty() -> Self{
+    pub fn empty() -> Self {
         Self(0)
     }
 }

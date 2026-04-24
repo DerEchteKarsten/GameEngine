@@ -3,7 +3,8 @@ use std::{ops::DerefMut, sync::Arc};
 use crate::{
     assets::mesh::{GpuMesh, Scene},
     editor::{
-        gizzmos::{ArrowGizzmo, DrawGizzmos, SphereGizzmo}, viewport::ViewPortProxy
+        gizzmos::{ArrowGizzmo, DrawGizzmos, SphereGizzmo},
+        viewport::ViewPortProxy,
     },
     physics::bvh::Raycast,
     render::world::InstanceFlags,
@@ -25,7 +26,10 @@ use bevy::{
         world::{EntityRef, Mut, World},
     },
     input::{
-        ButtonInput, keyboard::{KeyCode, KeyboardInput}, mouse::{AccumulatedMouseMotion, MouseButton}, touch::Touches
+        ButtonInput,
+        keyboard::{KeyCode, KeyboardInput},
+        mouse::{AccumulatedMouseMotion, MouseButton},
+        touch::Touches,
     },
     log,
     math::{Dir3A, bounding::RayCast3d},
@@ -37,9 +41,13 @@ use bevy::{
     window::Window,
 };
 use glam::{Affine3A, Mat3A, Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
-use imgui::{TreeNodeFlags, Ui, WindowFocusedFlags, drag_drop::{DragDropPayload, DragDropPayloadPod}};
+use imgui::{
+    TreeNodeFlags, Ui, WindowFocusedFlags,
+    drag_drop::{DragDropPayload, DragDropPayloadPod},
+};
 
 #[derive(Component, Reflect)]
+#[component(storage = "SparseSet")]
 #[reflect(Component)]
 pub struct Selected;
 
@@ -91,7 +99,10 @@ pub(crate) fn hierarchy_ui(
                     }
                 }
             }
-            if keys.just_pressed(KeyCode::Delete) && (ui.is_window_focused_with_flags(WindowFocusedFlags::ROOT_AND_CHILD_WINDOWS) || viewport.focused()) {
+            if keys.just_pressed(KeyCode::Delete)
+                && (ui.is_window_focused_with_flags(WindowFocusedFlags::ROOT_AND_CHILD_WINDOWS)
+                    || viewport.focused())
+            {
                 for e in selected {
                     cmd.entity(e).despawn();
                 }
@@ -207,7 +218,10 @@ pub(crate) fn picking(
     viewport: ViewPortProxy,
     camera: Single<(&Camera, &GlobalTransform)>,
     assets: Res<Assets<GpuMesh>>,
-    mut picked: Query<(Entity, &GlobalTransform, Option<&Instance>, &mut Transform), With<Selected>>,
+    mut picked: Query<
+        (Entity, &GlobalTransform, Option<&Instance>, &mut Transform),
+        With<Selected>,
+    >,
     all_picked: Query<Entity, With<Selected>>,
     mut local: Local<Option<DragState>>,
 ) {
@@ -233,7 +247,9 @@ pub(crate) fn picking(
     if let Some((entity, global_transform, instance, mut transform)) = picked.iter_mut().next() {
         if let Some(drag) = local.as_ref() {
             if let Some(pos) = if let Some(touch) = drag.touchid {
-                touches.get_pressed(touch).and_then(|e| viewport.to_viewport_pos(e.position()))
+                touches
+                    .get_pressed(touch)
+                    .and_then(|e| viewport.to_viewport_pos(e.position()))
             } else {
                 viewport.cursor_position()
             } {
@@ -249,7 +265,9 @@ pub(crate) fn picking(
             }
         }
 
-        let center = if let Some(instance) = instance && let Some(mesh) = assets.get(&instance.mesh) {
+        let center = if let Some(instance) = instance
+            && let Some(mesh) = assets.get(&instance.mesh)
+        {
             Vec3::from(mesh.header.aabb.center)
         } else {
             global_transform.translation()
@@ -257,9 +275,10 @@ pub(crate) fn picking(
 
         if global_transform.affine().matrix3.row(0).length() == 0.0
             || global_transform.affine().matrix3.row(1).length() == 0.0
-            || global_transform.affine().matrix3.row(2).length() == 0.0 {
-                return;
-            }
+            || global_transform.affine().matrix3.row(2).length() == 0.0
+        {
+            return;
+        }
 
         let directions = [
             (global_transform.right(), transform.right()),

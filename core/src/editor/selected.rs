@@ -1,11 +1,26 @@
 use std::{any::TypeId, intrinsics::type_id};
 
-use bevy::{asset::{Asset, Handle}, ecs::{component::ComponentId, entity::Entity, query::With, reflect::{AppTypeRegistry, ReflectComponent}, world::{Mut, World}}, reflect::{PartialReflect, Reflect, ReflectMut, TypeData, TypeInfo, TypeRegistry, reflect_trait}};
+use bevy::{
+    asset::{Asset, Handle},
+    ecs::{
+        component::ComponentId,
+        entity::Entity,
+        query::With,
+        reflect::{AppTypeRegistry, ReflectComponent},
+        world::{Mut, World},
+    },
+    reflect::{
+        PartialReflect, Reflect, ReflectMut, TypeData, TypeInfo, TypeRegistry, reflect_trait,
+    },
+};
 use glam::Mat3A;
 use imgui::{TreeNodeFlags, Ui, drag_drop::DragDropPayloadPod};
 
+use crate::{
+    editor::{asset_browser::AssetDND, picking::Selected},
+    ui::UiBuilder,
+};
 use std::sync::Arc;
-use crate::{editor::{asset_browser::AssetDND, picking::Selected}, ui::UiBuilder};
 
 #[reflect_trait]
 pub trait EditorView {
@@ -21,10 +36,21 @@ pub trait EditorView {
 }
 
 impl EditorView for f32 {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut val = *self;
-        if ui.input_float(format!("{}##{}", name, id), &mut val).build() {
+        if ui
+            .input_float(format!("{}##{}", name, id), &mut val)
+            .build()
+        {
             *self = val;
             return true;
         }
@@ -33,10 +59,21 @@ impl EditorView for f32 {
 }
 
 impl EditorView for f64 {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut val = *self as f32;
-        if ui.input_float(format!("{}##{}", name, id), &mut val).build() {
+        if ui
+            .input_float(format!("{}##{}", name, id), &mut val)
+            .build()
+        {
             *self = val as f64;
             return true;
         }
@@ -45,7 +82,15 @@ impl EditorView for f64 {
 }
 
 impl EditorView for i32 {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut val = *self;
         if ui.input_int(format!("{}##{}", name, id), &mut val).build() {
@@ -57,7 +102,15 @@ impl EditorView for i32 {
 }
 
 impl EditorView for u32 {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut val = *self as i32;
         if ui.input_int(format!("{}##{}", name, id), &mut val).build() {
@@ -69,7 +122,15 @@ impl EditorView for u32 {
 }
 
 impl EditorView for u64 {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut val = *self as i32;
         if ui.input_int(format!("{}##{}", name, id), &mut val).build() {
@@ -81,24 +142,51 @@ impl EditorView for u64 {
 }
 
 impl EditorView for bool {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         ui.checkbox(format!("{}##{}", name, id), self)
     }
 }
 
 impl EditorView for String {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         ui.input_text(format!("{}##{}", name, id), self).build()
     }
 }
 
 impl EditorView for glam::Vec2 {
-    fn ui(&mut self, world: &mut World, disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut val = [self.x, self.y];
-        if ui.input_float2(format!("{}##{}", name, id), &mut val).build() {
+        if ui
+            .input_float2(format!("{}##{}", name, id), &mut val)
+            .build()
+        {
             *self = glam::Vec2::from(val);
             return true;
         }
@@ -107,10 +195,21 @@ impl EditorView for glam::Vec2 {
 }
 
 impl EditorView for glam::Vec3 {
-    fn ui(&mut self, world: &mut World, disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut val = [self.x, self.y, self.z];
-        if ui.input_float3(format!("{}##{}", name, id), &mut val).build() {
+        if ui
+            .input_float3(format!("{}##{}", name, id), &mut val)
+            .build()
+        {
             *self = glam::Vec3::from(val);
             return true;
         }
@@ -119,10 +218,21 @@ impl EditorView for glam::Vec3 {
 }
 
 impl EditorView for glam::Vec4 {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut val = [self.x, self.y, self.z, self.w];
-        if ui.input_float4(format!("{}##{}", name, id), &mut val).build() {
+        if ui
+            .input_float4(format!("{}##{}", name, id), &mut val)
+            .build()
+        {
             *self = glam::Vec4::from(val);
             return true;
         }
@@ -131,11 +241,22 @@ impl EditorView for glam::Vec4 {
 }
 
 impl EditorView for glam::Quat {
-    fn ui(&mut self, world: &mut World,  disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let (z, x, y) = self.to_euler(glam::EulerRot::ZXY);
         let mut euler = [x.to_degrees(), y.to_degrees(), z.to_degrees()];
-        if ui.input_float3(format!("{}##{}", name, id), &mut euler).build() {
+        if ui
+            .input_float3(format!("{}##{}", name, id), &mut euler)
+            .build()
+        {
             *self = glam::Quat::from_euler(
                 glam::EulerRot::ZXY,
                 euler[2].to_radians(),
@@ -149,12 +270,23 @@ impl EditorView for glam::Quat {
 }
 
 impl EditorView for glam::Mat4 {
-    fn ui(&mut self, world: &mut World, disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut changed = false;
         let mut cols = self.transpose().to_cols_array_2d();
         for (i, col) in cols.iter_mut().enumerate() {
-            if ui.input_float4(format!("{}[{}]##{}", name, i, id), col).build() {
+            if ui
+                .input_float4(format!("{}[{}]##{}", name, i, id), col)
+                .build()
+            {
                 changed = true;
             }
         }
@@ -166,16 +298,33 @@ impl EditorView for glam::Mat4 {
 }
 
 impl EditorView for glam::Affine3A {
-    fn ui(&mut self, world: &mut World, disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let _d = ui.begin_disabled(disabled);
         let mut changed = false;
         let mut mat = self.matrix3.transpose().to_cols_array_2d();
         for (i, row) in mat.iter_mut().enumerate() {
-            if ui.input_float3(format!("{} Matrix[{}]##{}", name, i, id), row).build() {
+            if ui
+                .input_float3(format!("{} Matrix[{}]##{}", name, i, id), row)
+                .build()
+            {
                 changed = true;
             }
         }
-        if ui.input_float3(format!("{} Translation##{}", name, id), &mut self.translation).build() {
+        if ui
+            .input_float3(
+                format!("{} Translation##{}", name, id),
+                &mut self.translation,
+            )
+            .build()
+        {
             changed = true;
         }
         if changed {
@@ -186,50 +335,84 @@ impl EditorView for glam::Affine3A {
 }
 
 impl EditorView for Entity {
-    fn ui(&mut self, world: &mut World, disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let val = format!("Entity {}", self.index());
-        object_field::<u64>(disabled, ui, id, name, Some(&val), "Entity", "ENTITY_DND", |payload| {
-            *self = Entity::from_bits(payload.data);
-        })
+        object_field::<u64>(
+            disabled,
+            ui,
+            id,
+            name,
+            Some(&val),
+            "Entity",
+            "ENTITY_DND",
+            |payload| {
+                *self = Entity::from_bits(payload.data);
+            },
+        )
     }
 }
 
 impl<A: Asset> EditorView for Handle<A> {
-    fn ui(&mut self, world: &mut World, disabled: bool, ui: &Ui, name: &str, id: &str, _registry: &TypeRegistry) -> bool {
+    fn ui(
+        &mut self,
+        world: &mut World,
+        disabled: bool,
+        ui: &Ui,
+        name: &str,
+        id: &str,
+        _registry: &TypeRegistry,
+    ) -> bool {
         let path = self.path();
         let ident = A::type_ident();
-        let text_color = if disabled        { UiBuilder::TEXT_DIM }
-                else if path.is_some() { UiBuilder::TEXT }
-                else               { UiBuilder::TEXT_DIM };
+        let text_color = if disabled {
+            UiBuilder::TEXT_DIM
+        } else if path.is_some() {
+            UiBuilder::TEXT
+        } else {
+            UiBuilder::TEXT_DIM
+        };
         let ident_text = ident.unwrap_or("Unknown Asset");
         let default_label = format!("None ({})", ident_text);
-        let display_text = path.map(|v| format!("{}({})", ident_text, v.to_string())).unwrap_or(default_label);
+        let display_text = path
+            .map(|v| format!("{}({})", ident_text, v.to_string()))
+            .unwrap_or(default_label);
         let draw = ui.get_window_draw_list();
         let pos = ui.cursor_screen_pos();
         let available = (ui.content_region_avail()[0] - ui.calc_text_size(name)[0]).min(240.0);
         let height = 20.0;
         let size = [available, height];
 
-        draw.add_rect(
-            pos,
-            [pos[0] + size[0], pos[1] + size[1]],
-            UiBuilder::S0,
-        )
-        .rounding(1.0)
-        .build();
+        draw.add_rect(pos, [pos[0] + size[0], pos[1] + size[1]], UiBuilder::S0)
+            .rounding(1.0)
+            .build();
 
         ui.invisible_button(id, size);
         let hovered = ui.is_item_hovered();
 
-        let border_color = if disabled      { UiBuilder::S0 } 
-                        else if hovered  { UiBuilder::BLUE }
-                        else             { UiBuilder::S2 };
+        let border_color = if disabled {
+            UiBuilder::S0
+        } else if hovered {
+            UiBuilder::BLUE
+        } else {
+            UiBuilder::S2
+        };
         draw.add_rect(pos, [pos[0] + size[0], pos[1] + size[1]], border_color)
             .rounding(1.0)
             .thickness(1.0)
             .build();
 
-        let text_pos = [pos[0] + 6.0, pos[1] + (height - ui.text_line_height()) * 0.5];
+        let text_pos = [
+            pos[0] + 6.0,
+            pos[1] + (height - ui.text_line_height()) * 0.5,
+        ];
         draw.add_text(text_pos, text_color, display_text);
 
         let mut changed = false;
@@ -241,7 +424,11 @@ impl<A: Asset> EditorView for Handle<A> {
                     imgui::sys::ImGuiDragDropFlags_None as i32,
                 );
                 if !payload.is_null() {
-                    if let Some(untyped) = world.get_resource_mut::<AssetDND>().as_mut().and_then(|v| v.0.take()) {
+                    if let Some(untyped) = world
+                        .get_resource_mut::<AssetDND>()
+                        .as_mut()
+                        .and_then(|v| v.0.take())
+                    {
                         if let Ok(typed) = untyped.try_typed::<A>() {
                             *self = typed;
                             changed = true;
@@ -257,7 +444,6 @@ impl<A: Asset> EditorView for Handle<A> {
     }
 }
 
-
 fn object_field<T: Copy + 'static>(
     disabled: bool,
     ui: &Ui,
@@ -267,10 +453,14 @@ fn object_field<T: Copy + 'static>(
     type_name: &str,
     dnd_name: impl AsRef<str>,
     payload_handler: impl FnOnce(DragDropPayloadPod<T>),
-) -> bool{
-    let text_color = if disabled        { UiBuilder::TEXT_DIM }
-            else if content.is_some() { UiBuilder::TEXT }
-            else               { UiBuilder::TEXT_DIM };
+) -> bool {
+    let text_color = if disabled {
+        UiBuilder::TEXT_DIM
+    } else if content.is_some() {
+        UiBuilder::TEXT
+    } else {
+        UiBuilder::TEXT_DIM
+    };
     let default_label = format!("None ({})", type_name);
     let display_text = content.unwrap_or(&default_label);
     let draw = ui.get_window_draw_list();
@@ -279,26 +469,29 @@ fn object_field<T: Copy + 'static>(
     let height = 20.0;
     let size = [available, height];
 
-    draw.add_rect(
-        pos,
-        [pos[0] + size[0], pos[1] + size[1]],
-        UiBuilder::S0,
-    )
-    .rounding(1.0)
-    .build();
+    draw.add_rect(pos, [pos[0] + size[0], pos[1] + size[1]], UiBuilder::S0)
+        .rounding(1.0)
+        .build();
 
     ui.invisible_button(id, size);
     let hovered = ui.is_item_hovered();
 
-    let border_color = if disabled      { UiBuilder::S0 } 
-                    else if hovered  { UiBuilder::BLUE }
-                    else             { UiBuilder::S2 };
+    let border_color = if disabled {
+        UiBuilder::S0
+    } else if hovered {
+        UiBuilder::BLUE
+    } else {
+        UiBuilder::S2
+    };
     draw.add_rect(pos, [pos[0] + size[0], pos[1] + size[1]], border_color)
         .rounding(1.0)
         .thickness(1.0)
         .build();
 
-    let text_pos = [pos[0] + 6.0, pos[1] + (height - ui.text_line_height()) * 0.5];
+    let text_pos = [
+        pos[0] + 6.0,
+        pos[1] + (height - ui.text_line_height()) * 0.5,
+    ];
     draw.add_text(text_pos, text_color, display_text);
 
     let mut changed = false;
@@ -318,8 +511,6 @@ fn object_field<T: Copy + 'static>(
     changed
 }
 
-
-
 fn draw_reflect_value_mut(
     world: &mut World,
     disabled: bool,
@@ -331,7 +522,8 @@ fn draw_reflect_value_mut(
 ) -> bool {
     let mut changed = false;
 
-    let type_short = value.as_ref()
+    let type_short = value
+        .as_ref()
         .map(|v| v.reflect_short_type_path().to_owned())
         .unwrap_or_default();
 
@@ -356,48 +548,78 @@ fn draw_reflect_value_mut(
         Some(v) => match v.reflect_mut() {
             ReflectMut::Struct(s) => {
                 let field_count = s.field_len();
-                if let Some(node) = draw_reflect_header(ui, name, &type_short, id, field_count == 0) {
+                if let Some(node) = draw_reflect_header(ui, name, &type_short, id, field_count == 0)
+                {
                     ui.indent();
                     for i in 0..field_count {
                         let field_name = s.name_at(i).unwrap_or("?").to_string();
-                        let field_val  = s.field_at_mut(i);
-                        let child_id   = format!("{}_{}", id, i);
-                        changed |= draw_reflect_value_mut(world, disabled, ui, Some(&field_name), &child_id, field_val, registry);
+                        let field_val = s.field_at_mut(i);
+                        let child_id = format!("{}_{}", id, i);
+                        changed |= draw_reflect_value_mut(
+                            world,
+                            disabled,
+                            ui,
+                            Some(&field_name),
+                            &child_id,
+                            field_val,
+                            registry,
+                        );
                     }
                     ui.unindent();
                 }
             }
             ReflectMut::TupleStruct(ts) => {
                 let field_count = ts.field_len();
-                if let Some(node) = draw_reflect_header(ui, name, &type_short, id, field_count == 0) {
+                if let Some(node) = draw_reflect_header(ui, name, &type_short, id, field_count == 0)
+                {
                     ui.indent();
                     for i in 0..field_count {
                         let field_val = ts.field_mut(i);
-                        let child_id  = format!("{}{}", id, i);
-                        let fname     = format!("({})", i);
-                        changed |= draw_reflect_value_mut(world, disabled, ui, Some(&fname), &child_id, field_val, registry);
+                        let child_id = format!("{}{}", id, i);
+                        let fname = format!("({})", i);
+                        changed |= draw_reflect_value_mut(
+                            world,
+                            disabled,
+                            ui,
+                            Some(&fname),
+                            &child_id,
+                            field_val,
+                            registry,
+                        );
                     }
                     ui.unindent();
                 }
             }
             ReflectMut::Tuple(t) => {
                 let field_count = t.field_len();
-                if let Some(token) = draw_reflect_header(ui, name, &type_short, id, field_count == 0) {
+                if let Some(token) =
+                    draw_reflect_header(ui, name, &type_short, id, field_count == 0)
+                {
                     ui.indent();
                     for i in 0..field_count {
                         let field_val = t.field_mut(i);
-                        let child_id  = format!("{}{}", id, i);
-                        let fname     = format!("({})", i);
-                        changed |= draw_reflect_value_mut(world, disabled, ui, Some(&fname), &child_id, field_val, registry);
+                        let child_id = format!("{}{}", id, i);
+                        let fname = format!("({})", i);
+                        changed |= draw_reflect_value_mut(
+                            world,
+                            disabled,
+                            ui,
+                            Some(&fname),
+                            &child_id,
+                            field_val,
+                            registry,
+                        );
                     }
                     ui.unindent();
                 }
             }
             ReflectMut::Enum(e) => {
-                let variant     = e.variant_name().to_string();
+                let variant = e.variant_name().to_string();
                 let header_name = format!("{}::{}", type_short, variant);
                 let field_count = e.field_len();
-                if let Some(toke) = draw_reflect_header(ui, name, &header_name, id, field_count == 0) {
+                if let Some(toke) =
+                    draw_reflect_header(ui, name, &header_name, id, field_count == 0)
+                {
                     ui.indent();
 
                     // // Variant selector
@@ -414,9 +636,17 @@ fn draw_reflect_value_mut(
                     // }
                     for i in 0..field_count {
                         let field_name = e.name_at(i).unwrap_or("?").to_string();
-                        let field_val  = e.field_at_mut(i);
-                        let child_id   = format!("{}::{}", id, field_name);
-                        changed |= draw_reflect_value_mut(world, disabled, ui, Some(&field_name), &child_id, field_val, registry);
+                        let field_val = e.field_at_mut(i);
+                        let child_id = format!("{}::{}", id, field_name);
+                        changed |= draw_reflect_value_mut(
+                            world,
+                            disabled,
+                            ui,
+                            Some(&field_name),
+                            &child_id,
+                            field_val,
+                            registry,
+                        );
                     }
                     ui.unindent();
                 }
@@ -427,10 +657,18 @@ fn draw_reflect_value_mut(
                 if let Some(toke) = draw_reflect_header(ui, name, &header_name, id, len == 0) {
                     ui.indent();
                     for i in 0..len {
-                        let item     = l.get_mut(i);
+                        let item = l.get_mut(i);
                         let child_id = format!("{}{}", id, i);
-                        let fname    = format!("[{}]", i);
-                        changed |= draw_reflect_value_mut(world, disabled, ui, Some(&fname), &child_id, item, registry);
+                        let fname = format!("[{}]", i);
+                        changed |= draw_reflect_value_mut(
+                            world,
+                            disabled,
+                            ui,
+                            Some(&fname),
+                            &child_id,
+                            item,
+                            registry,
+                        );
                     }
                     ui.unindent();
                 }
@@ -438,14 +676,14 @@ fn draw_reflect_value_mut(
             ReflectMut::Opaque(v) => {
                 if let Some(name) = name {
                     ui.text_disabled(format!("<{}>: {}", v.reflect_short_type_path(), name));
-                }else {
+                } else {
                     ui.text_disabled(format!("<{}>", v.reflect_short_type_path()));
                 }
             }
             _ => {
                 ui.text_disabled(type_short);
             }
-        }
+        },
         None => {
             ui.text_disabled(type_short);
         }
@@ -463,7 +701,7 @@ fn draw_reflect_header<'a>(
 ) -> Option<imgui::TreeNodeToken<'a>> {
     let label = if let Some(field_name) = field_name {
         format!("{type_name} {field_name}##{id}")
-    }else {
+    } else {
         format!("{type_name}##{id}")
     };
     let flags = TreeNodeFlags::OPEN_ON_ARROW
@@ -471,11 +709,13 @@ fn draw_reflect_header<'a>(
         | TreeNodeFlags::DEFAULT_OPEN
         | TreeNodeFlags::FRAME_PADDING
         | TreeNodeFlags::FRAMED
-        | if is_leaf { TreeNodeFlags::LEAF } else { TreeNodeFlags::empty() };
-   
-    ui.tree_node_config(&label)
-        .flags(flags)
-        .push()
+        | if is_leaf {
+            TreeNodeFlags::LEAF
+        } else {
+            TreeNodeFlags::empty()
+        };
+
+    ui.tree_node_config(&label).flags(flags).push()
 }
 
 pub(crate) fn selected_ui(world: &mut World) {
@@ -549,11 +789,17 @@ pub(crate) fn selected_ui(world: &mut World) {
                         }
                     } else {
                         let _dis = ui.begin_disabled(true);
-                        ui.collapsing_header(format!("{}##{}", name.split("::").last().unwrap_or("?"), component_id.index()), 
-        TreeNodeFlags::SPAN_AVAIL_WIDTH
-        | TreeNodeFlags::FRAME_PADDING
-        | TreeNodeFlags::FRAMED
-        | TreeNodeFlags::LEAF);
+                        ui.collapsing_header(
+                            format!(
+                                "{}##{}",
+                                name.split("::").last().unwrap_or("?"),
+                                component_id.index()
+                            ),
+                            TreeNodeFlags::SPAN_AVAIL_WIDTH
+                                | TreeNodeFlags::FRAME_PADDING
+                                | TreeNodeFlags::FRAMED
+                                | TreeNodeFlags::LEAF,
+                        );
                     }
                 }
             } else {

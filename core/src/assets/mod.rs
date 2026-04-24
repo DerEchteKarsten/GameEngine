@@ -20,7 +20,13 @@ use std::sync::Arc;
 use tracing_log::log;
 
 use crate::{
-    assets::{material::Material, mesh::{GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer, MeshletMesh, Scene}},
+    assets::{
+        material::Material,
+        mesh::{
+            GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer, MeshletMesh,
+            Scene,
+        },
+    },
     bindings::{AabbError, BvhNode, CullData, Meshlet, Vertex},
     physics,
     render::world::UploadQueue,
@@ -50,7 +56,6 @@ impl Plugin for MeshAssets {
             .init_asset::<GpuMesh>();
     }
 }
-
 
 async fn write_slice<T: Pod>(field: &[T], writer: &mut bevy::asset::io::Writer) -> Result<()> {
     let len = field.len() as u64;
@@ -88,7 +93,6 @@ async fn read_len_slice<T: Pod>(
     reader.read_exact(slice).await?;
     Ok(unsafe { Vec::from_raw_parts(slice.as_mut_ptr().cast::<T>(), len, len) })
 }
-
 
 async fn read_slice_to_buffer<'a>(
     reader: &mut dyn bevy::asset::io::Reader,
