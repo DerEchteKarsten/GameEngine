@@ -242,13 +242,11 @@ impl UiWindow {
         text: &str,
         viewport_size: Vec2,
         parent_pos: Vec2,
-        parent_size: Vec2
+        parent_size: Vec2,
     ) -> Vec2 {
         pos.y += ctx.acent;
-        let chars = text.chars();
-        let chars = chars.collect::<Vec<_>>();
-        for i in 0..chars.len() {
-            if chars[i] == '\n' {
+        for char in text.chars() {
+            if char == '\n' {
                 pos.y += ctx.new_line_size;
                 continue;
             }
