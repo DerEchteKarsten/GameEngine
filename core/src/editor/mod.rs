@@ -82,7 +82,7 @@ fn frame_histogram(mut ui: ResMut<UiBuilder>, mut state: ResMut<UiState>, time: 
         / state.delta_time_histogram.len() as f32;
     if let Some(ui) = ui.ui() {
         if let Some(window) = ui
-            .window("Frame Stats##frame_stats")
+            .window("Entity 5 adhiasodhasdklagsdgasldgalsdglaksdasdlEntity 5 adhiasodhasdklagsdgasldgalsdglaksdasdlEntity 5 adhiasodhasdklagsdgasldgalsdglaksdasdl##frame_stats")
             .size([100.0, 300.0], imgui::Condition::FirstUseEver)
             .begin()
         {

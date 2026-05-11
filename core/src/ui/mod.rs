@@ -57,7 +57,7 @@ use crate::{
         world::UploadQueue,
     },
     ui::new_ui::{
-        NUiContext, NUiResources, Style, TestWindow, UiWindow, create_ui_resources, nextract_ui,
+        NUiContext, NUiResources, TestWindow, UiWindow, create_ui_resources, nextract_ui,
         nwrite_ui_data, test_ui, update_windows,
     },
 };
@@ -559,7 +559,6 @@ pub fn UiPlugin(app: &mut App) {
             font_settings: FontSettings {
                 ..Default::default()
             },
-            style: Style::default(),
             new_line_size: 0.0,
             acent: 0.0,
             decent: 0.0,
