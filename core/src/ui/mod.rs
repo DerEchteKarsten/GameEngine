@@ -9,7 +9,10 @@ use bevy::{
         world::Mut,
     },
     input::{
-        ButtonState, InputSystems, keyboard::{KeyCode, KeyboardInput}, mouse::{MouseButton, MouseButtonInput, MouseWheel}, touch::{TouchInput, TouchPhase}
+        ButtonState, InputSystems,
+        keyboard::{KeyCode, KeyboardInput},
+        mouse::{MouseButton, MouseButtonInput, MouseWheel},
+        touch::{TouchInput, TouchPhase},
     },
     tasks::block_on,
     time::Time,
@@ -56,13 +59,14 @@ use crate::{
         render::{FrameCount, Swapchain},
         world::UploadQueue,
     },
-    ui::new_ui::{
+    ui::{new_ui::{
         NUiContext, NUiResources, TestWindow, UiWindow, create_ui_resources, nextract_ui,
         nwrite_ui_data, test_ui, update_windows,
-    },
+    }, test::add_tests},
 };
 
 pub mod new_ui;
+pub mod test;
 
 #[derive(Resource)]
 pub struct UiContext {
@@ -553,9 +557,7 @@ pub fn UiPlugin(app: &mut App) {
         .insert_resource(NUiContext {
             atlas_size: Vec2::ZERO,
             atlas_lut: HashMap::new(),
-            font: std::env::current_dir()
-                .unwrap()
-                .join("editor_font.ttf"),
+            font: std::env::current_dir().unwrap().join("editor_font.ttf"),
             font_settings: FontSettings {
                 ..Default::default()
             },
@@ -565,4 +567,5 @@ pub fn UiPlugin(app: &mut App) {
         })
         .register_type::<UiWindow>()
         .register_type::<TestWindow>();
+    add_tests(app);
 }

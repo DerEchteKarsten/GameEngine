@@ -1,4 +1,4 @@
-use std::{any::TypeId, intrinsics::type_id};
+use std::{any::TypeId};
 
 use bevy::{
     asset::{Asset, Handle},

@@ -1,7 +1,6 @@
 #![feature(f16)]
 #![feature(random)]
-#![feature(core_intrinsics)]
-
+#![feature(const_default)]
 use std::{
     any::type_name,
     mem::offset_of,
@@ -11,7 +10,6 @@ use std::{
 
 #[cfg(feature = "bevy_window")]
 use bevy::a11y::AccessibilityPlugin;
-use bevy::{app::Startup, ecs::{entity::Entity, query::With, system::{Commands, Single}}, window::{CursorIcon, RawHandleWrapperHolder, SystemCursorIcon, WindowTheme}};
 use bevy::{
     a11y::AccessibilityPlugin,
     app::{App, AppLabel, PanicHandlerPlugin, TaskPoolPlugin},
@@ -27,6 +25,15 @@ use bevy::{
     transform::TransformPlugin,
     window::{PrimaryWindow, Window, WindowPlugin, WindowResized, WindowResolution},
     winit::{WinitPlugin, WinitWindows},
+};
+use bevy::{
+    app::Startup,
+    ecs::{
+        entity::Entity,
+        query::With,
+        system::{Commands, Single},
+    },
+    window::{CursorIcon, RawHandleWrapperHolder, SystemCursorIcon, WindowTheme},
 };
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec4};
@@ -92,7 +99,11 @@ pub fn CorePlugin(app: &mut App) {
         EditorPlugin::default(),
         ScenePlugin,
     ))
-    .add_systems(Startup, |mut cmd: Commands, window: Single<Entity, With<PrimaryWindow>>| {
-        cmd.entity(*window).insert(CursorIcon::System(SystemCursorIcon::Default));
-    });
+    .add_systems(
+        Startup,
+        |mut cmd: Commands, window: Single<Entity, With<PrimaryWindow>>| {
+            cmd.entity(*window)
+                .insert(CursorIcon::System(SystemCursorIcon::Default));
+        },
+    );
 }
