@@ -44,6 +44,7 @@ tracing-core = {version = "0.1.36", optional = true}
 imgui = { version = "0.12.0", features = ["docking"] }
 image = "0.25.10"
 fontdue = "0.9.3"
+rust-ini = "0.21.3"
 
 [features]
 default = []

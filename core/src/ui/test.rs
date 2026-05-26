@@ -1,409 +1,353 @@
-// ============================================================
-// NUI TEST SCENARIOS
-// Drop these into your app alongside test_ui, register the
-// components & systems just like TestWindow / test_ui.
-// ============================================================
-
-use bevy::app::{App, Update};
-use bevy::ecs::component::Component;
-use bevy::ecs::reflect::ReflectComponent;
-use bevy::reflect::Reflect;
-use bevy::ecs::system::{Commands, Local};
+use bevy::{app::{App, Update}, log};
 use glam::Vec4;
 
-use crate::id;
-use crate::ui::new_ui::{UiBuilder, UiWindow};
+use crate::{id, ui::new_ui::{UiBuilder}};
 
-// ─── Marker components ──────────────────────────────────────
+fn element_test(mut ui: UiBuilder) {
+    ui.build("Elements", |ui| {
+        ui.text("Before");
+        ui.histogram(100.0, 20.0, 16.0, 0.0, [5.0f32, 10.0f32, 7.0f32, 5.0f32, 10.0f32, 7.0f32,5.0f32, 10.0f32, 7.0f32,5.0f32, 10.0f32, 7.0f32,5.0f32, 10.0f32, 7.0f32,].iter());
+        ui.text("After");
+        ui.tooltip("That text says After!");
+    });
+}
 
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowStress;
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowInputs;
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowColorPicker;
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowContainers;
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowWindowA;
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowWindowB;
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowEdgeCases;
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowMixedLayout;
-#[derive(Component, Reflect)] #[reflect(Component)] pub struct TestWindowDeepCollapse;
+// --- Layout tests ---
 
-// ============================================================
-// SCENARIO 1 — Stress layout
-//   Many elements, deep nesting, scrollbar exercise.
-//   Expected: scrollbar appears, content clips correctly,
-//   thumb dragging moves content.
-// ============================================================
-pub fn test_stress(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowStress>,
-    mut state: Local<(f32, usize)>,
-) {
-    ui.build_or(
-        || { cmd.spawn((UiWindow::new("Stress Layout"), TestWindowStress)); },
-        |b| {
-            b.text("── Stress: 40 rows of mixed content ──");
+/// All elements stacked vertically (default direction)
+fn test_vertical_layout(mut ui: UiBuilder) {
+    ui.build("Vertical Layout", |ui| {
+        ui.text("Line 1");
+        ui.text("Line 2");
+        ui.text("Line 3");
+        ui.button("Button A");
+        ui.button("Button B");
+        ui.check_box(false);
+        ui.check_box(true);
+    });
+}
 
-            for i in 0..40 {
-                b.horizontal();
-                b.text(format!("Row {:02}", i));
-                state.0 = b.slider(id!(), 0.0, 1.0, 80.0, state.0);
-                b.text(format!("{:.2}", state.0));
-                if b.button(if i % 2 == 0 { "Even" } else { "Odd" }) {
-                    state.1 = i;
-                }
-                b.vertical();
+/// Elements laid out horizontally, then back to vertical
+fn test_horizontal_layout(mut ui: UiBuilder) {
+    ui.build("Horizontal Layout", |ui| {
+        ui.text("Before horizontal:");
+        ui.horizontal();
+        ui.button("Left");
+        ui.button("Middle");
+        ui.button("Right");
+        ui.vertical();
+        ui.text("After vertical:");
+        ui.button("Solo button");
+    });
+}
+
+/// Multiple horizontal rows
+fn test_multiple_horizontal_rows(mut ui: UiBuilder) {
+    ui.build("Multi-Row Horizontal", |ui| {
+        for row in 0..5 {
+            ui.horizontal();
+            for col in 0..4 {
+                ui.button(format!("R{row}C{col}"));
             }
-
-            b.text(format!("Last clicked row: {}", state.1));
-        },
-    );
+            ui.vertical();
+        }
+    });
 }
 
-// ============================================================
-// SCENARIO 2 — Input gauntlet
-//   Every input widget back-to-back.
-//   Tests: tab focus chain, keyboard nav in text fields,
-//   float parse fallback, dropdown open/close.
-// ============================================================
-pub fn test_inputs(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowInputs>,
-    mut state: Local<(String, f32, i32, bool, usize, String)>,
-) {
-    ui.build_or(
-        || { cmd.spawn((UiWindow::new("Input Gauntlet"), TestWindowInputs)); },
-        |b| {
-            b.text("Text input (tab → next field):");
-            b.text_input(id!(), &mut state.0, 200.0);
-
-            b.text("Float input (parse fallback on invalid):");
-            state.1 = b.float_input(id!(), state.1, 120.0);
-            b.text(format!("= {:.4}", state.1));
-
-            b.text("Slider [-100 … 100]:");
-            state.2 = b.slider(id!(), -100.0, 100.0, 200.0, state.2 as f32) as i32;
-            b.text(format!("= {}", state.2));
-
-            b.text("Checkbox:");
-            state.3 = b.check_box(state.3);
-            b.text(if state.3 { "checked ✓" } else { "unchecked" });
-
-            b.text("Dropdown:");
-            state.4 = b.dropdown(id!(), state.4, &[
-                "Alpha", "Beta", "Gamma", "Delta", "Epsilon",
-            ]);
-            b.text(format!("selected index: {}", state.4));
-
-            b.text("Second text field (tab from above reaches here):");
-            b.text_input(id!(), &mut state.5, 200.0);
-            b.text(format!("value: \"{}\"", state.5));
-        },
-    );
+/// Horizontal row mixing different element types
+fn test_mixed_horizontal_row(mut ui: UiBuilder) {
+    ui.build("Mixed Horizontal", |ui| {
+        ui.horizontal();
+        ui.text("Label:");
+        ui.check_box(true);
+        ui.button("Click me");
+        ui.color_picker(id!(), Vec4::new(1.0, 0.0, 0.0, 1.0));
+        ui.vertical();
+        ui.text("Back to vertical");
+    });
 }
 
-// ============================================================
-// SCENARIO 3 — Color picker showcase
-//   Isolated color picker with RGBA breakdown text.
-//   Tests: SV drag, hue bar drag, alpha bar drag, float inputs.
-// ============================================================
-pub fn test_color_picker(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowColorPicker>,
-    mut color: Local<Vec4>,
-) {
-    if color.w == 0.0 { *color = Vec4::new(0.2, 0.6, 1.0, 1.0); }
+// --- Collapsable / nesting tests ---
 
-    ui.build_or(
-        || { cmd.spawn((UiWindow::new("Color Picker"), TestWindowColorPicker)); },
-        |b| {
-            b.text("Drag the SV square, hue bar, and alpha bar:");
-            *color = b.color_picker(id!(), *color);
-
-            b.text(format!(
-                "R:{:.3}  G:{:.3}  B:{:.3}  A:{:.3}",
-                color.x, color.y, color.z, color.w
-            ));
-            b.text(format!(
-                "#{:02X}{:02X}{:02X}{:02X}",
-                (color.x * 255.0) as u8,
-                (color.y * 255.0) as u8,
-                (color.z * 255.0) as u8,
-                (color.w * 255.0) as u8,
-            ));
-        },
-    );
+/// Nested collapsables
+fn test_nested_collapsables(mut ui: UiBuilder) {
+    ui.build("Nested Collapsables", |ui| {
+        ui.collapsable("Outer", |ui| {
+            ui.text("Outer content");
+            ui.collapsable("Inner A", |ui| {
+                ui.text("Inner A content");
+                ui.button("Inner A button");
+            });
+            ui.collapsable("Inner B", |ui| {
+                ui.text("Inner B content");
+                ui.collapsable("Deeply Nested", |ui| {
+                    ui.text("Deep content");
+                    ui.check_box(false);
+                });
+            });
+        });
+        ui.text("After collapsable");
+    });
 }
 
-// ============================================================
-// SCENARIO 4 — Nested scrollable containers
-//   Outer container (300×200) wrapping an inner container
-//   (250×400) wrapping 300 text lines.
-//   Tests: independent scroll state, scroll consumption
-//   (inner vs outer should not fight), thumb sizing.
-// ============================================================
-pub fn test_containers(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowContainers>,
-) {
-    ui.build_or(
-        || { cmd.spawn((UiWindow::new("Nested Containers"), TestWindowContainers)); },
-        |b| {
-            b.text("Outer container 300×200 → inner 250×400 → 300 lines");
+/// Collapsable with horizontal layout inside
+fn test_collapsable_with_horizontal(mut ui: UiBuilder) {
+    ui.build("Collapsable + Horizontal", |ui| {
+        ui.collapsable("Horizontal inside collapsable", |ui| {
+            ui.horizontal();
+            ui.button("A");
+            ui.button("B");
+            ui.button("C");
+            ui.vertical();
+            ui.text("Below buttons");
+        });
+    });
+}
 
-            b.container("outer", glam::Vec2::new(300.0, 200.0), |outer| {
-                outer.text("── outer container ──");
+/// Multiple sibling collapsables
+fn test_sibling_collapsables(mut ui: UiBuilder) {
+    ui.build("Sibling Collapsables", |ui| {
+        for i in 0..6 {
+            ui.collapsable(format!("Section {i}"), |ui| {
+                ui.text(format!("Content of section {i}"));
+                ui.button(format!("Action {i}"));
+                ui.check_box(i % 2 == 0);
+            });
+        }
+    });
+}
 
-                outer.container("inner", glam::Vec2::new(250.0, 400.0), |inner| {
-                    inner.text("── inner container ──");
-                    for i in 0..300 {
-                        inner.text(format!("line {:03}", i));
+// --- Container tests ---
+
+/// Container with scrollable content
+fn test_scrollable_container(mut ui: UiBuilder) {
+    ui.build("Scrollable Container", |ui| {
+        ui.text("Above container");
+        ui.container(id!(), glam::Vec2::new(200.0, 100.0), |ui| {
+            for i in 0..20 {
+                ui.text(format!("Item {i}"));
+            }
+        });
+        ui.text("Below container");
+    });
+}
+
+/// Nested containers
+fn test_nested_containers(mut ui: UiBuilder) {
+    ui.build("Nested Containers", |ui| {
+        ui.container(id!(), glam::Vec2::new(300.0, 200.0), |ui| {
+            ui.text("Outer container");
+            ui.container(id!(), glam::Vec2::new(150.0, 80.0), |ui| {
+                for i in 0..10 {
+                    ui.text(format!("Inner item {i}"));
+                }
+            });
+            ui.text("After inner container");
+        });
+    });
+}
+
+/// Container with horizontal elements inside
+fn test_container_with_horizontal(mut ui: UiBuilder) {
+    ui.build("Container + Horizontal", |ui| {
+        ui.container(id!(), glam::Vec2::new(250.0, 150.0), |ui| {
+            ui.horizontal();
+            ui.button("X");
+            ui.button("Y");
+            ui.button("Z");
+            ui.vertical();
+            for i in 0..5 {
+                ui.text(format!("Row {i}"));
+            }
+        });
+    });
+}
+
+// --- Text edge cases ---
+
+/// Empty and whitespace strings
+fn test_text_edge_cases(mut ui: UiBuilder) {
+    ui.build("Text Edge Cases", |ui| {
+        ui.text("");
+        ui.text(" ");
+        ui.text("   spaces   ");
+        ui.text("newline\nhere");
+        ui.text("multiple\n\nnewlines");
+        ui.text("tab\there");
+        // Very long single line
+        ui.text("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        // Unicode
+        ui.text("Unicode: こんにちは 🎉 café");
+    });
+}
+
+// --- Slider edge cases ---
+
+/// Sliders at boundary values and zero-range
+fn test_slider_edge_cases(mut ui: UiBuilder) {
+    ui.build("Slider Edge Cases", |ui| {
+        // Normal range
+        ui.slider(id!(), 0.0, 1.0, 150.0, 0.5);
+        // Value at min
+        ui.slider(id!(), 0.0, 1.0, 150.0, 0.0);
+        // Value at max
+        ui.slider(id!(), 0.0, 1.0, 150.0, 1.0);
+        // Value below min (clamping)
+        ui.slider(id!(), 0.0, 1.0, 150.0, -99.0);
+        // Value above max (clamping)
+        ui.slider(id!(), 0.0, 1.0, 150.0, 99.0);
+        // Zero range (min == max, should not divide by zero)
+        ui.slider(id!(), 5.0, 5.0, 150.0, 5.0);
+        // Negative range
+        ui.slider(id!(), -100.0, -1.0, 150.0, -50.0);
+        // Large range
+        ui.slider(id!(), 0.0, 1_000_000.0, 150.0, 500_000.0);
+        // Very narrow widget
+        ui.slider(id!(), 0.0, 1.0, 1.0, 0.5);
+    });
+}
+
+// --- Dropdown edge cases ---
+
+/// Dropdown with one option, many options, and long labels
+fn test_dropdown_edge_cases(mut ui: UiBuilder) {
+    ui.build("Dropdown Edge Cases", |ui| {
+        // Single option
+        ui.dropdown(id!(), 0, &["Only option"]);
+        // Two options
+        ui.dropdown(id!(), 0, &["First", "Second"]);
+        // Many options
+        ui.dropdown(id!(), 3, &["A", "B", "C", "D", "E", "F", "G", "H"]);
+        // Long labels
+        ui.dropdown(id!(), 0, &[
+            "Short",
+            "A much longer option label that takes up space",
+            "Another long one here too",
+        ]);
+        // Selected index at last element
+        ui.dropdown(id!(), 2, &["X", "Y", "Z"]);
+    });
+}
+
+// --- Color picker edge cases ---
+
+/// Color pickers with boundary and special colors
+fn test_color_picker_edge_cases(mut ui: UiBuilder) {
+    ui.build("Color Picker Edge Cases", |ui| {
+        ui.color_picker(id!(), Vec4::ZERO);                       // black, transparent
+        ui.color_picker(id!(), Vec4::ONE);                        // white, opaque
+        ui.color_picker(id!(), Vec4::new(1.0, 0.0, 0.0, 1.0));   // red
+        ui.color_picker(id!(), Vec4::new(0.0, 1.0, 0.0, 1.0));   // green
+        ui.color_picker(id!(), Vec4::new(0.0, 0.0, 1.0, 1.0));   // blue
+        ui.color_picker(id!(), Vec4::new(0.5, 0.5, 0.5, 0.5));   // mid grey, half alpha
+        // Out of range values (should clamp)
+        ui.color_picker(id!(), Vec4::new(-1.0, 2.0, -0.5, 1.5));
+    });
+}
+
+// --- Checkbox edge cases ---
+
+fn test_checkbox_edge_cases(mut ui: UiBuilder) {
+    ui.build("Checkbox Edge Cases", |ui| {
+        // Many checkboxes in a row
+        ui.horizontal();
+        for _ in 0..10 {
+            ui.check_box(true);
+        }
+        ui.vertical();
+        ui.horizontal();
+        for _ in 0..10 {
+            ui.check_box(false);
+        }
+        ui.vertical();
+    });
+}
+
+// --- Float input edge cases ---
+
+fn test_float_input_edge_cases(mut ui: UiBuilder) {
+    ui.build("Float Input Edge Cases", |ui| {
+        ui.float_input(id!(), 0.0, 80.0);
+        ui.float_input(id!(), f32::MAX, 80.0);
+        ui.float_input(id!(), f32::MIN, 80.0);
+        ui.float_input(id!(), f32::INFINITY, 80.0);
+        ui.float_input(id!(), f32::NEG_INFINITY, 80.0);
+        ui.float_input(id!(), f32::NAN, 80.0);
+        ui.float_input(id!(), -0.0, 80.0);
+        ui.float_input(id!(), 1.234567890123456, 80.0);
+    });
+}
+
+// --- Combined stress / kitchen sink ---
+
+/// Everything together in a single window with deep nesting
+fn test_kitchen_sink(mut ui: UiBuilder) {
+    ui.build("Kitchen Sink", |ui| {
+        ui.text("Top-level text");
+        ui.horizontal();
+        ui.button("H-Button 1");
+        ui.button("H-Button 2");
+        ui.check_box(true);
+        ui.vertical();
+
+        ui.collapsable("Settings", |ui| {
+            ui.horizontal();
+            ui.text("Color:");
+            ui.color_picker(id!(), Vec4::new(0.2, 0.6, 1.0, 1.0));
+            ui.vertical();
+
+            ui.horizontal();
+            ui.text("Speed:");
+            ui.slider(id!(), 0.0, 10.0, 100.0, 3.0);
+            ui.vertical();
+
+            ui.horizontal();
+            ui.text("Mode:");
+            ui.dropdown(id!(), 1, &["Off", "Low", "High"]);
+            ui.vertical();
+
+            ui.collapsable("Advanced", |ui| {
+                ui.float_input(id!(), 1.0, 60.0);
+                ui.check_box(false);
+                ui.container(id!(), glam::Vec2::new(180.0, 60.0), |ui| {
+                    for i in 0..8 {
+                        ui.text(format!("Option {i}"));
                     }
                 });
+            });
+        });
 
-                outer.text("── after inner ──");
-                for i in 0..10 {
-                    outer.text(format!("outer extra {}", i));
+        ui.collapsable("Log", |ui| {
+            ui.container(id!(), glam::Vec2::new(250.0, 120.0), |ui| {
+                for i in 0..30 {
+                    ui.text(format!("[INFO] Log line {i}"));
                 }
             });
+        });
 
-            b.text("Below the outer container");
-        },
-    );
-}
-
-// ============================================================
-// SCENARIO 5 — Multiple windows / layer management
-//   Two windows that overlap; clicking one brings it to front.
-//   Tests: layer sorting in update_windows, draw order in
-//   nextract_ui.
-// ============================================================
-pub fn test_multi_window_a(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowWindowA>,
-    mut n: Local<u32>,
-) {
-    ui.build_or(
-        || {
-            let mut w = UiWindow::new("Window A (click to focus)");
-            w.size = bevy::math::Rect::from_corners(
-                glam::Vec2::new(60.0, 60.0),
-                glam::Vec2::new(340.0, 340.0),
-            );
-            cmd.spawn((w, TestWindowWindowA));
-        },
-        |b| {
-            b.text("I am Window A.");
-            b.text("Click me to bring me in front of B.");
-            if b.button("Count") { *n += 1; }
-            b.text(format!("Pressed {} times", *n));
-        },
-    );
-}
-
-pub fn test_multi_window_b(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowWindowB>,
-    mut n: Local<u32>,
-) {
-    ui.build_or(
-        || {
-            let mut w = UiWindow::new("Window B (overlaps A)");
-            w.size = bevy::math::Rect::from_corners(
-                glam::Vec2::new(200.0, 200.0),
-                glam::Vec2::new(480.0, 480.0),
-            );
-            cmd.spawn((w, TestWindowWindowB));
-        },
-        |b| {
-            b.text("I am Window B.");
-            b.text("Click me to come to the front.");
-            if b.button("Count") { *n += 1; }
-            b.text(format!("Pressed {} times", *n));
-        },
-    );
-}
-
-// ============================================================
-// SCENARIO 6 — Edge case inputs
-//   Empty strings, unicode, very long overflow, float edges.
-//   Tests: cursor clamping at string boundaries, UTF-8 safety,
-//   text clip rect, float_input parse fallback.
-// ============================================================
-pub fn test_edge_cases(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowEdgeCases>,
-    mut state: Local<(String, String, f32, String)>,
-) {
-    // Seed defaults once
-    if state.1.is_empty() {
-        state.1 = "Hello 🌍 Unicode".to_string(); // NOTE: only chars in atlas will render
-        state.3 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
-    }
-
-    ui.build_or(
-        || { cmd.spawn((UiWindow::new("Edge Cases"), TestWindowEdgeCases)); },
-        |b| {
-            b.text("Empty string field (start empty, type, delete all):");
-            b.text_input(id!(), &mut state.0, 200.0);
-            b.text(format!("len={}", state.0.len()));
-
-            b.text("Pre-filled field (Home/End/Ctrl+A/Ctrl+Backspace):");
-            b.text_input(id!(), &mut state.1, 200.0);
-
-            b.text("Float: type 'abc' → should keep last valid value:");
-            state.2 = b.float_input(id!(), state.2, 120.0);
-            b.text(format!("= {}", state.2));
-
-            b.text("Long overflow field (scroll with cursor):");
-            b.text_input(id!(), &mut state.3, 150.0);
-
-            b.text("Slider at exact min:");
-            let v = b.slider(id!(), 0.0, 1.0, 150.0, 0.0);
-            b.text(format!("= {:.6}", v));
-
-            b.text("Slider at exact max:");
-            let v = b.slider(id!(), 0.0, 1.0, 150.0, 1.0);
-            b.text(format!("= {:.6}", v));
-
-            b.text("Zero-width range slider (min==max guard):");
-            let v = b.slider(id!(), 5.0, 5.0, 100.0, 5.0);
-            b.text(format!("= {:.6}", v));
-        },
-    );
-}
-
-// ============================================================
-// SCENARIO 7 — Complex mixed horizontal/vertical layout
-//   Interleaved row/column switches; tests that prev_cursor
-//   and line_height accounting don't drift after many toggles.
-// ============================================================
-pub fn test_mixed_layout(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowMixedLayout>,
-    mut vals: Local<[f32; 6]>,
-) {
-    ui.build_or(
-        || { cmd.spawn((UiWindow::new("Mixed Layout"), TestWindowMixedLayout)); },
-        |b| {
-            // Row 1: label + 3 sliders
-            b.horizontal();
-            b.text("Row 1 sliders:");
-            vals[0] = b.slider(id!(), 0.0, 1.0, 60.0, vals[0]);
-            vals[1] = b.slider(id!(), 0.0, 1.0, 60.0, vals[1]);
-            vals[2] = b.slider(id!(), 0.0, 1.0, 60.0, vals[2]);
-            b.vertical();
-
-            // Vertical block
-            b.text(format!("  sum = {:.3}", vals[0] + vals[1] + vals[2]));
-
-            // Row 2: buttons + checkbox
-            b.horizontal();
-            if b.button("Reset A") { vals[0] = 0.0; vals[1] = 0.0; vals[2] = 0.0; }
-            if b.button("Set Max") { vals[0] = 1.0; vals[1] = 1.0; vals[2] = 1.0; }
-            b.vertical();
-
-            b.text("── second group ──");
-
-            // Row 3: label + dropdown + float
-            b.horizontal();
-            b.text("Pick:");
-            vals[3] = b.slider(id!(), -1.0, 1.0, 80.0, vals[3]);
-            vals[4] = b.float_input(id!(), vals[4], 70.0);
-            b.vertical();
-
-            b.text(format!("product = {:.4}", vals[3] * vals[4]));
-
-            // Deeply nested mixed inside a container
-            b.container("nested_mix", glam::Vec2::new(320.0, 180.0), |inner| {
-                inner.text("Inside container:");
-                inner.horizontal();
-                inner.text("A");
-                vals[5] = inner.slider(id!(), 0.0, 100.0, 100.0, vals[5]);
-                inner.text(format!("{:.0}", vals[5]));
-                inner.vertical();
-                if inner.button("Zero") { vals[5] = 0.0; }
-            });
-        },
-    );
-}
-
-// ============================================================
-// SCENARIO 8 — Deep collapsable tree (4 levels)
-//   Tests: open_headers HashSet keyed by stable ids, indentation
-//   accounting, content_max after a closed subtree.
-// ============================================================
-pub fn test_deep_collapse(
-    mut cmd: Commands,
-    mut ui: UiBuilder<TestWindowDeepCollapse>,
-    mut n: Local<u32>,
-) {
-    ui.build_or(
-        || { cmd.spawn((UiWindow::new("Deep Collapsable Tree"), TestWindowDeepCollapse)); },
-        |b| {
-            b.text("Expand the tree fully to verify indentation & scroll:");
-
-            b.collapsable("Level 1 – Animals", |b| {
-                b.text("Mammals:");
-                b.collapsable("Level 2 – Mammals", |b| {
-                    b.collapsable("Level 3 – Cats", |b| {
-                        b.collapsable("Level 4 – Domestic", |b| {
-                            if b.button("Meow") { *n += 1; }
-                            b.text(format!("meows: {}", *n));
-                        });
-                        b.button("Wild cat")
-                    });
-                    b.collapsable("Level 3 – Dogs", |b| {
-                        b.text("Labrador");
-                        b.text("Poodle");
-                    });
-                });
-                b.text("Birds:");
-                b.collapsable("Level 2 – Birds", |b| {
-                    b.collapsable("Level 3 – Raptors", |b| {
-                        b.text("Eagle");
-                        b.text("Hawk");
-                    });
-                    b.text("Parrot");
-                });
-            });
-
-            b.collapsable("Level 1 – Vehicles", |b| {
-                b.text("Cars, planes, boats.");
-                b.collapsable("Level 2 – Cars", |b| {
-                    b.text("Sedan");
-                    b.text("SUV");
-                    b.collapsable("Level 3 – Sports", |b| {
-                        b.text("Porsche 911");
-                        b.text("Ferrari F40");
-                    });
-                });
-            });
-
-            b.text("── content below tree ──");
-            b.text("This line should sit correctly below all closed/open headers.");
-        },
-    );
+        ui.text(format!("{:#?}", ui.content_max));
+    });
 }
 
 pub fn add_tests(app: &mut App) {
-      app.add_systems(Update, (
-          test_stress,
-          test_inputs,
-          test_color_picker,
-          test_containers,
-          test_multi_window_a,
-          test_multi_window_b,
-          test_edge_cases,
-          test_mixed_layout,
-          test_deep_collapse,
-      ));
-    
-      app.register_type::<TestWindowStress>()
-         .register_type::<TestWindowInputs>()
-         .register_type::<TestWindowColorPicker>()
-         .register_type::<TestWindowContainers>()
-         .register_type::<TestWindowWindowA>()
-         .register_type::<TestWindowWindowB>()
-         .register_type::<TestWindowEdgeCases>()
-         .register_type::<TestWindowMixedLayout>()
-         .register_type::<TestWindowDeepCollapse>();
+    app.add_systems(Update, (
+        element_test,
+        // test_vertical_layout,
+        // test_horizontal_layout,
+        // test_multiple_horizontal_rows,
+        // test_mixed_horizontal_row,
+        // test_nested_collapsables,
+        // test_collapsable_with_horizontal,
+        // test_sibling_collapsables,
+        // test_scrollable_container,
+        // test_nested_containers,
+        // test_container_with_horizontal,
+        // test_text_edge_cases,
+        // test_slider_edge_cases,
+        // test_dropdown_edge_cases,
+        // test_color_picker_edge_cases,
+        // test_checkbox_edge_cases,
+        // test_float_input_edge_cases,
+        // test_kitchen_sink,
+    ));
 }

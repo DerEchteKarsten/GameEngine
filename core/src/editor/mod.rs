@@ -108,7 +108,7 @@ impl Plugin for EditorPlugin {
         .add_plugins((
             ConsolePlugin {
                 also_log_to_stderr: true,
-                level: Level::DEBUG,
+                level: Level::TRACE,
                 ..Default::default()
             },
             RenderDebugUi,

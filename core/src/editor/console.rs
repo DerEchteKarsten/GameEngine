@@ -9,12 +9,14 @@
 
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use bevy::app::{
     App, First, Last, Plugin, PostStartup, PostUpdate, PreStartup, PreUpdate, Startup, Update,
 };
 use bevy::ecs::prelude::*;
 use bevy::ecs::schedule::{InternedScheduleLabel, ScheduleLabel};
+use bevy::log;
 use imgui::{ComboBoxFlags, SliderFlags};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
@@ -82,12 +84,6 @@ where
             });
         }
     }
-}
-
-/// Cached per-span data stored in span extensions.
-#[derive(Debug)]
-struct SpanFields {
-    name: String,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -96,7 +96,8 @@ pub fn CorePlugin(app: &mut App) {
         PipelinedRenderingPlugin::default(),
         UiPlugin,
         PhysicsPlugin,
-        EditorPlugin::default(),
+        // EditorPlugin::default(),
+        bevy::log::LogPlugin::default(),
         ScenePlugin,
     ))
     .add_systems(

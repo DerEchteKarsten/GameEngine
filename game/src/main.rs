@@ -55,7 +55,7 @@ use bevy::ecs::reflect::ReflectComponent;
 struct MyModel;
 
 fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
-    let handle = asset_server.load("tower.glb");
+    // let handle = asset_server.load("tower.glb");
     let camera = CameraBundle::new(
         Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         65.0_f32.to_radians(),
@@ -63,11 +63,11 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
         100.0,
     );
     cmd.spawn((camera, EditorCamera));
-    cmd.spawn((
-        Transform::from_scale(Vec3::splat(0.1)),
-        MyModel,
-        SpawnScene { scene: handle },
-    ));
+    // cmd.spawn((
+    //     Transform::from_scale(Vec3::splat(0.1)),
+    //     MyModel,
+    //     SpawnScene { scene: handle },
+    // ));
 }
 
 fn update_mesh(
@@ -89,16 +89,16 @@ fn update_mesh(
     //     });
     // }
 
-    let (index, elements) = &mut *local;
+    // let (index, elements) = &mut *local;
 
-    let empty = elements.is_empty();
-    if empty {
-        *elements = WalkDir::new("/home/karsten/code/GameEngine/game/assets")
-            .into_iter()
-            .filter(|f| f.as_ref().unwrap().file_type().is_file())
-            .map(|e| e.unwrap().file_name().to_str().unwrap().to_owned())
-            .collect();
-    }
+    // let empty = elements.is_empty();
+    // if empty {
+    //     *elements = WalkDir::new("/home/karsten/code/GameEngine/game/assets")
+    //         .into_iter()
+    //         .filter(|f| f.as_ref().unwrap().file_type().is_file())
+    //         .map(|e| e.unwrap().file_name().to_str().unwrap().to_owned())
+    //         .collect();
+    // }
 
     // if let Some(mesh) = assets.get(&model.1.model) {
     //     for i in 0..mesh.instance_mesh.len() {
@@ -121,26 +121,26 @@ fn update_mesh(
     //     }
     // }
 
-    let Some(ui) = ui.ui() else {
-        return;
-    };
+    // let Some(ui) = ui.ui() else {
+    //     return;
+    // };
 
-    ui.window("Scene##scene").build(|| {
-        if let Some(combo) = ui.begin_combo("Model", &elements[*index]) {
-            for (i, file) in elements.iter().enumerate() {
-                if ui.selectable_config(&file).selected(i == *index).build() {
-                    *index = i;
-                    let handle = asset_server.load(file);
-                    cmd.entity(model.0)
-                        .despawn_children()
-                        .insert(SpawnScene { scene: handle });
-                }
-                if *index == i {
-                    ui.set_item_default_focus();
-                }
-            }
-        }
-    });
+    // ui.window("Scene##scene").build(|| {
+    //     if let Some(combo) = ui.begin_combo("Model", &elements[*index]) {
+    //         for (i, file) in elements.iter().enumerate() {
+    //             if ui.selectable_config(&file).selected(i == *index).build() {
+    //                 *index = i;
+    //                 let handle = asset_server.load(file);
+    //                 cmd.entity(model.0)
+    //                     .despawn_children()
+    //                     .insert(SpawnScene { scene: handle });
+    //             }
+    //             if *index == i {
+    //                 ui.set_item_default_focus();
+    //             }
+    //         }
+    //     }
+    // });
 }
 
 fn main() {

@@ -21,7 +21,7 @@ use bevy::{
 use bytemuck::Zeroable;
 use fontdue::FontSettings;
 use futures::channel::oneshot;
-use glam::{FloatExt, IVec2, Mat4, Quat, UVec2, UVec4, Vec2, Vec4};
+use glam::{FloatExt, IVec2, Mat4, Quat, U16Vec2, UVec2, UVec4, Vec2, Vec4};
 use gltf::json::extensions::mesh;
 use imgui::{ConfigFlags, DrawCmd, FontConfig, FontSource, Io, StyleColor};
 use lava::{
@@ -60,8 +60,7 @@ use crate::{
         world::UploadQueue,
     },
     ui::{new_ui::{
-        NUiContext, NUiResources, TestWindow, UiWindow, create_ui_resources, nextract_ui,
-        nwrite_ui_data, test_ui, update_windows,
+        AtlasEntry, FocusedState, NUiContext, NUiResources, Scrollable, UiWindow, create_ui_resources, nextract_ui, nwrite_ui_data, save_windows, update_windows
     }, test::add_tests},
 };
 
@@ -552,20 +551,8 @@ pub fn UiPlugin(app: &mut App) {
         .insert_resource(UiBuilder {
             ui: std::ptr::null_mut(),
         })
-        .add_systems(Update, test_ui)
         .add_systems(PreUpdate, update_windows.after(InputSystems))
-        .insert_resource(NUiContext {
-            atlas_size: Vec2::ZERO,
-            atlas_lut: HashMap::new(),
-            font: std::env::current_dir().unwrap().join("editor_font.ttf"),
-            font_settings: FontSettings {
-                ..Default::default()
-            },
-            new_line_size: 0.0,
-            acent: 0.0,
-            decent: 0.0,
-        })
-        .register_type::<UiWindow>()
-        .register_type::<TestWindow>();
+        .insert_resource(NUiContext::new().unwrap())
+        .add_systems(PostUpdate, save_windows);
     add_tests(app);
 }

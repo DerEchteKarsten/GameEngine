@@ -22,7 +22,7 @@ use bevy::prelude::ReflectComponent;
 pub mod camera;
 
 #[derive(Component, Clone, Reflect)]
-#[reflect(Component)]
+#[reflect(Component, Clone)]
 pub struct SpawnScene {
     pub scene: Handle<Scene>,
 }

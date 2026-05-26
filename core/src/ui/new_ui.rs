@@ -1,5 +1,8 @@
 use anyhow::Result;
+use bevy::app::AppExit;
+use bevy::ecs::change_detection::Tick;
 use bevy::ecs::message::MessageReader;
+use bevy::ecs::query::WorldQuery;
 use bevy::ecs::system::Local;
 use bevy::ecs::system::lifetimeless::Read;
 use bevy::input::keyboard::{KeyCode, KeyboardInput};
@@ -30,17 +33,23 @@ use bytemuck::Zeroable;
 use fontdue::layout::GlyphRasterConfig;
 use fontdue::*;
 use glam::{BVec2, I8Vec2, IVec2, U8Vec2, U16Vec2, UVec2, Vec2, Vec2Swizzles, Vec4};
+use ini::Ini;
 use itertools::Itertools;
+use lava::state::raw_vulkan::native::{StdVideoH264DisableDeblockingFilterIdc_STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_ENABLED, StdVideoH264DisableDeblockingFilterIdc_STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_PARTIAL};
 use lava::{
     buffer::*,
     image::{Image, format, usage},
 };
 use smallvec::SmallVec;
+use std::cell::UnsafeCell;
 use std::collections::HashSet;
 use std::f32::consts::PI;
 use std::io::Write;
+use std::marker::PhantomData;
 use std::num::{NonZero, NonZeroU32, NonZeroU64};
 use std::ops::{Add, RangeBounds};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use std::{
     collections::HashMap,
     fs,
@@ -52,6 +61,7 @@ use std::{
 };
 use tracing_log::log;
 
+use crate::ui::UiContext;
 use crate::{
     bindings::{self, UIVertex},
     render::{
@@ -82,7 +92,7 @@ macro_rules! id {
     };
 }
 
-#[derive(Reflect, Clone)]
+#[derive(Clone)]
 pub struct FocusedState {
     is_being_draged: bool,
     draging: Option<NonZeroU64>,
@@ -99,7 +109,26 @@ pub struct FocusedState {
     resize_right: bool,
 }
 
-#[derive(Reflect, Copy, Clone)]
+impl Default for FocusedState {
+    fn default() -> Self {
+        Self {
+            is_being_draged: false,
+            draging: None,
+            focused: None,
+            cursor: TextCursor { byte_pos: 0 },
+            selected: 0..0,
+            offset: 0.0,
+            darg_start: Vec2::ZERO,
+            format_string: String::new(),
+            resize_top: false,
+            resize_bottom: false,
+            resize_left: false,
+            resize_right: false,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
 pub struct Scrollable {
     pub content_size: Vec2,
     pub scroll: Vec2,
@@ -111,10 +140,9 @@ impl Scrollable {
         let scrollbar_x = self.content_size.x > size.x;
 
         self.scroll -= Vec2::new(
-            scrollbar_x as u32 as f32,
-            scrollbar_y as u32 as f32,
-        ) * delta;
-
+            scrollbar_x as u32 as f32 * delta.x,
+            scrollbar_y as u32 as f32 * delta.y,
+        );
         self.clamp_scroll(size);
     }
 
@@ -126,7 +154,9 @@ impl Scrollable {
         );
     }
 
-    fn draw_bar(&mut self, id: NonZeroU64, size: Vec2, pos: Vec2, window: &mut UiWindow, direction: bool, viewport_size: Vec2, cursor_pos: Option<Vec2>, left_mouse_pressed: bool, parent_size: Vec2, parent_pos: Vec2) {
+    fn draw_bar(&mut self, id: NonZeroU64, area: Rect, window: &mut UiWindow, direction: bool, viewport_size: Vec2, cursor_pos: Option<Vec2>, left_mouse_pressed: bool, clip_rect: Rect) {
+        let size = area.size();
+        let pos = area.min;
         let b = NUiContext::BORDER as f32;
         let track_pos = if direction {
             Vec2::new(
@@ -146,8 +176,8 @@ impl Scrollable {
             Vec2::new(size.x - b * 2.0, NUiContext::BAR_THICKNESS).round()
         };
     
-        window.rect(track_pos, track_size, None, NUiContext::S0,
-            viewport_size, parent_size, parent_pos, false);
+        window.rect(Rect::from_corners(track_pos, track_pos + track_size), None, NUiContext::S0,
+            viewport_size, clip_rect, false);
 
         let scroll_max = (self.content_size - size).max(Vec2::ONE);
 
@@ -185,11 +215,16 @@ impl Scrollable {
         }
 
         if let Some(p) = cursor_pos && dragging {
-            let grab_offset  = window.focused.as_ref().map(|f| f.darg_start).unwrap_or(Vec2::ZERO);
-            let new_thumb  = p - grab_offset - track_pos;
-            let travel       = (track_size - thumb_width).max(Vec2::ONE);
-            let t            = (new_thumb / travel).clamp(Vec2::ZERO, Vec2::ONE);
-            self.scroll    = t * scroll_max * Vec2::new(!direction as u32 as f32, direction as u32 as f32);
+            let grab_offset = window.focused.as_ref().map(|f| f.darg_start).unwrap_or(Vec2::ZERO);
+            let new_thumb = p - track_pos;
+            let travel = (track_size - thumb_width).max(Vec2::ONE);
+            if direction {
+                let t = ((new_thumb.y - grab_offset.y) / travel.y).clamp(0.0, 1.0);
+                self.scroll.y = t * scroll_max.y;
+            } else {
+                let t = ((new_thumb.x - grab_offset.x) / travel.x).clamp(0.0, 1.0);
+                self.scroll.x = t * scroll_max.x;
+            }
         }
 
         let thumb_color = if dragging || hovered { NUiContext::GRAB_HOT } else { NUiContext::GRAB };
@@ -197,23 +232,21 @@ impl Scrollable {
             color: thumb_color,
             ..Default::default()
         };
-        window.draw_box(thumb_pos, thumb_size, ds,
-            viewport_size, parent_size, parent_pos);
+        window.draw_box(from_pos_size(thumb_pos, thumb_size), ds,
+            viewport_size, clip_rect);
     }
 
-    pub fn draw(&mut self, id: NonZeroU64, size: Vec2, pos: Vec2, window: &mut UiWindow, viewport_size: Vec2, cursor_pos: Option<Vec2>, left_mouse_pressed: bool, parent_size: Vec2, parent_pos: Vec2) {
-        if self.content_size.y > size.y {
-            self.draw_bar(id, size, pos, window, true, viewport_size, cursor_pos, left_mouse_pressed, parent_size, parent_pos);
+    pub fn draw(&mut self, id: NonZeroU64, area: Rect, window: &mut UiWindow, viewport_size: Vec2, cursor_pos: Option<Vec2>, left_mouse_pressed: bool, clip_rect: Rect) {
+        if self.content_size.y > area.size().y {
+            self.draw_bar(id, area, window, true, viewport_size, cursor_pos, left_mouse_pressed, clip_rect);
         }
-        if self.content_size.x > size.x {
-            self.draw_bar(id, size, pos, window, false, viewport_size, cursor_pos, left_mouse_pressed, parent_size, parent_pos);
+        if self.content_size.x > area.size().x {
+            self.draw_bar(id, area, window, false, viewport_size, cursor_pos, left_mouse_pressed, clip_rect);
         }
     }
 
 }
 
-#[derive(Component, Reflect)]
-#[reflect(Component)]
 pub struct UiWindow {
     pub scrollbar_x: bool,
     pub scrollbar_y: bool,
@@ -221,66 +254,61 @@ pub struct UiWindow {
     pub open_headers: HashSet<u64>,
     pub scrollables: HashMap<u64, Scrollable>,
     pub focused: Option<FocusedState>,
-    pub label: String,
     pub size: Rect,
-    pub id: u64,
     pub layer: u32,
-    #[reflect(ignore)]
     pub verticies: Vec<UIVertex>,
     pub indicies: Vec<u32>,
-    #[reflect(ignore)]
     pub top_verticies: Vec<UIVertex>,
     pub top_indicies: Vec<u32>,
 }
+use bevy::ecs::{
+    archetype::Archetype,
+    component::{ComponentId, Components},
+    query::{FilteredAccess, QueryData, ReadOnlyQueryData},
+    storage::Table,
+    world::{unsafe_world_cell::UnsafeWorldCell, World},
+};
 
 #[derive(SystemParam)]
-pub struct UiBuilder<'w, 's, Marker: Component> {
-    query: Query<'w, 's, lifetimeless::Write<UiWindow>, With<Marker>>,
+pub struct UiBuilder<'w, 's> {
     window: Single<'w, 's, lifetimeless::Read<Window>>,
     mouse: Res<'w, ButtonInput<MouseButton>>,
     touch: Res<'w, Touches>,
     scroll: Res<'w, AccumulatedMouseScroll>,
     ctx: Res<'w, NUiContext>,
-    cursor: Single<'w, 's, lifetimeless::Write<CursorIcon>>,
     keys: MessageReader<'w, 's, KeyboardInput>,
     keyspressed: Res<'w, ButtonInput<KeyCode>>,
+    cmd: Commands<'w, 's>,
 }
 
-impl<'s, 'w, Marker: Component> UiBuilder<'w, 's, Marker> {
+impl<'s, 'w> UiBuilder<'w, 's> {
     pub fn build(
         &mut self,
+        label: impl AsRef<str>,
         f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>),
-    ) -> Result<(), QuerySingleError> {
-        let mut window = self.query.single_mut()?;
-        let mouse = Res::clone(&self.mouse);
-        let ctx = Res::clone(&self.ctx);
-        let touch = Res::clone(&self.touch);
-        let scroll = Res::clone(&self.scroll);
-        let shift = self.keyspressed.pressed(KeyCode::ShiftLeft)
-            || self.keyspressed.pressed(KeyCode::ShiftRight);
-        let strg = self.keyspressed.pressed(KeyCode::ControlLeft)
-            || self.keyspressed.pressed(KeyCode::ControlRight);
-
-        window.build(mouse, ctx, &self.window, touch, scroll, &mut self.cursor, &mut self.keys, shift, strg, f);
-        Ok(())
-    }
-
-    pub fn build_or(&mut self, mut init: impl FnMut(), f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>)) {
-        let Ok(mut window) = self.query.single_mut() else {
-            init();
+    ) {
+        let Some(window) = self.ctx.windows.get(label.as_ref()) else { 
+            let mut index = self.ctx.add_window_count.lock().unwrap();
+            let index = if *index < 8 {
+                let i = *index;
+                *index += 1;
+                i
+            }else {
+                return
+            };
+            (*unsafe { self.ctx.add_windows.0.get().as_mut().unwrap() })[index as usize] = Some(label.as_ref().into());
             return;
         };
         let mouse = Res::clone(&self.mouse);
         let ctx = Res::clone(&self.ctx);
         let touch = Res::clone(&self.touch);
         let scroll = Res::clone(&self.scroll);
-
         let shift = self.keyspressed.pressed(KeyCode::ShiftLeft)
             || self.keyspressed.pressed(KeyCode::ShiftRight);
         let strg = self.keyspressed.pressed(KeyCode::ControlLeft)
             || self.keyspressed.pressed(KeyCode::ControlRight);
 
-        window.build(mouse, ctx, &self.window, touch, scroll, &mut self.cursor, &mut self.keys, shift, strg, f);
+        window.get_mut().build(label.as_ref(), mouse, ctx, &self.window, touch, scroll, &mut self.keys, shift, strg, f);
     }
 }
 
@@ -383,25 +411,20 @@ pub enum TextDirection {
     Down,
 }
 
-impl UiWindow {
-    pub fn new(label: impl Into<String>) -> Self {
-        let str = label.into();
-        let mut hash = DefaultHasher::new();
-        str.hash(&mut hash);
-        let id = hash.finish();
-        let pos = Vec2::new(100.0, 100.0);
-        let size = Vec2::new(500.0, 500.0);
+fn from_pos_size(pos: Vec2, size: Vec2) -> Rect {
+    Rect::from_corners(pos, pos + size)
+}
 
+impl UiWindow {
+    pub fn new(size: Vec2, pos: Vec2, open: bool) -> Self {
         let size = Rect::from_corners(pos, pos + size);
         UiWindow {
             scrollbar_x: false,
             scrollbar_y: false,
             scrollables: HashMap::new(),
-            open: true,
+            open,
             open_headers: HashSet::new(),
-            id,
             focused: None,
-            label: str,
             layer: u32::MAX,
             size,
             verticies: Vec::new(),
@@ -413,26 +436,24 @@ impl UiWindow {
 
     pub fn draw_box(
         &mut self,
-        pos: Vec2,
-        size: Vec2,
+        rect: Rect,
         ds: DrawSettings,
         viewport_size: Vec2,
-        parent_size: Vec2,
-        parent_pos: Vec2,
+        clip_rect: Rect,
     ) -> (usize, usize) {
+        let size = rect.size();
+        let pos = rect.min;
         let b = ds.border.map(|b| b.size).unwrap_or(0) as f32;
         let r = ds.rounding as f32;
         let rmb = r.max(b) as f32;
 
         let start_idx = self.verticies.len();
         self.rect(
-            pos + Vec2::splat(rmb),
-            size - Vec2::splat(rmb * 2.0),
+            rect.inflate(-rmb),
             None,
             ds.color,
             viewport_size,
-            parent_size,
-            parent_pos,
+            clip_rect,
             ds.on_top
         );
         let border = ds.border;
@@ -446,50 +467,55 @@ impl UiWindow {
 
         if rmb != 0.0 {
             self.rect(
+                from_pos_size(
                 pos + Vec2::new(rmb * ds.round_topleft as u32 as f32, 0.0),
                 Vec2::new(
                     size.x - rmb * ((ds.round_topleft as u32 + ds.round_topright as u32) as f32),
                     rmb,
                 ),
+            ),
                 None,
                 ds.color,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
             self.rect(
+                from_pos_size(
+
                 pos + Vec2::new(rmb * ds.round_bottomleft as u32 as f32, size.y - rmb),
                 Vec2::new(
                     size.x
                         - rmb * ((ds.round_bottomleft as u32 + ds.round_bottomright as u32) as f32),
                     rmb,
                 ),
+            ),
                 None,
                 ds.color,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
             self.rect(
+                from_pos_size(
                 pos + Vec2::new(0.0, rmb),
                 Vec2::new(rmb, size.y - rmb * 2.0),
+                ),
                 None,
                 ds.color,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
             self.rect(
+                from_pos_size(
                 pos + Vec2::new(size.x - rmb, rmb),
                 Vec2::new(rmb, size.y - rmb * 2.0),
+                ),
                 None,
                 ds.color,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
         }
@@ -529,8 +555,7 @@ impl UiWindow {
                 start_angle,
                 outer_color,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
             if r > b {
@@ -540,8 +565,7 @@ impl UiWindow {
                     start_angle,
                     ds.color,
                     viewport_size,
-                    parent_size,
-                    parent_pos,
+                    clip_rect,
                     ds.on_top
                 );
             }
@@ -549,57 +573,61 @@ impl UiWindow {
 
         if let Some(border) = border {
             self.rect(
+                from_pos_size(
                 pos + Vec2::new(rmb * ds.round_topleft as u32 as f32, 0.0),
                 Vec2::new(
                     size.x - rmb * ((ds.round_topleft as u32 + ds.round_topright as u32) as f32),
                     b,
                 ),
+            ),
                 None,
                 border.color_top,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
             self.rect(
+                from_pos_size(
                 pos + Vec2::new(rmb * ds.round_bottomleft as u32 as f32, size.y - b),
                 Vec2::new(
                     size.x
                         - rmb * ((ds.round_bottomleft as u32 + ds.round_bottomright as u32) as f32),
                     b,
                 ),
+            ),
                 None,
                 border.color_bottom,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
             self.rect(
+                from_pos_size(
                 pos + Vec2::new(0.0, rmb * ds.round_topleft as u32 as f32),
                 Vec2::new(
                     b,
                     size.y - rmb * ((ds.round_topleft as u32 + ds.round_bottomleft as u32) as f32),
                 ),
+            ),
                 None,
                 border.color_left,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
             self.rect(
+                from_pos_size(
                 pos + Vec2::new(size.x - b, rmb * ds.round_topright as u32 as f32),
                 Vec2::new(
                     b,
                     size.y
                         - rmb * ((ds.round_topright as u32 + ds.round_bottomright as u32) as f32),
                 ),
+            ),
                 None,
                 border.color_right,
                 viewport_size,
-                parent_size,
-                parent_pos,
+                clip_rect,
                 ds.on_top
             );
         }
@@ -610,17 +638,21 @@ impl UiWindow {
 
     pub fn build<'w, 's, R>(
         &mut self,
+        label: &str,
         buttons: Res<'w, ButtonInput<MouseButton>>,
         ctx: Res<'w, NUiContext>,
         window: &Window,
         touch: Res<'w, Touches>,
         scroll: Res<'w, AccumulatedMouseScroll>,
-        cursor_icon: &mut Single<'w, 's, lifetimeless::Write<CursorIcon>>,
         keys: &mut MessageReader<'w, 's, KeyboardInput>,
         shift: bool,
         ctrl: bool,
         f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>) -> R,
     ) -> Option<R> {
+        let mut hash = DefaultHasher::new();
+        label.hash(&mut hash);
+        let id = hash.finish();
+
         let viewport_size = window.size();
 
         let size = self.size.max - self.size.min;
@@ -629,103 +661,9 @@ impl UiWindow {
         let rmb = r.max(b);
 
         let header_h = (ctx.acent - ctx.decent + NUiContext::WINDOW_PAD.y as f32 * 2.0).round();
-
         let focused = self.focused.is_some();
+        let input = MultiInput::new(&window, &buttons, &touch);
 
-        let mut left_mouse_pressed = buttons.just_pressed(MouseButton::Left);
-        let mut left_mouse_pressing = buttons.pressed(MouseButton::Left);
-        let mut left_mouse_released = buttons.just_released(MouseButton::Left);
-        let mut cursor_pos = window.cursor_position();
-
-        if let Some(touch) = touch.iter().next() {
-            cursor_pos = Some(touch.position());
-            left_mouse_pressing = true;
-        }
-        if let Some(touch) = touch.iter_just_pressed().next() {
-            cursor_pos = Some(touch.position());
-            left_mouse_pressed = true;
-        }
-        if let Some(touch) = touch.iter_just_released().next() {
-            cursor_pos = Some(touch.position());
-            left_mouse_released = true;
-        }
-        ***cursor_icon = CursorIcon::System(SystemCursorIcon::Default);
-        if let Some(focused) = &mut self.focused {
-            let header_h    = (ctx.acent - ctx.decent + NUiContext::CHILD_PAD.y as f32 * 2.0).round();
-            let header_rect = Rect::from_corners(
-                self.size.min,
-                self.size.min + Vec2::new(self.size.max.x - self.size.min.x, header_h),
-            );
-
-            if let Some(cursor_pos) = cursor_pos {
-                if header_rect.contains(cursor_pos) {
-                    if left_mouse_pressed {
-                        focused.darg_start      = self.size.min - cursor_pos;
-                        focused.is_being_draged = true;
-                    }
-                    ***cursor_icon = CursorIcon::System(SystemCursorIcon::Grab);
-                } else if !self.size.contains(cursor_pos) {
-                    let min = self.size.min;
-                    let max = self.size.max;
-                    let t   = NUiContext::DRAG_THRESHHOLD;
-
-                    let resize_top    = Rect::from_corners(Vec2::new(min.x - t, min.y - t), Vec2::new(max.x + t, min.y + t)).contains(cursor_pos);
-                    let resize_bottom = Rect::from_corners(Vec2::new(min.x - t, max.y - t), Vec2::new(max.x + t, max.y + t)).contains(cursor_pos);
-                    let resize_left   = Rect::from_corners(Vec2::new(min.x - t, min.y - t), Vec2::new(min.x + t, max.y + t)).contains(cursor_pos);
-                    let resize_right  = Rect::from_corners(Vec2::new(max.x - t, min.y - t), Vec2::new(max.x + t, max.y + t)).contains(cursor_pos);
-
-                    if left_mouse_pressed {
-                        focused.resize_bottom = resize_bottom;
-                        focused.resize_left   = resize_left;
-                        focused.resize_top    = resize_top;
-                        focused.resize_right  = resize_right;
-                    }
-
-                    ***cursor_icon = match (
-                        focused.resize_top    || resize_top,
-                        focused.resize_bottom || resize_bottom,
-                        focused.resize_left   || resize_left,
-                        focused.resize_right  || resize_right,
-                    ) {
-                        (true,  false, true,  false) => CursorIcon::System(SystemCursorIcon::NwseResize),
-                        (true,  false, false, true ) => CursorIcon::System(SystemCursorIcon::NeswResize),
-                        (false, true,  true,  false) => CursorIcon::System(SystemCursorIcon::NeswResize),
-                        (false, true,  false, true ) => CursorIcon::System(SystemCursorIcon::NwseResize),
-                        (true,  false, false, false) => CursorIcon::System(SystemCursorIcon::NsResize),
-                        (false, true,  false, false) => CursorIcon::System(SystemCursorIcon::NsResize),
-                        (false, false, true,  false) => CursorIcon::System(SystemCursorIcon::EwResize),
-                        (false, false, false, true ) => CursorIcon::System(SystemCursorIcon::EwResize),
-                        _ => CursorIcon::System(SystemCursorIcon::Default),
-                    };
-                }
-            }
-
-            if left_mouse_released {
-                focused.draging         = None;
-                focused.darg_start      = Vec2::ZERO;
-                focused.is_being_draged = false;
-                focused.resize_bottom   = false;
-                focused.resize_top      = false;
-                focused.resize_left     = false;
-                focused.resize_right    = false;
-            }
-
-            if left_mouse_pressing {
-                if let Some(cursor_pos) = cursor_pos {
-                    let size = self.size.max - self.size.min;
-                    if focused.is_being_draged {
-                        let drag_pos   = (cursor_pos + focused.darg_start).round();
-                        self.size.min = drag_pos;
-                        self.size.max = drag_pos + size;
-                        ***cursor_icon = CursorIcon::System(SystemCursorIcon::Grabbing);
-                    }
-                    if focused.resize_top    { self.size.min.y = cursor_pos.y.min(self.size.max.y - 1.0).round(); }
-                    if focused.resize_bottom { self.size.max.y = cursor_pos.y.max(self.size.min.y + 1.0).round(); }
-                    if focused.resize_left   { self.size.min.x = cursor_pos.x.min(self.size.max.x - 1.0).round(); }
-                    if focused.resize_right  { self.size.max.x = cursor_pos.x.max(self.size.min.x + 1.0).round(); }
-                }
-            }
-        }
 
         let (resize_top, resize_bottom, resize_left, resize_right) = self.focused.as_ref().map(|f| {
             (f.resize_top, f.resize_bottom, f.resize_left, f.resize_right)
@@ -751,16 +689,15 @@ impl UiWindow {
                 size: NUiContext::BORDER,
             }),
         };
-        let content_area_pos = self.size.min + Vec2::new(0.0, header_h);
-        let content_area_size = size - Vec2::new(0.0, header_h);
+        let full_screen = Rect::from_corners(Vec2::ZERO, viewport_size);
+        let content_area = Rect { min: self.size.min + Vec2::new(0.0, header_h), max: self.size.max };
+
         if self.open {
             self.draw_box(
-                content_area_pos,
-                content_area_size,
+                content_area,
                 window_ds,
                 viewport_size,
-                viewport_size,
-                Vec2::ZERO,
+                full_screen,
             );
         }
 
@@ -771,76 +708,83 @@ impl UiWindow {
         window_ds.color = if focused { NUiContext::BG } else { NUiContext::BG_DARK };
         window_ds.border.as_mut().unwrap().color_bottom = NUiContext::S1;
         self.draw_box(
+            from_pos_size(
             self.size.min,
             Vec2::new(size.x, header_h + NUiContext::BORDER as f32),
+            ),
             window_ds,
             viewport_size,
-            viewport_size,
-            Vec2::ZERO,
+            full_screen,
         );
 
-        let label = self.label.clone();
         let header_pos = self.size.min + NUiContext::WINDOW_PAD.as_vec2();
         let header_size = Vec2::new(size.x, header_h);
-        self.text(
+        let header_clip = from_pos_size(
+            header_pos,
+            header_size - Vec2::new(NUiContext::WINDOW_PAD.x as f32, 0.0),
+        );
+        self.text_direction(
             &ctx,
             header_pos + if !self.open { Vec2::new(0.0, ctx.acent + 2.0) } else { Vec2::ZERO },
             NUiContext::TEXT,
             "▼",
             viewport_size,
-            header_pos,
-            header_size - Vec2::new(NUiContext::WINDOW_PAD.x as f32, 0.0),
+            header_clip,
             false,
             if self.open { TextDirection::Right } else { TextDirection::Up },
         );
 
-        let arrow_size = Vec2::new(ctx.text_size("▼").x, ctx.new_line_size);
+        let arrow_size = Vec2::new(ctx.text_len("▼"), ctx.new_line_size);
 
         self.text(
             &ctx,
             header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
             NUiContext::TEXT,
-            &label,
+            label,
             viewport_size,
-            header_pos,
-            header_size - Vec2::new(NUiContext::WINDOW_PAD.x as f32, 0.0),
+            header_clip,
             false,
-            TextDirection::Right,
         );
 
-        if let Some(cursor_pos) = cursor_pos
+        if let Some(cursor_pos) = input.cursor_pos
             && Rect::from_center_half_size(header_pos, arrow_size).contains(cursor_pos)
-            && left_mouse_pressed
+            && input.left_mouse_pressed
+            && focused
+            && !(resize_top || resize_left)
         {
             self.open = !self.open;
         }
 
-        let (_, mut scrollable) = self.scrollables.remove_entry(&self.id).unwrap_or((self.id, Scrollable {
-            content_size: content_area_size,
+        let (_, mut scrollable) = self.scrollables.remove_entry(&id).unwrap_or((id, Scrollable {
+            content_size: content_area.size(),
             scroll: Vec2::ZERO
         }));
         let cursor =
-            (content_area_pos + rmb + NUiContext::WINDOW_PAD.as_vec2() - scrollable.scroll).round();
+            (content_area.min + rmb + NUiContext::WINDOW_PAD.as_vec2() - scrollable.scroll).round();
 
         if !self.open {
             return None;
         }
+        let bar_size = NUiContext::BAR_THICKNESS * Vec2::new((scrollable.content_size.y > content_area.size().y) as u32 as f32, (scrollable.content_size.x > content_area.size().x) as u32 as f32);
+        let clip_rect = from_pos_size(content_area.min + b, content_area.size() - b * 2.0 - bar_size);
+        let max_width = (content_area.size().max(scrollable.content_size)).x - NUiContext::WINDOW_PAD.x as f32 - rmb - bar_size.x;
 
         let mut builder = UiWindowBuilder {
+            max_width,
+            window_id: id,
             scroll_delta: scroll.delta,
-            content_max: Vec2::new(0.0, 0.0),
+            content_max: cursor,
             focuse_next: false,
             line_height: 0.0,
             ctx,
-            parent_content_size: content_area_size - b * 2.0 - NUiContext::BAR_THICKNESS * Vec2::new((scrollable.content_size.y > content_area_size.y) as u32 as f32, (scrollable.content_size.x > content_area_size.x) as u32 as f32),
-            parent_content_pos: content_area_pos + b,
+            clip_rect,
             window: self,
             viewport_size,
             cursor,
-            cursor_pos,
-            left_mouse_pressed,
-            left_mouse_pressing,
-            left_mouse_released,
+            cursor_origin: cursor,
+            prev_element_hoverd: true,
+            prev_element: content_area,
+            input,
             direction: false,
             scroll_consumed: false,
             prev_cursor: cursor,
@@ -854,20 +798,20 @@ impl UiWindow {
         let content_max = builder.content_max;
         let scroll_consumed = builder.scroll_consumed;
 
-        if !builder.hovered_smth && left_mouse_pressed {
+        if !builder.hovered_smth && input.left_mouse_pressed {
             if let Some(f) = &mut self.focused {
                 f.focused = None;
             }
         }
 
-        let content_size = content_max - cursor + Vec2::new(2.0, 10.0);
+        let content_size = content_max + NUiContext::WINDOW_PAD.as_vec2() + rmb - cursor;
         
         scrollable.content_size = content_size;
         if !scroll_consumed && focused && self.open {
-            scrollable.scroll(scroll.delta, content_area_size);
+            scrollable.scroll(scroll.delta, content_area.size());
         }
-        scrollable.draw(NonZeroU64::new(self.id).unwrap(), content_area_size, content_area_pos, self, viewport_size, cursor_pos, left_mouse_pressed, viewport_size, Vec2::ZERO);
-        self.scrollables.insert(self.id, scrollable);
+        scrollable.draw(NonZeroU64::new(id).unwrap(), content_area, self, viewport_size, input.cursor_pos, input.left_mouse_pressed, self.size);
+        self.scrollables.insert(id, scrollable);
         Some(r)
     }
 
@@ -878,13 +822,46 @@ impl UiWindow {
         color: Vec4,
         text: &str,
         viewport_size: Vec2,
-        parent_pos: Vec2,
-        parent_size: Vec2,
+        clip_rect: Rect,
+        on_top: bool,
+    ) -> Vec2 { 
+        let mut pen = pos + Vec2::new(0.0, ctx.acent);
+        for char in text.chars() {
+            if char == '\n' {
+                pen.x = pos.x;
+                pen.y += ctx.new_line_size;
+                continue;
+            }
+            let atlas_info = ctx
+                .get_char(char);
+            let tpos = Vec2::new(
+                pen.x + atlas_info.min.x,
+                pen.y - (atlas_info.height as f32 + atlas_info.min.y) 
+            );
+            let uv      = atlas_info.position.as_vec2() / ctx.atlas_size;
+            let uv_size = atlas_info.atlas_size.as_vec2() / ctx.atlas_size;
+            let size    = atlas_info.atlas_size.as_vec2();
+            let rect = Rect::from_corners(tpos, tpos+size);
+            self.rect(rect, Some((uv, uv_size)), color, viewport_size, clip_rect, on_top);
+            pen.x += atlas_info.advance_width;
+        }
+
+        pen
+    }
+
+    fn text_direction(
+        &mut self,
+        ctx: &NUiContext,
+        pos: Vec2,
+        color: Vec4,
+        text: &str,
+        viewport_size: Vec2,
+        clip_rect: Rect,
         on_top: bool,
         direction: TextDirection,
     ) -> Vec2 {
-        let clip_min = parent_pos;
-        let clip_max = parent_pos + parent_size;
+        let clip_min = clip_rect.min;
+        let clip_max =  clip_rect.max;
         let half_vp = viewport_size / 2.0;
 
         let verticies = if on_top { &mut self.top_verticies } else { &mut self.verticies };
@@ -912,18 +889,14 @@ impl UiWindow {
                 continue;
             }
 
-            let atlas_info = ctx
-                .atlas_lut
-                .get(&char)
-                .cloned()
-                .unwrap_or_else(|| ctx.atlas_lut.get(&'?').cloned().unwrap());
+            let atlas_info = ctx.get_char(char);
 
             let uv      = atlas_info.position.as_vec2() / ctx.atlas_size;
             let uv_size = atlas_info.atlas_size.as_vec2() / ctx.atlas_size;
             let size    = atlas_info.atlas_size.as_vec2();
 
             let local_x = atlas_info.min.x;
-            let local_y = -(atlas_info.bounds.y + atlas_info.min.y);
+            let local_y = -(atlas_info.height + atlas_info.min.y);
 
             let glyph_origin = pen
                 + advance_dir * local_x
@@ -1017,33 +990,22 @@ impl UiWindow {
     }
     fn rect(
         &mut self,
-        pos: Vec2,
-        size: Vec2,
+        rect: Rect,
         uv: Option<(Vec2, Vec2)>,
         color: Vec4,
         view_port_size: Vec2,
-        parent_size: Vec2,
-        parent_pos: Vec2,
+        clip_rect: Rect,
         on_top: bool,
     ) {
-        let clip_min1 = parent_pos;
-        let clip_max1 = parent_pos + parent_size;
-
-        let clip_min = clip_max1.min(clip_min1);
-        let clip_max = clip_max1.max(clip_min1);
-
-
-        let clipped_min = pos.max(clip_min);
-        let clipped_max = (pos + size).min(clip_max);
-
-        if clipped_min.x >= clipped_max.x || clipped_min.y >= clipped_max.y {
+        let clipped_rect = clip_rect.intersect(rect);
+        if clipped_rect.is_empty() {
             return;
         }
 
         let (clipped_uv_min, clipped_uv_max) = if let Some((uv, uv_size)) = uv {
-            let uv_scale = uv_size / size;
-            let clipped_uv_min = uv + (clipped_min - pos) * uv_scale;
-            let clipped_uv_max = uv + (clipped_max - pos) * uv_scale;
+            let uv_scale = uv_size / rect.size();
+            let clipped_uv_min = uv + (clipped_rect.min - rect.min) * uv_scale;
+            let clipped_uv_max = uv + (clipped_rect.max - rect.min) * uv_scale;
             (clipped_uv_min, clipped_uv_max)
         } else {
             (Vec2::splat(0.0), Vec2::splat(0.0))
@@ -1067,22 +1029,22 @@ impl UiWindow {
         verticies.extend_from_slice(&[
             UIVertex {
                 color,
-                pos: (clipped_min / half_vp) - Vec2::splat(1.0),
+                pos: (clipped_rect.min / half_vp) - Vec2::splat(1.0),
                 uv: clipped_uv_min,
             },
             UIVertex {
                 color,
-                pos: (clipped_min.with_x(clipped_max.x) / half_vp) - Vec2::splat(1.0),
+                pos: (clipped_rect.min.with_x(clipped_rect.max.x) / half_vp) - Vec2::splat(1.0),
                 uv: clipped_uv_min.with_x(clipped_uv_max.x),
             },
             UIVertex {
                 color,
-                pos: (clipped_max / half_vp) - Vec2::splat(1.0),
+                pos: (clipped_rect.max / half_vp) - Vec2::splat(1.0),
                 uv: clipped_uv_max,
             },
             UIVertex {
                 color,
-                pos: (clipped_min.with_y(clipped_max.y) / half_vp) - Vec2::splat(1.0),
+                pos: (clipped_rect.min.with_y(clipped_rect.max.y) / half_vp) - Vec2::splat(1.0),
                 uv: clipped_uv_min.with_y(clipped_uv_max.y),
             },
         ]);
@@ -1103,14 +1065,13 @@ impl UiWindow {
         start_angle: f32,
         color: Vec4,
         view_port_size: Vec2,
-        parent_size: Vec2,
-        parent_pos: Vec2,
+        clip_rect: Rect,
         on_top: bool
     ) {
         let segments = rounding.ceil() as u32;
         let half_vp = view_port_size / 2.0;
-        let clip_min = parent_pos;
-        let clip_max = parent_pos + parent_size;
+        let clip_min = clip_rect.min;
+        let clip_max = clip_rect.max;
 
         let clamp_to_clip = |p: Vec2| p.clamp(clip_min, clip_max);
         let to_ndc = |p: Vec2| (p / half_vp) - Vec2::splat(1.0);
@@ -1219,26 +1180,28 @@ impl TextCursor {
 }
 
 pub struct UiWindowBuilder<'a, 'w, 's> {
-    parent_content_pos: Vec2,
-    parent_content_size: Vec2,
+    clip_rect: Rect,
+    max_width: f32,
     window: &'a mut UiWindow,
+    window_id: u64,
     keys: &'a mut MessageReader<'w, 's, KeyboardInput>,
     ctx: Res<'w, NUiContext>,
 
     ctrl: bool,
     shift: bool,
     focuse_next: bool,
-    left_mouse_pressed: bool,
-    left_mouse_pressing: bool,
-    left_mouse_released: bool,
     scroll_delta: Vec2,
     viewport_size: Vec2,
-    cursor_pos: Option<Vec2>,
     
+    input: MultiInput,
+
     line_height: f32,
-    content_max: Vec2,
+    pub content_max: Vec2,
     prev_cursor: Vec2,
     cursor: Vec2,
+    cursor_origin: Vec2,
+    prev_element: Rect,
+    prev_element_hoverd: bool,
     direction: bool,
     hovered_smth: bool,
     scroll_consumed: bool,
@@ -1299,38 +1262,32 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     fn id(&self, h: &impl Hash) -> NonZeroU64 {
         let mut hash = DefaultHasher::new();
         h.hash(&mut hash);
-        self.window.id.hash(&mut hash);
+        self.window_id.hash(&mut hash);
         NonZeroU64::new(hash.finish()).unwrap()
     }
 
-    fn element_clicked(&self, pos: Vec2, size: Vec2) -> bool {
-        self.hoverd(pos, size) && self.left_mouse_pressed
+    fn element_clicked(&self, rect: Rect) -> bool {
+        self.hoverd(rect) && self.input.left_mouse_pressed
     }
 
-    fn hoverd(&self, pos: Vec2, size: Vec2) -> bool {
+    fn hoverd(&self, rect: Rect) -> bool {
         Self::hoverdp(
-            pos,
-            size,
-            self.parent_content_pos,
-            self.parent_content_size,
-            self.cursor_pos,
+            rect,
+            self.clip_rect,
+            self.input.cursor_pos,
             self.hovered_smth
         ) && self.window.focused.is_some()
     }
 
     fn hoverdp(
-        pos: Vec2,
-        size: Vec2,
-        parent_content_pos: Vec2,
-        parent_content_size: Vec2,
+        rect: Rect,
+        clip: Rect,
         cursor_pos: Option<Vec2>,
         hovered_smth: bool,
     ) -> bool {
-        let clip_pos = pos.max(parent_content_pos);
-        let clip_max = (size + pos).min(parent_content_pos + parent_content_size);
-
+        let clipped_rect = rect.intersect(clip);
         if let Some(mouse_pos) = cursor_pos
-            && Rect::from_corners(clip_max, clip_pos).contains(mouse_pos)
+            && clipped_rect.contains(mouse_pos)
             && !hovered_smth
         {
             true
@@ -1341,23 +1298,38 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
     pub fn rect(&mut self, size: Vec2, ds: DrawSettings) {
         self.window.draw_box(
+            from_pos_size(
             self.cursor,
             size,
+            ),
             ds,
             self.viewport_size,
-            self.parent_content_size,
-            self.parent_content_pos,
+            self.clip_rect,
         );
         self.finish_element(size, false);
     }
 
+    fn begin_element(&mut self, size: Vec2, consume_scroll: bool) -> bool{
+        if (self.cursor.cmpgt(self.clip_rect.max)).any() || ((self.cursor + size).cmplt(self.clip_rect.min)).any() {
+            self.finish_element(size, consume_scroll);
+            true
+        }else {
+            false
+        }
+    }
+
     fn finish_element(&mut self, size: Vec2, consume_scroll: bool) {
         let size = size.round();
+        let rect = from_pos_size(self.cursor, size);
+        self.prev_element = rect;
         self.line_height = self.line_height.max(size.y);
         self.content_max = self.content_max.max(self.cursor + size);
-        if self.hoverd(self.cursor, size) {
+        if self.hoverd(rect) {
+            self.prev_element_hoverd = true;
             self.hovered_smth = true;
             self.scroll_consumed |= consume_scroll;
+        } else {
+            self.prev_element_hoverd = false;
         }
         if self.direction {
             self.cursor.x += size.x + NUiContext::ELEMENT_GAP.x as f32;
@@ -1367,19 +1339,20 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     }
 
     pub fn text(&mut self, label: impl AsRef<str>) {
-        let npos = self.window.text(
+        let size = self.ctx.text_size(label.as_ref());
+        if self.begin_element(size, false) {
+            return;
+        }
+        self.window.text(
             &self.ctx,
             self.cursor,
             NUiContext::TEXT,
             label.as_ref(),
             self.viewport_size,
-            self.parent_content_pos,
-            self.parent_content_size,
+            self.clip_rect,
             false,
-            TextDirection::Right
         );
-        let size = npos - self.cursor;
-        self.finish_element(Vec2::new(size.x, self.ctx.new_line_size), false);
+        self.finish_element(size, false);
     }
 
     fn child_offset() -> Vec2 {
@@ -1395,12 +1368,15 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     }
 
     pub fn button(&mut self, label: impl AsRef<str>) -> bool {
-        let size = Self::contain_size(Vec2::new(self.ctx.text_size(label.as_ref()).x, self.ctx.acent - self.ctx.decent));
-        let hoverd = self.hoverd(self.cursor, size);
-        let clicked = self.left_mouse_pressed && hoverd;
+        let size = Self::contain_size(Vec2::new(self.ctx.text_len(label.as_ref()), self.ctx.acent - self.ctx.decent));
+        if self.begin_element(size, false) {
+            return false;
+        }
+        let hoverd = self.hoverd(Rect::from_corners(self.cursor,  self.cursor + size));
+        let clicked = self.input.left_mouse_pressed && hoverd;
 
-        self.window.draw_box(self.cursor, size, DrawSettings::new(hoverd, clicked), self.viewport_size, self.parent_content_size, self.parent_content_pos);
-        self.window.text(&self.ctx, self.child_cursor(), NUiContext::TEXT, label.as_ref(), self.viewport_size, self.parent_content_pos, self.parent_content_size, false, TextDirection::Right);
+        self.window.draw_box(from_pos_size(self.cursor, size), DrawSettings::new(hoverd, clicked), self.viewport_size, self.clip_rect);
+        self.window.text(&self.ctx, self.child_cursor(), NUiContext::TEXT, label.as_ref(), self.viewport_size, self.clip_rect, false);
         self.finish_element(size, false);
         clicked
     }
@@ -1414,13 +1390,23 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
         let size = Vec2::new(width, slider_height);
         let slide_size = Vec2::new(16.0, line_size);
-
+        
+        if self.begin_element(Vec2::new(width, slide_size.y), false) {
+            return value;
+        }
         let slider_pos = self.cursor + Vec2::new(0.0, (line_size - slider_height) / 2.0);
-        self.window.draw_box(slider_pos, size, ds, self.viewport_size, self.parent_content_size, self.parent_content_pos);
-        let slide_pos = self.cursor +
-            Vec2::new(f32::clamp((value - min) / (max - min) * width, 0.0, width) - slide_size.x * 0.5, 0.0).round();
+        self.window.draw_box(from_pos_size(slider_pos, size), ds, self.viewport_size, self.clip_rect);
+        
+        let slide_pos = if max != min {
+            self.cursor +
+                Vec2::new(f32::clamp((value - min) / (max - min) * width, 0.0, width) - slide_size.x * 0.5, 0.0).round()
+        }else {
+            (self.cursor + Vec2::new(width / 2.0, 0.0)).round()
+        };
 
-        if self.element_clicked(slide_pos, slide_size) {
+        let slide = from_pos_size(slide_pos, slide_size);
+
+        if self.element_clicked(slide) {
             if let Some(f) = &mut self.window.focused {
                 f.draging = Some(id);
                 f.darg_start = self.cursor;
@@ -1430,11 +1416,11 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         ds.color = NUiContext::BLUE;
         ds.rounding = 4;
 
-        self.window.draw_box(slide_pos, slide_size, ds, self.viewport_size, self.parent_content_size, self.parent_content_pos);
+        self.window.draw_box(slide, ds, self.viewport_size, self.clip_rect);
 
         let mut ret = value;
-        if let Some(f) = &self.window.focused {
-            if let Some(draging) = f.draging && draging == id.try_into().unwrap() && let Some(cursor) = self.cursor_pos {
+        if let Some(f) = &self.window.focused && min != max {
+            if let Some(draging) = f.draging && draging == id.try_into().unwrap() && let Some(cursor) = self.input.cursor_pos {
                 let val = (cursor - f.darg_start).project_onto(Vec2::new(1.0, 0.0)).x;
                 ret = f32::clamp(val / width * (max - min) + min, min, max);
             }    
@@ -1444,19 +1430,16 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         ret
     }
 
-    pub fn parent_bounds(&self, pos: Vec2, size: Vec2) -> (Vec2, Vec2){
-        let parent_content_min = (pos).max(self.parent_content_pos);
-        let parent_content_max = (pos + size).min(self.parent_content_pos + self.parent_content_size);
-        (parent_content_min, parent_content_max - parent_content_min)
-    }
-
     const WORD_DELIMITER: [char; 6] = [' ', '.', ',', ':', '(', ')'];
 
     fn text_input_private(&mut self, id: impl Hash, width: f32, input_mode: InputMode) -> InputModeOutput {
         let id = self.id(&id);
         let inner_size = Vec2::new(width, self.ctx.acent - self.ctx.decent);
         let size = Self::contain_size(inner_size);
-        let clicked = self.element_clicked(self.cursor, size);
+        if self.begin_element(size, false) {
+            return InputModeOutput::None;
+        }
+        let clicked = self.element_clicked(from_pos_size(self.cursor, size));
         let text_cursor = self.child_cursor();
         
         enum InputType {
@@ -1473,7 +1456,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 (&mut format!("{}", i), true, InputType::Int(i))
             },
         };
-        let (parent_content_pos, parent_content_size) = self.parent_bounds(text_cursor, inner_size);
+        let text_clip = from_pos_size(text_cursor, inner_size).intersect(self.clip_rect);
 
         let mut just_focused = false;
         let mut focused = if let Some(focused) = self.window.focused.as_mut() {
@@ -1611,10 +1594,12 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                     self.focuse_next = true;
                     break;
                 } else if let Some(str) = &key.text {
-                    if str.chars().all(|c| self.ctx.atlas_lut.contains_key(&c)) {
+                    if str.chars().all(|c| self.ctx.has_char(c)) {
                         if has_selection {
                             value.drain(sel_min..sel_max);
                             cursor.byte_pos = sel_min;
+                            selected.start = cursor.byte_pos;
+                            selected.end = cursor.byte_pos;
                         }
                         cursor.insert(value, str);
                     }
@@ -1630,20 +1615,16 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             let mut pos = -**view;
             let mut any_clicked = false;
             for (i, c) in value.char_indices() {
-                let ae = self
-                    .ctx
-                    .atlas_lut
-                    .get(&c)
-                    .cloned()
-                    .unwrap_or_else(|| self.ctx.atlas_lut[&'?']);
-                if self.left_mouse_pressing
+                let mut ae = self.ctx.get_char(c);
+                if self.input.left_mouse_pressing
                     && Self::hoverdp(
+                        from_pos_size(
                         text_cursor
                             + Vec2::new(pos, 0.0),
                         Vec2::new(ae.advance_width, self.ctx.acent - self.ctx.decent),
-                        parent_content_pos,
-                        parent_content_size,
-                        self.cursor_pos,
+                        ),
+                        self.clip_rect,
+                        self.input.cursor_pos,
                         self.hovered_smth
                     ) && !just_focused
                 {   
@@ -1669,7 +1650,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 }
             }
 
-            let offset = self.ctx.text_size(&value[..cursor.byte_pos]).x.round();
+            let offset = self.ctx.text_len(&value[..cursor.byte_pos]).round();
             let left = (offset - 5.0).max(0.0);
             if left < **view {
                 **view = left;
@@ -1682,13 +1663,13 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let focused = focused.map(|(e1, e2, e3, _)| (*e1, *e2, e3.clone()));
         let value = value.clone();
         
-        self.window.draw_box(self.cursor, size, ds, self.viewport_size, self.parent_content_size, self.parent_content_pos);
+        self.window.draw_box(from_pos_size(self.cursor, size), ds, self.viewport_size, self.clip_rect);
        
         let p = text_cursor - Vec2::new(focused.as_ref().map(|e| e.1).unwrap_or(0.0), 0.0);
-        self.window.text(&self.ctx, p, NUiContext::TEXT, &value, self.viewport_size, parent_content_pos, parent_content_size, false, TextDirection::Right);
+        self.window.text(&self.ctx, p, NUiContext::TEXT, &value, self.viewport_size, text_clip, false);
 
         if let Some((cursor, offset, selected)) = &focused {
-            let x = self.ctx.text_size(&value[..cursor.byte_pos]).x;
+            let x = self.ctx.text_len(&value[..cursor.byte_pos]);
             let mut ds = DrawSettings {
                 color: Vec4::ONE,
                 round_bottomleft: false,
@@ -1699,16 +1680,16 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 border: None,
                 on_top: false,
             };
-            self.window.draw_box(text_cursor + Vec2::new(x - *offset, 0.0), Vec2::new(1.0, self.ctx.acent - self.ctx.decent), ds, self.viewport_size, parent_content_size, parent_content_pos);
+            self.window.draw_box(from_pos_size(text_cursor + Vec2::new(x - *offset, 0.0), Vec2::new(1.0, self.ctx.acent - self.ctx.decent)), ds, self.viewport_size, text_clip);
 
             ds.color = NUiContext::BLUE_DIM;
             let start = selected.start.min(selected.end);
             let end = selected.start.max(selected.end);
 
-            let start = self.ctx.text_size(&value[..start]).x;
-            let end = self.ctx.text_size(&value[..end]).x;
+            let start = self.ctx.text_len(&value[..start]);
+            let end = self.ctx.text_len(&value[..end]);
 
-            self.window.draw_box(text_cursor + Vec2::new(start - offset, 0.0), Vec2::new(end - start, self.ctx.acent - self.ctx.decent), ds, self.viewport_size, parent_content_size, parent_content_pos);
+            self.window.draw_box(from_pos_size(text_cursor + Vec2::new(start - offset, 0.0), Vec2::new(end - start, self.ctx.acent - self.ctx.decent)), ds, self.viewport_size, text_clip);
         }
 
         self.finish_element(size, false);
@@ -1727,20 +1708,24 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         if let InputModeOutput::Float(v) = self.text_input_private(id, width, InputMode::Float(value)) {
             v
         }else {
-            0.0
+            value
         }
     }
 
     pub fn check_box(&mut self, mut value: bool) -> bool {
-        let size = Self::contain_size(Vec2::new(self.ctx.text_size("✓").x, self.ctx.acent - self.ctx.decent));
-        let hoverd = self.hoverd(self.cursor, size);
-        if self.left_mouse_pressed && hoverd {
+        let size = Self::contain_size(Vec2::new(self.ctx.text_len("✓"), self.ctx.acent - self.ctx.decent));
+        if self.begin_element(size, false) {
+            return value;
+        }
+        let rect = from_pos_size(self.cursor, size);
+        let hoverd = self.hoverd(rect);
+        if self.input.left_mouse_pressed && hoverd {
             value = !value; 
         }
         let ds = DrawSettings::new(hoverd, false);
-        self.window.draw_box(self.cursor, size, ds, self.viewport_size, self.parent_content_size, self.parent_content_pos);
+        self.window.draw_box(rect, ds, self.viewport_size, self.clip_rect);
         if value {
-            self.window.text(&self.ctx, self.child_cursor(), NUiContext::BLUE, "✓", self.viewport_size, self.parent_content_pos, self.parent_content_size, false, TextDirection::Right);
+            self.window.text(&self.ctx, self.child_cursor(), NUiContext::BLUE, "✓", self.viewport_size, self.clip_rect, false);
         }
         self.finish_element(size, false);
         value
@@ -1749,10 +1734,15 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     pub fn dropdown(&mut self, id: impl Hash, mut selected: usize, options: &[&str]) -> usize {
         let id = self.id(&id);
 
-        let sizex = options.iter().map(|o| self.ctx.text_size(*o).x).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less)).unwrap_or(0.0);
-        let arrow_size = self.ctx.text_size("▼").x + NUiContext::ELEMENT_GAP.x as f32;
+        let sizex = options.iter().map(|o| self.ctx.text_len(*o)).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less)).unwrap_or(0.0);
+        let arrow_size = self.ctx.text_len("▼") + NUiContext::ELEMENT_GAP.x as f32;
         let button_size = Self::contain_size(Vec2::new(sizex + arrow_size, self.ctx.acent - self.ctx.decent));
-        let hoverd = self.hoverd(self.cursor, button_size);
+        if self.begin_element(button_size, false) {
+            return selected;
+        }
+        
+        let rect = from_pos_size(self.cursor, button_size);
+        let hoverd = self.hoverd(rect);
         let open = self.window.focused.as_ref().map(|e| e.focused == Some(id)).unwrap_or(false);
 
         let ds = DrawSettings{
@@ -1762,10 +1752,10 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             ..Default::default()
         };
 
-        self.window.draw_box(self.cursor, button_size, ds, self.viewport_size, self.parent_content_size, self.parent_content_pos);
-        self.window.text(&self.ctx, self.child_cursor(), NUiContext::TEXT, options[selected], self.viewport_size, self.parent_content_pos, self.parent_content_size, false, TextDirection::Right);
-        self.window.text(&self.ctx, self.child_cursor() + Vec2::new(sizex + NUiContext::ELEMENT_GAP.x as f32, if open {self.ctx.acent + 1.0}else{0.0}), NUiContext::TEXT, "▼", self.viewport_size, self.parent_content_pos, self.parent_content_size, false, if !open {TextDirection::Right} else {TextDirection::Up});
-        if hoverd && self.left_mouse_pressed{
+        self.window.draw_box(rect, ds, self.viewport_size, self.clip_rect);
+        self.window.text(&self.ctx, self.child_cursor(), NUiContext::TEXT, options[selected], self.viewport_size, self.clip_rect, false);
+        self.window.text_direction(&self.ctx, self.child_cursor() + Vec2::new(sizex + NUiContext::ELEMENT_GAP.x as f32, if open {self.ctx.acent + 1.0}else{0.0}), NUiContext::TEXT, "▼", self.viewport_size, self.clip_rect, false, if !open {TextDirection::Right} else {TextDirection::Up});
+        if hoverd && self.input.left_mouse_pressed{
             if let Some(f) = &mut self.window.focused {
                 if f.focused != Some(id) {
                     f.focused = Some(id);
@@ -1777,6 +1767,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         if let Some(f) = &mut self.window.focused && f.focused == Some(id) {
             let mut cursor = self.cursor + Vec2::new(0.0, button_size.y);
             for (i, o) in options.iter().enumerate() {
+                let rect = from_pos_size(cursor, button_size);
                 let last = i + 1 == options.len();
                 let mut ds = DrawSettings {
                     color: NUiContext::S0,
@@ -1794,22 +1785,22 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                     rounding: 0,
                     on_top: true,
                 };
-                if self.hoverd(cursor, button_size) {
+                if self.hoverd(rect) {
                     self.hovered_smth = true;
                     ds.color = NUiContext::S1;
                     ds.border.as_mut().unwrap().color_top = NUiContext::S1;
                     if !last {
                         ds.border.as_mut().unwrap().color_bottom = NUiContext::S1;
                     }
-                    if self.left_mouse_pressed {
+                    if self.input.left_mouse_pressed {
                         selected = i;
                         if let Some(f) = &mut self.window.focused {
                             f.focused = None;
                         }
                     }
                 }
-                self.window.draw_box(cursor, button_size, ds, self.viewport_size, self.parent_content_size, self.parent_content_pos);
-                self.window.text(&self.ctx, (cursor + Self::child_offset()).round(), NUiContext::TEXT, o, self.viewport_size, self.parent_content_pos, self.parent_content_size, true, TextDirection::Right);
+                self.window.draw_box(rect, ds, self.viewport_size, self.clip_rect);
+                self.window.text(&self.ctx, (cursor + Self::child_offset()).round(), NUiContext::TEXT, o, self.viewport_size, self.clip_rect, true);
                 cursor.y += button_size.y;
             }
         }
@@ -1822,13 +1813,13 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let id = self.id(&label);
 
         let rmb = NUiContext::ROUNDING.max(NUiContext::BORDER) as f32;
-        let size = Vec2::new(self.remaining_width() - (NUiContext::CHILD_PAD.x as f32 + rmb), self.ctx.acent - self.ctx.decent + (NUiContext::CHILD_PAD.y as f32 + rmb) * 2.0);
-        let hoverd = self.hoverd(self.cursor, size);
-    
-        self.window.draw_box(self.cursor, size, DrawSettings::new(hoverd, false), self.viewport_size, self.parent_content_size, self.parent_content_pos);
+        let size = Vec2::new(self.remaining_width() - (NUiContext::CHILD_PAD.x as f32 + rmb), self.ctx.acent - self.ctx.decent + (NUiContext::CHILD_PAD.y as f32 + rmb) * 2.0).floor();
+        let rect = from_pos_size(self.cursor, size);
+
+        let hoverd = self.hoverd(rect);
         
-        let text_cursor = self.cursor + NUiContext::CHILD_PAD.as_vec2() + rmb;
-        if hoverd && self.left_mouse_pressed {
+        let text_cursor = self.child_cursor();
+        if hoverd && self.input.left_mouse_pressed {
             if self.window.open_headers.contains(&id.into()) {
                 self.window.open_headers.remove(&id.into());
             }else {
@@ -1838,18 +1829,23 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
         let open = self.window.open_headers.contains(&id.into());
 
-        self.window.text(&self.ctx, text_cursor + if !open {Vec2::new(0.0, self.ctx.acent + 1.0)} else {Vec2::ZERO}, NUiContext::TEXT, "▼", self.viewport_size, self.parent_content_pos, self.parent_content_size, false, if open {TextDirection::Right} else {TextDirection::Up});
-        let end = self.ctx.text_size("▼").x;
-        self.window.text(&self.ctx, Vec2::new(text_cursor.x + end + NUiContext::ELEMENT_GAP.x as f32 * 2.0, text_cursor.y), NUiContext::TEXT, label.as_ref(), self.viewport_size, self.parent_content_pos, self.parent_content_size, false, TextDirection::Right);
+        if !open {
+            if self.begin_element(size, false) {
+                return None;
+            }
+        }
+
+        self.window.draw_box(rect, DrawSettings::new(hoverd, false), self.viewport_size, self.clip_rect);
+
+        self.window.text_direction(&self.ctx, text_cursor + if !open {Vec2::new(0.0, self.ctx.acent + 1.0)} else {Vec2::ZERO}, NUiContext::TEXT, "▼", self.viewport_size, self.clip_rect.intersect(rect), false, if open {TextDirection::Right} else {TextDirection::Up});
+        
+        let end = self.ctx.get_width('▼');
+        self.window.text(&self.ctx, Vec2::new(text_cursor.x + end + NUiContext::ELEMENT_GAP.x as f32 * 2.0, text_cursor.y), NUiContext::TEXT, label.as_ref(), self.viewport_size, self.clip_rect.intersect(rect), false);
 
         self.finish_element(size, false);
 
         let prev = self.cursor;
-        let pp = self.parent_content_pos;
-        let ps = self.parent_content_size;
         self.cursor += NUiContext::INDENT.as_vec2();
-        self.parent_content_size.x -= (self.cursor.x - self.parent_content_pos.x).max(0.0);
-        self.parent_content_pos.x = self.parent_content_pos.x.max(self.cursor.x);
         let res = if open {
             Some(children(self))
         }else {
@@ -1857,8 +1853,6 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         };
         let cursor = self.cursor;
         self.cursor = prev;
-        self.parent_content_pos = pp;
-        self.parent_content_size = ps;
         if open {
             self.finish_element(Vec2::new(0.0, cursor.y - prev.y), false);
         }
@@ -1866,12 +1860,11 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     }
 
     pub fn remaining_width(&self) -> f32 {
-        self.parent_content_pos.x + self.parent_content_size.x - self.cursor.x
+        (self.cursor_origin.x + self.max_width - self.cursor.x).max(0.0)
     }
 
     pub fn color_picker(&mut self, id: impl Hash, color: Vec4) -> Vec4 {
-        let id = self.id(&id);
-
+        let color = color.clamp(Vec4::ZERO, Vec4::ONE);
         let picker_size = 150.0f32;
         let bar_width   = 14.0f32;
         let gap         = NUiContext::ELEMENT_GAP.x as f32;
@@ -1886,6 +1879,12 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             picker_size + gap + bar_width + gap + input_h,
         );
 
+        if self.begin_element(total_size, false) {
+            return color;
+        }
+
+        let id = self.id(&id);
+
         let sv_pos      = self.cursor;
         let hue_pos     = self.cursor + Vec2::new(picker_size + gap, 0.0);
         let alpha_pos   = self.cursor + Vec2::new(picker_size + gap + bar_width + gap, 0.0);
@@ -1899,10 +1898,10 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let id_hue   = NonZeroU64::new(id.get() + 1).unwrap();
         let id_alpha = NonZeroU64::new(id.get() + 2).unwrap();
 
-        if let Some(cursor_pos) = self.cursor_pos {
-            if self.left_mouse_pressing {
+        if let Some(cursor_pos) = self.input.cursor_pos {
+            if self.input.left_mouse_pressing {
                 if let Some(f) = &mut self.window.focused {
-                    if self.left_mouse_pressed {
+                    if self.input.left_mouse_pressed {
                         let sv_rect    = Rect::from_corners(sv_pos,    sv_pos    + Vec2::splat(picker_size));
                         let hue_rect   = Rect::from_corners(hue_pos,   hue_pos   + Vec2::new(bar_width, picker_size));
                         let alpha_rect = Rect::from_corners(alpha_pos, alpha_pos + Vec2::new(bar_width, picker_size));
@@ -1929,8 +1928,8 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let new_color = hsv_to_rgb(h, s, v, a);
         let pure_hue  = hsv_to_rgb(h, 1.0, 1.0, 1.0);
         let half_vp   = self.viewport_size / 2.0;
-        let clip_min  = self.parent_content_pos;
-        let clip_max  = self.parent_content_pos + self.parent_content_size;
+        let clip_min  = self.clip_rect.min;
+        let clip_max  = self.clip_rect.max;
         let solid     = Vec2::splat(20.0);
 
         let to_ndc = |p: Vec2| (p / half_vp) - Vec2::splat(1.0);
@@ -1987,7 +1986,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                         check.min(size.x - col as f32 * check),
                         check.min(size.y - row as f32 * check),
                     );
-                    win.rect(p, s, None, c, self.viewport_size, self.parent_content_size, self.parent_content_pos, false);
+                    win.rect(from_pos_size(p, s), None, c, self.viewport_size, self.clip_rect, false);
                 }
             }
         };
@@ -2013,8 +2012,8 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
             let cx = sv_pos + Vec2::new(s * picker_size, (1.0 - v) * picker_size);
             let cross = 4.0f32;
-            self.window.rect(cx - Vec2::new(cross, 1.0), Vec2::new(cross * 2.0, 2.0), None, Vec4::ONE, self.viewport_size, self.parent_content_size, self.parent_content_pos, false);
-            self.window.rect(cx - Vec2::new(1.0, cross), Vec2::new(2.0, cross * 2.0), None, Vec4::ONE, self.viewport_size, self.parent_content_size, self.parent_content_pos, false);
+            self.window.rect(from_pos_size(cx - Vec2::new(cross, 1.0), Vec2::new(cross * 2.0, 2.0)), None, Vec4::ONE, self.viewport_size, self.clip_rect, false);
+            self.window.rect(from_pos_size(cx - Vec2::new(1.0, cross), Vec2::new(2.0, cross * 2.0)), None, Vec4::ONE, self.viewport_size, self.clip_rect, false);
         }
 
         {
@@ -2035,7 +2034,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 ]);
             }
             let cy = hue_pos.y + h * picker_size;
-            self.window.rect(Vec2::new(hue_pos.x, cy - 1.0), Vec2::new(bar_width, 2.0), None, Vec4::ONE, self.viewport_size, self.parent_content_size, self.parent_content_pos, false);
+            self.window.rect(from_pos_size(Vec2::new(hue_pos.x, cy - 1.0), Vec2::new(bar_width, 2.0)), None, Vec4::ONE, self.viewport_size, self.clip_rect, false);
         }
 
         {
@@ -2049,12 +2048,12 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 (alpha_pos + Vec2::new(0.0,       picker_size), c_bot),
             ]);
             let cy = alpha_pos.y + (1.0 - a) * picker_size;
-            self.window.rect(Vec2::new(alpha_pos.x, cy - 1.0), Vec2::new(bar_width, 2.0), None, Vec4::ONE, self.viewport_size, self.parent_content_size, self.parent_content_pos, false);
+            self.window.rect(from_pos_size(Vec2::new(alpha_pos.x, cy - 1.0), Vec2::new(bar_width, 2.0)), None, Vec4::ONE, self.viewport_size, self.clip_rect, false);
         }
 
         {
             checker(&mut self.window, preview_pos, preview_size);
-            self.window.rect(preview_pos, preview_size, None, new_color, self.viewport_size, self.parent_content_size, self.parent_content_pos, false);
+            self.window.rect(from_pos_size(preview_pos, preview_size), None, new_color, self.viewport_size, self.clip_rect, false);
         }
 
         {
@@ -2080,19 +2079,17 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
     pub fn container<R>(&mut self, id: impl Hash, size: Vec2, f: impl FnOnce(&mut Self) -> R) -> R{
         let id = self.id(&id);
-        let scroll = self.window.scrollables.entry(id.into()).or_insert(Scrollable { content_size: Vec2::ZERO, scroll: Vec2::ZERO }).scroll;
+        let scroll = self.window.scrollables.entry(id.into()).or_insert(Scrollable { content_size: size, scroll: Vec2::ZERO }).scroll;
         
-        self.window.draw_box(self.cursor, size, DrawSettings::default(), self.viewport_size, self.parent_content_size, self.parent_content_pos);
+        let rect = from_pos_size(self.cursor, size);
+        self.window.draw_box(rect, DrawSettings::default(), self.viewport_size, self.clip_rect);
 
         let prev_cursor = self.cursor;
-        let pp = self.parent_content_pos;
-        let ps = self.parent_content_size;
-
-        let (new_pp, new_ps) = self.parent_bounds(self.cursor, size);
+        let cr = self.clip_rect;
 
         let content_max = self.content_max;
-        self.parent_content_pos = new_pp;
-        self.parent_content_size = new_ps;
+
+        self.clip_rect = self.clip_rect.intersect(rect);
         self.cursor = (self.cursor + NUiContext::WINDOW_PAD.as_vec2() - scroll).round();
         let org = self.cursor;
         self.content_max = Vec2::ZERO;
@@ -2101,9 +2098,9 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
         let (_, mut scrollable) = self.window.scrollables.remove_entry(&id.into()).unwrap();
         scrollable.content_size = self.content_max - org;
-        scrollable.draw(id, size, prev_cursor, self.window, self.viewport_size, self.cursor_pos, self.left_mouse_pressed, self.parent_content_size, self.parent_content_pos);
+        scrollable.draw(id, rect, self.window, self.viewport_size, self.input.cursor_pos, self.input.left_mouse_pressed, self.clip_rect);
         
-        if self.hoverd(prev_cursor, size) && !self.scroll_consumed {
+        if self.hoverd(rect) && !self.scroll_consumed {
             scrollable.scroll(self.scroll_delta, size);
         }
 
@@ -2111,9 +2108,67 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         self.cursor = prev_cursor;
         self.content_max = content_max;
         self.finish_element(size, true);
-        self.parent_content_pos = pp;
-        self.parent_content_size = ps;
+        self.clip_rect = cr;
         r
+    }
+
+    pub fn histogram<'b>(&mut self, width: f32, height: f32, max: f32, min: f32, values: impl ExactSizeIterator<Item = &'b f32>) {
+        let size = Self::contain_size(Vec2::new(width, height));
+        if self.begin_element(size, false) {
+            return;
+        }
+
+        let rect = from_pos_size(self.cursor, size);
+        self.window.draw_box(rect, DrawSettings {
+            rounding: 0,
+            round_bottomleft: false,
+            round_bottomright: false,
+            round_topleft: false,
+            round_topright: false,
+            ..Default::default()
+        }, self.viewport_size, self.clip_rect);
+
+        let mut child_cursor = self.child_cursor() + Vec2::new(0.0, height);
+        let value_width = width / values.len() as f32;
+        let values_per_pixel = (value_width.recip()).ceil() as usize;
+        for values in &values.chunks(values_per_pixel) {
+            let value: f32 = values.cloned().sum::<f32>() / values_per_pixel as f32;
+            let t = (value + min) / (max - min);
+            let value_height = 0.0.lerp(height, t.clamp(0.0, 1.0));
+            let color = if t > 1.0 || t < 0.0 {
+                NUiContext::ERROR
+            }else {
+                NUiContext::BLUE
+            };
+            let value_rect = Rect::from_corners(child_cursor, child_cursor - Vec2::new(-value_width, value_height));
+            self.window.rect(value_rect, None, color, self.viewport_size, self.clip_rect, false);
+            if self.hoverd(value_rect) {
+                self.tooltip_label(format!("{:.5}", value));
+            }
+            child_cursor.x += value_width;
+        }
+
+        self.finish_element(size, false);
+    }
+
+    fn tooltip_label(&mut self, label: impl AsRef<str>) {
+        if let Some(cursor_pos) = self.input.cursor_pos {
+            let cursor_pos = cursor_pos.round();
+            let info_size = Self::contain_size(self.ctx.text_size(label.as_ref()).round());
+            let fullscreen_rect = Rect { min: Vec2::ZERO, max: self.viewport_size };
+            let info_rect = Rect { min: cursor_pos - info_size, max: cursor_pos };
+            self.window.draw_box(info_rect, DrawSettings {
+                on_top: true,
+                ..Default::default()
+            }, self.viewport_size, fullscreen_rect);
+            self.window.text(&self.ctx, info_rect.min + Self::child_offset(), NUiContext::TEXT, label.as_ref(), self.viewport_size, fullscreen_rect, true);
+        }
+    }
+
+    pub fn tooltip(&mut self, label: impl AsRef<str>) {
+        if self.prev_element_hoverd {
+            self.tooltip_label(label);
+        }
     }
 
     pub fn horizontal(&mut self) {
@@ -2134,24 +2189,57 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     }
 }
 
+struct UnsafeUiWindowCell(UnsafeCell<UiWindow>);
+
+impl UnsafeUiWindowCell {
+    fn get(&self) -> &UiWindow {
+        unsafe { self.0.get().as_ref().unwrap() }
+    }
+    fn get_mut(&self) -> &mut UiWindow {
+        unsafe { self.0.get().as_mut().unwrap() }
+    }
+}
+
+unsafe impl Send for UnsafeUiWindowCell {}
+unsafe impl Sync for UnsafeUiWindowCell {}
+
+
+struct AddWindowCell(UnsafeCell<[Option<String>; 8]>);
+
+unsafe impl Send for AddWindowCell {}
+unsafe impl Sync for AddWindowCell {}
+
+
 #[derive(Resource)]
 pub struct NUiContext {
-    pub font: PathBuf,
-    pub font_settings: FontSettings,
-    pub atlas_lut: HashMap<char, AtlasEntry>,
+    pub add_windows: AddWindowCell,
+    pub add_window_count: Mutex<u32>,
+    pub windows: HashMap<String, UnsafeUiWindowCell>,
+    pub windows_ini: ini::Ini,
+    pub font: Option<fontdue::Font>,
+    pub atlas_lut: Box<[AtlasEntry]>,
+    pub atlas_widths: Box<[f32]>,
     pub atlas_size: Vec2,
     pub new_line_size: f32,
     pub acent: f32,
     pub decent: f32,
+    pub min_character_width: f32,
+    pub max_character_width: f32
 }
 
 #[derive(Default, Copy, Clone)]
 pub struct AtlasEntry {
-    position: U16Vec2,
-    atlas_size: U16Vec2,
-    bounds: Vec2,
-    min: Vec2,
-    advance_width: f32,
+    pub position: U16Vec2,
+    pub atlas_size: U16Vec2,
+    pub min: Vec2,
+    pub height: f32,
+    pub advance_width: f32,
+}
+
+impl AtlasEntry {
+    fn is_empty(&self) -> bool {
+        self.position.x == u16::MAX && self.position.y == u16::MAX
+    }
 }
 
 #[derive(Resource)]
@@ -2202,12 +2290,85 @@ impl NUiContext {
     pub const BAR_THICKNESS: f32 = 6.0f32;
     pub const MIN_THUMB: f32     = 20.0f32;
 
-    pub(crate) fn build_ui_resources(&mut self) -> Result<NUiResources> {
-        let bytes = fs::read(&self.font)?;
-        let font = Font::from_bytes(bytes, self.font_settings).unwrap();
+    pub const SAVE_TIME: Duration = Duration::from_mins(5);
 
+    pub(crate) fn new() -> Result<Self> {
+        let bytes = fs::read("/home/karsten/code/GameEngine/editor_font.ttf")?;
+        let font = Font::from_bytes(bytes, FontSettings::default()).unwrap();
+        let font_metrics = font.horizontal_line_metrics(Self::FONTSCALE).unwrap();
+        let windows_ini = ini::Ini::load_from_file("/home/karsten/code/GameEngine/windows.ini").unwrap_or(ini::Ini::new());
+
+        let windows = windows_ini.sections().filter_map(|s| {
+            let label = s?;
+            let section = windows_ini.section(Some(label)).unwrap();
+            let x = section.get("position-x").map(|x| x.parse().unwrap())?;
+            let y = section.get("position-y").map(|x| x.parse().unwrap())?;
+            let width = section.get("width").map(|x| x.parse().unwrap())?;
+            let heigh = section.get("height").map(|x| x.parse().unwrap())?;
+            let open = section.get("open").map(|x| x.parse().unwrap())?;
+            Some((label.to_owned(), UnsafeUiWindowCell(UnsafeCell::new(UiWindow::new(Vec2::new(width, heigh), Vec2::new(x, y), open)))))
+        }).collect::<HashMap<String, UnsafeUiWindowCell>>();
+
+        let mut max_character_width = 0.0f32;
+        let mut min_character_width = 0.0f32;
+        let mut atlas_lut = vec![AtlasEntry {
+                position: U16Vec2::MAX,
+                ..Default::default()
+            }; u16::MAX as usize].into_boxed_slice();
+
+        let mut atlas_widths = vec![-1.0; u16::MAX as usize].into_boxed_slice();
+
+        for (c, _) in font.chars().iter() {
+            let idx = *c as usize;
+            if idx >= u16::MAX as usize{
+                continue;
+            }
+            let metrics = font.metrics(*c, Self::FONTSCALE);
+            if metrics.advance_width != 0.0 {
+                max_character_width = max_character_width.max(metrics.advance_width);
+                min_character_width = min_character_width.min(metrics.advance_width);
+            }
+            atlas_lut[idx] = AtlasEntry {
+                position: U16Vec2::new(0, 0),
+                atlas_size: U16Vec2::new(metrics.width as u16, metrics.height as u16),
+                min: Vec2::new(metrics.xmin as f32, metrics.bounds.ymin as f32),
+                height: metrics.bounds.height,
+                advance_width: metrics.advance_width,
+            };
+            atlas_widths[idx] = metrics.advance_width;
+        }
+
+        atlas_lut['\t' as usize].advance_width = 32.0;
+        atlas_lut['\t' as usize].position = U16Vec2::ZERO;
+
+        atlas_widths['\t' as usize] = 32.0;
+
+
+        Ok(Self {
+            atlas_lut,
+            atlas_widths,
+            add_window_count: Mutex::new(0),
+            add_windows: AddWindowCell(UnsafeCell::new([const {None}; 8])),
+            windows,
+            windows_ini,
+            atlas_size: Vec2::ZERO,
+
+            font: Some(font),
+            max_character_width,
+            min_character_width,
+            new_line_size: font_metrics.new_line_size.round(),
+            acent: font_metrics.ascent,
+            decent: font_metrics.descent,
+        })
+    }
+
+    pub(crate) fn build_ui_resources(&mut self) -> Result<NUiResources> {
+        let font = self.font.take().unwrap();
         let mut chars = Vec::new();
         for (c, i) in font.chars().iter() {
+            if (*c as usize) > u16::MAX as usize {
+                continue;
+            } 
             let (metrics, data) = font.rasterize_config(GlyphRasterConfig {
                 glyph_index: (*i).into(),
                 px: Self::FONTSCALE,
@@ -2216,11 +2377,6 @@ impl NUiContext {
             chars.push((metrics, data, *c));
         }
         chars.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-
-        let font_metrics = font.horizontal_line_metrics(Self::FONTSCALE).unwrap();
-        self.acent = font_metrics.ascent;
-        self.new_line_size = font_metrics.new_line_size;
-        self.decent = font_metrics.descent;
 
         let mut atlas_row_height_prefix_sum = Vec::new();
         let mut atlas_height = Self::PAD;
@@ -2254,20 +2410,18 @@ impl NUiContext {
                 row_length = 0;
                 row_index += 1;
             }
-
+            
             let row_start = atlas_row_height_prefix_sum[row_index];
             let position = U16Vec2::new(row_length as u16, row_start as u16);
 
-            self.atlas_lut.insert(
-                *char,
+            self.atlas_lut[*char as usize] = 
                 AtlasEntry {
                     position,
                     atlas_size: U16Vec2::new(metrics.width as u16, metrics.height as u16),
                     min: Vec2::new(metrics.xmin as f32, metrics.bounds.ymin as f32),
-                    bounds: Vec2::new(metrics.bounds.width, metrics.bounds.height),
+                    height: metrics.bounds.height,
                     advance_width: metrics.advance_width,
-                },
-            );
+                };
 
             for y in 0..metrics.height as u32 {
                 for x in 0..metrics.width as u32 {
@@ -2296,20 +2450,65 @@ impl NUiContext {
         })
     }
 
-    fn text_size(&self, str: &str) -> Vec2 {
-        let mut len = 0.0;
-        let mut height = 0.0f32;
-        for char in str.chars() {
-            if let Some(b) = self.atlas_lut.get(&char) {
-                len += b.advance_width;
-                height = height.max(b.bounds.y as f32)
-            } else {
-                let missing = self.atlas_lut.get(&'?').unwrap();
-                len += missing.advance_width;
-                height = height.max(missing.bounds.y as f32)
+    fn get_char(&self, c: char) -> AtlasEntry {
+        if (c as usize) < u16::MAX as usize {
+            let entry = self.atlas_lut[c as usize];
+            if entry.is_empty() {
+                self.atlas_lut['?' as usize]
+            }else {
+                entry
             }
+        }else {
+            self.atlas_lut['?' as usize]
         }
+    }
+    fn get_width(&self, c: char) -> f32 {
+        if (c as usize) < u16::MAX as usize {
+            let entry = self.atlas_widths[c as usize];
+            if entry < 0.0 {
+                self.atlas_widths['?' as usize]
+            }else {
+                entry
+            }
+        }else {
+            self.atlas_widths['?' as usize]
+        }
+    }
+
+    fn has_char(&self, c: char) -> bool {
+        (c as usize) < u16::MAX as usize && !self.atlas_lut[c as usize].is_empty()
+    }
+
+    fn text_size(&self, str: &str) -> Vec2 {
+        let mut len = 0.0f32;
+        let mut line_length = 0.0f32;
+        let mut height = self.new_line_size;
+        for char in str.chars() {
+            if char == '\n'{
+                len = len.max(line_length);
+                line_length = 0.0;
+                height += self.new_line_size;
+            }
+            line_length += self.get_width(char);
+        }
+        len = len.max(line_length);
         Vec2::new(len, height)
+    }
+
+    fn text_len(&self, str: &str) -> f32 {
+        let mut len = 0.0;
+        for char in str.chars() {
+            len += self.get_width(char);
+        }
+        len
+    }
+
+    fn min_text_len(&self, len: usize) -> f32 {
+        len as f32 * self.min_character_width
+    }
+
+    fn max_text_len(&self, len: usize) -> f32 {
+        len as f32 * self.max_character_width
     }
 }
 
@@ -2349,175 +2548,226 @@ pub fn create_ui_resources(
     cmd.insert_resource(ctx.build_ui_resources().unwrap());
 }
 
-pub fn nextract_ui(mut res: If<ResMut<NUiResources>>, windows: Extract<Query<&UiWindow>>) {
-    for window in windows
+pub fn nextract_ui(mut res: If<ResMut<NUiResources>>, ctx: Extract<Res<NUiContext>>) {
+    for window in ctx.windows
         .iter()
-        .sort_by::<&UiWindow>(|a, b| a.layer.cmp(&b.layer))
+        .sorted_by(|a, b| a.1.get().layer.cmp(&b.1.get().layer))
     {
+        let window = window.1.get();
         let vertex_offset = res.pending_verticies.len();
         res.pending_indicies
             .extend(window.indicies.iter().map(|e| *e + vertex_offset as u32));
         res.pending_verticies.extend(window.verticies.iter());
-        let vertex_offset = res.pending_verticies.len();
+        let vertex_offset = res.pending_verticies.len();    
         res.pending_indicies
             .extend(window.top_indicies.iter().map(|e| *e + vertex_offset as u32));
         res.pending_verticies.extend(window.top_verticies.iter());
     }
 }
 
-pub fn update_windows(
-    mut windows: Query<(Entity, &mut UiWindow)>,
-    desktop_window: Single<&Window>,
-    mouse_buttons: Res<ButtonInput<MouseButton>>,
-    touch: Res<Touches>,
-    ctx: Res<NUiContext>,
-) {
-    let mut left_mouse_pressed = mouse_buttons.just_pressed(MouseButton::Left);
-    let mut cursor_pos = desktop_window.cursor_position();
+#[derive(Clone, Copy)]
+struct MultiInput {
+    left_mouse_pressed: bool,
+    left_mouse_pressing: bool,
+    left_mouse_released: bool,
+    cursor_pos: Option<Vec2>
+}
 
-    if let Some(touch) = touch.iter_just_pressed().next() {
-        cursor_pos = Some(touch.position());
-        left_mouse_pressed = true;
-    }
-
-    let mut now_focused = None;
-    for (e, mut window) in windows
-        .iter_mut()
-        .sort_by::<&UiWindow>(|a, b| a.layer.cmp(&b.layer))
-    {
-        let header_h = (ctx.acent - ctx.decent + NUiContext::CHILD_PAD.y as f32 * 2.0).round();
-        let border_rect = Rect::from_corners(
-            window.size.min - Vec2::splat(NUiContext::DRAG_THRESHHOLD),
-            window.size.max + Vec2::splat(NUiContext::DRAG_THRESHHOLD),
-        );
-        let header_rect = Rect::from_corners(
-            window.size.min,
-            window.size.min + Vec2::new(window.size.max.x - window.size.min.x, header_h),
-        );
-        if let Some(cursor_pos) = cursor_pos
-            && ((border_rect.contains(cursor_pos) && window.open) || (header_rect.contains(cursor_pos) && !window.open))
-            && now_focused == None
-            && !window.indicies.is_empty()
-        {
-            if left_mouse_pressed && window.focused.is_none() {
-                now_focused = Some(e);
-                window.focused = Some(FocusedState {
-                    format_string: String::new(),
-                    cursor: TextCursor { byte_pos: 0 },
-                    selected: 0..0,
-                    offset: 0.0,
-                    draging: None,
-                    focused: None,
-                    resize_bottom: false,
-                    resize_left: false,
-                    resize_right: false,
-                    resize_top: false,
-                    is_being_draged: false,
-                    darg_start: Vec2::ZERO,
-                });
-            }
-        } else if left_mouse_pressed {
-            window.focused = None;
+impl MultiInput {
+    fn new(desktop_window: &Window, buttons: &ButtonInput<MouseButton>, touch: &Touches) -> Self {
+        let mut this = Self {
+            left_mouse_pressed: buttons.just_pressed(MouseButton::Left),
+            left_mouse_pressing: buttons.pressed(MouseButton::Left),
+            left_mouse_released: buttons.just_released(MouseButton::Left),
+            cursor_pos: desktop_window.cursor_position(),
+        };
+    
+        if let Some(touch) = touch.iter().next() {
+            this.cursor_pos = Some(touch.position());
+            this.left_mouse_pressing = true;
         }
-    }
-
-    if let Some(focused) = now_focused {
-        let mut layers = Vec::new();
-        for (entity, _) in windows
-            .iter_mut()
-            .sort_by::<(Entity, &UiWindow)>(|(e1, a), (e2, b)| {
-                if *e1 == focused {
-                    std::cmp::Ordering::Greater
-                } else if *e2 == focused {
-                    std::cmp::Ordering::Less
-                } else {
-                    a.layer.cmp(&b.layer)
-                }
-            })
-        {
-            layers.push(entity);
+        if let Some(touch) = touch.iter_just_pressed().next() {
+            this.cursor_pos = Some(touch.position());
+            this.left_mouse_pressed = true;
         }
-        for (i, l) in layers.into_iter().enumerate() {
-            windows.get_mut(l).unwrap().1.layer = i as u32;
+        if let Some(touch) = touch.iter_just_released().next() {
+            this.cursor_pos = Some(touch.position());
+            this.left_mouse_released = true;
         }
-    }
-
-    for (_, mut window) in &mut windows {
-        window.indicies.clear();
-        window.verticies.clear();
-        window.top_verticies.clear();
-        window.top_indicies.clear();
+        this
     }
 }
 
-#[derive(Component, Reflect)]
-#[component(storage = "SparseSet")]
-#[reflect(Component)]
-pub struct TestWindow;
 
-pub fn test_ui(mut cmd: Commands, mut ui: UiBuilder<TestWindow>, mut value: Local<(f32, String, bool, usize, Vec4)>) {
-    ui.build_or(
-        || {
-            cmd.spawn((
-                UiWindow::new("Entity 5 adhiasodhasdklagsdgasldgalsdglaksdasdlEntity 5 adhiasodhasdklagsdgasldgalsdglaksdasdlEntity 5 adhiasodhasdklagsdgasldgalsdglaksdasdl"),
-                TestWindow,
-            ));
-        },
-        |b| {
-            b.horizontal();
-            b.button("TEst");
-            b.button("TEst");
-            b.button("TEst");
-            b.button("TEst");
-            b.vertical();
+pub fn update_windows(
+    desktop_window: Single<&Window>,
+    touch: Res<Touches>,
+    mut ctx: ResMut<NUiContext>,
+    mut cursor_icon: Single<&mut CursorIcon>,
+    buttons: Res<ButtonInput<MouseButton>>
+) {
+    let add_window = unsafe { ctx.add_windows.0.get().as_mut().unwrap() };
+    let count = *(ctx.add_window_count.lock().unwrap());
+    for i in 0..count as usize {
+        let Some(label) = add_window[i].take() else {
+            continue
+        };
+        ctx.windows.insert(label, UnsafeUiWindowCell(UnsafeCell::new(UiWindow::new(Vec2::splat(100.0), Vec2::ZERO, true))));
+    }
 
-            b.horizontal();
-            b.text("Text");
-            b.text("Text");
-            b.text("Text");
-            b.vertical();
+    *(ctx.add_window_count.lock().unwrap()) = 0;
 
-            value.0 = b.slider(id!(), -10.0, 8.0, 100.0, value.0);
 
-            b.horizontal();
-            value.0 = b.slider(id!(), -10.0, 8.0, 100.0, value.0);
-            value.0 = b.slider(id!(), -10.0, 8.0, 100.0, value.0);
-            b.text(format!("{}", value.0));
-            b.text("Test");
-            b.vertical();
+    let input = MultiInput::new(&desktop_window, &buttons, &touch);
 
-            value.0 = b.slider(id!(), -10.0, 8.0, 100.0, value.0);
-            value.0 = b.slider(id!(), -10.0, 8.0, 100.0, value.0);
-            value.0 = b.float_input(id!(), value.0, 100.0);
-            b.text_input(id!(), &mut value.1, 100.0);
-            value.2 = b.check_box(value.2);
+    let header_h = (ctx.acent - ctx.decent + NUiContext::CHILD_PAD.y as f32 * 2.0).round();
 
-            value.3 = b.dropdown(id!(), value.3, &[
-                "Test1",
-                "Test2",
-                "Test3",
-            ]);
+    let mut newly_focused: Option<(&String, &UnsafeUiWindowCell)> = None;
 
-            b.text("Test");
-            if b.button("Dont Press Me") {
-                log::error!("YOU PRESSED ME");
+    for (label, window_cell) in ctx.windows.iter().sorted_by(|a, b| a.1.get().layer.cmp(&b.1.get().layer)).rev() {
+        let window = window_cell.get_mut();
+
+        let interactive_rect = if window.open {
+            Rect::from_corners(
+                window.size.min - Vec2::splat(NUiContext::DRAG_THRESHHOLD),
+                window.size.max + Vec2::splat(NUiContext::DRAG_THRESHHOLD),
+            )
+        } else {
+            Rect::from_corners(
+                window.size.min,
+                window.size.min + Vec2::new(window.size.max.x - window.size.min.x, header_h),
+            )
+        };
+
+        let cursor_inside = input.cursor_pos
+            .map(|p| interactive_rect.contains(p))
+            .unwrap_or(false);
+        let has_geometry = !window.indicies.is_empty();
+
+        if cursor_inside && has_geometry && newly_focused.is_none() {
+            if input.left_mouse_pressed {
+                newly_focused = Some((label, window_cell));
+                if window.focused.is_none() {
+                    window.focused = Some(FocusedState::default());
+                }
+            }
+        } else if input.left_mouse_pressed {
+            window.focused = None;
+        }
+
+        **cursor_icon = CursorIcon::System(SystemCursorIcon::Default);
+
+        let mut focused = window.focused.take();
+        if let Some(focused) = &mut focused {
+            let header_h    = (ctx.acent - ctx.decent + NUiContext::CHILD_PAD.y as f32 * 2.0).round();
+            let header_rect = Rect::from_corners(
+                window.size.min,
+                window.size.min + Vec2::new(window.size.max.x - window.size.min.x, header_h),
+            );
+
+            if let Some(cursor_pos) = input.cursor_pos {
+                if header_rect.contains(cursor_pos) {
+                    if input.left_mouse_pressed {
+                        focused.darg_start      = window.size.min - cursor_pos;
+                        focused.is_being_draged = true;
+                    }
+                    **cursor_icon = CursorIcon::System(SystemCursorIcon::Grab);
+                } else if !window.size.contains(cursor_pos) {
+                    let min = window.size.min;
+                    let max = window.size.max;
+                    let t   = NUiContext::DRAG_THRESHHOLD;
+
+                    let resize_top    = Rect::from_corners(Vec2::new(min.x - t, min.y - t), Vec2::new(max.x + t, min.y + t)).contains(cursor_pos);
+                    let resize_bottom = Rect::from_corners(Vec2::new(min.x - t, max.y - t), Vec2::new(max.x + t, max.y + t)).contains(cursor_pos);
+                    let resize_left   = Rect::from_corners(Vec2::new(min.x - t, min.y - t), Vec2::new(min.x + t, max.y + t)).contains(cursor_pos);
+                    let resize_right  = Rect::from_corners(Vec2::new(max.x - t, min.y - t), Vec2::new(max.x + t, max.y + t)).contains(cursor_pos);
+
+                    if input.left_mouse_pressed {
+                        focused.resize_bottom = resize_bottom;
+                        focused.resize_left   = resize_left;
+                        focused.resize_top    = resize_top;
+                        focused.resize_right  = resize_right;
+                    }
+
+                    **cursor_icon = match (
+                        focused.resize_top    || resize_top,
+                        focused.resize_bottom || resize_bottom,
+                        focused.resize_left   || resize_left,
+                        focused.resize_right  || resize_right,
+                    ) {
+                        (true,  false, true,  false) => CursorIcon::System(SystemCursorIcon::NwseResize),
+                        (true,  false, false, true ) => CursorIcon::System(SystemCursorIcon::NeswResize),
+                        (false, true,  true,  false) => CursorIcon::System(SystemCursorIcon::NeswResize),
+                        (false, true,  false, true ) => CursorIcon::System(SystemCursorIcon::NwseResize),
+                        (true,  false, false, false) => CursorIcon::System(SystemCursorIcon::NsResize),
+                        (false, true,  false, false) => CursorIcon::System(SystemCursorIcon::NsResize),
+                        (false, false, true,  false) => CursorIcon::System(SystemCursorIcon::EwResize),
+                        (false, false, false, true ) => CursorIcon::System(SystemCursorIcon::EwResize),
+                        _ => CursorIcon::System(SystemCursorIcon::Default),
+                    };
+                }
             }
 
-            b.collapsable("Collapsable1", |ui| {
-                if ui.button("Child") {
-                    log::info!("Test");
-                }
-                value.4 = ui.color_picker("Color Picker", value.4);
-                ui.collapsable("Collapsable2", |ui| {
-                    ui.button("Child2");
-                });
-            });
+            if input.left_mouse_released {
+                focused.draging         = None;
+                focused.darg_start      = Vec2::ZERO;
+                focused.is_being_draged = false;
+                focused.resize_bottom   = false;
+                focused.resize_top      = false;
+                focused.resize_left     = false;
+                focused.resize_right    = false;
+            }
 
-            b.container("Console123", Vec2::new(500.0, 500.0), |ui| {
-                for i in 0..500 {
-                    ui.text("Ich hab dich lieb Helena");
+            if input.left_mouse_pressing {
+                if let Some(cursor_pos) = input.cursor_pos {
+                    let size = window.size.max - window.size.min;
+                    if focused.is_being_draged {
+                        let drag_pos   = (cursor_pos + focused.darg_start).round();
+                        window.size.min = drag_pos;
+                        window.size.max = drag_pos + size;
+                        **cursor_icon = CursorIcon::System(SystemCursorIcon::Grabbing);
+                    }
+                    if focused.resize_top    { window.size.min.y = cursor_pos.y.min(window.size.max.y - (header_h + 10.0)).round(); }
+                    if focused.resize_bottom { window.size.max.y = cursor_pos.y.max(window.size.min.y + (header_h + 10.0)).round(); }
+                    if focused.resize_left   { window.size.min.x = cursor_pos.x.min(window.size.max.x - 10.0).round(); }
+                    if focused.resize_right  { window.size.max.x = cursor_pos.x.max(window.size.min.x + 10.0).round(); }
                 }
-            });
-        },
-    );
+            }
+        }
+
+        window.focused = focused;
+        window.indicies.clear();
+        window.verticies.clear();
+        window.top_indicies.clear();
+        window.top_verticies.clear();
+    }
+
+    if let Some(focused_entity) = newly_focused {
+        for (i, window) in ctx.windows.iter().sorted_by(|a, b| a.1.get().layer.cmp(&b.1.get().layer))
+            .filter(|(l, _)| *l != focused_entity.0)
+            .chain(std::iter::once(focused_entity))
+            .enumerate()
+        {
+            window.1.get_mut().layer = i as u32;
+        }
+    }
+}
+
+pub fn save_windows(events: MessageReader<AppExit>, mut ctx: ResMut<NUiContext>) {
+    if events.is_empty() {
+        return;
+    }
+    
+    let mut ini = Ini::new();
+    for (label, cell) in &ctx.windows {
+        let window = cell.get();
+        ini.with_section(Some(label))
+            .add("position-x", format!("{}", window.size.min.x))
+            .add("position-y", format!("{}", window.size.min.y))
+            .add("width", format!("{}", window.size.size().x))
+            .add("height", format!("{}", window.size.size().y))
+            .add("open", format!("{}", window.open));
+    }
+
+    ini.write_to_file("windows.ini").unwrap();
 }
