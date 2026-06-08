@@ -1,6 +1,7 @@
 #![feature(f16)]
 #![feature(random)]
 #![feature(const_default)]
+#![feature(lock_value_accessors)]
 use std::{
     any::type_name,
     mem::offset_of,

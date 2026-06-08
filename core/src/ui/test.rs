@@ -1,16 +1,39 @@
-use bevy::{app::{App, Update}, log};
-use glam::Vec4;
+use bevy::{app::{App, Update}, log, math::Rect, prelude::Res};
+use glam::{Vec2, Vec4};
 
-use crate::{id, ui::new_ui::{UiBuilder}};
+use crate::{id, ui::new_ui::{DockingNode, UiBuilder, UiWindowBuilder}};
 
-fn element_test(mut ui: UiBuilder) {
-    ui.build("Elements", |ui| {
-        ui.text("Before");
-        ui.histogram(100.0, 20.0, 16.0, 0.0, [5.0f32, 10.0f32, 7.0f32, 5.0f32, 10.0f32, 7.0f32,5.0f32, 10.0f32, 7.0f32,5.0f32, 10.0f32, 7.0f32,5.0f32, 10.0f32, 7.0f32,].iter());
-        ui.text("After");
-        ui.tooltip("That text says After!");
-    });
-}
+// fn tree(nodes: &[DockingNode], area: Rect, node: usize, ui: &mut UiWindowBuilder) {
+//     match &nodes[node] {
+//         DockingNode::Leaf { windows, root } => {
+//             for window in windows {
+//                 ui.text(format!("{}", *window));
+//             }
+//         },
+//         DockingNode::Node { split, extend, left, right } => {
+//             // let left_area = Rect {min: area.min, max: area.max - split.direction_vec() * *extend};
+//             // let right_area = Rect {min: area.min + split.direction_vec() * *extend, max: area.max};
+//             let left = *left as usize;
+//             let right = *right as usize;
+//             // ui.window.rect(left_area, None, Vec4::new(1.0, 0.0, 0.0, 0.5), ui.viewport_size, Rect::from_corners(Vec2::ZERO, ui.viewport_size), true);
+//             // ui.window.rect(right_area, None, Vec4::new(0.0, 1.0, 0.0, 0.5), ui.viewport_size, Rect::from_corners(Vec2::ZERO, ui.viewport_size), true);
+            
+//             ui.collapsable(format!("Children of {}", left), |ui| {
+//                 tree(nodes, area, left, ui);
+//             });
+//             ui.collapsable(format!("Children of {}", right), |ui| {
+//                 tree(nodes, area, right, ui);
+//             });
+//         },
+//     }
+// }
+
+// fn tree_visulizer(mut ui: UiBuilder) {
+//     ui.build("Elements", |ui| {
+//         let ctx = Res::clone(&ui.ctx);
+//         tree(&ctx.docking_nodes, Rect::from_corners(Vec2::ZERO, ui.viewport_size), 0, ui);
+//     });
+// }
 
 // --- Layout tests ---
 
@@ -331,7 +354,7 @@ fn test_kitchen_sink(mut ui: UiBuilder) {
 
 pub fn add_tests(app: &mut App) {
     app.add_systems(Update, (
-        element_test,
+        // tree_visulizer,
         // test_vertical_layout,
         // test_horizontal_layout,
         // test_multiple_horizontal_rows,
@@ -345,9 +368,9 @@ pub fn add_tests(app: &mut App) {
         // test_text_edge_cases,
         // test_slider_edge_cases,
         // test_dropdown_edge_cases,
-        // test_color_picker_edge_cases,
-        // test_checkbox_edge_cases,
-        // test_float_input_edge_cases,
-        // test_kitchen_sink,
+        test_color_picker_edge_cases,
+        test_checkbox_edge_cases,
+        test_float_input_edge_cases,
+        test_kitchen_sink,
     ));
 }

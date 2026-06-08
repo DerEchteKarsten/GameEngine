@@ -26,7 +26,7 @@ gpu-allocator = "0.27.0"
 anyhow = "1.0.99"
 gltf = "1.4.1"
 tiff = "0.10.3"
-smallvec = "1.15.1"
+smallvec = { version = "1.15.1", features = ["serde"] }
 meshopt = "0.6.1"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 bytemuck_derive = "1.10.2"
@@ -45,6 +45,8 @@ imgui = { version = "0.12.0", features = ["docking"] }
 image = "0.25.10"
 fontdue = "0.9.3"
 rust-ini = "0.21.3"
+ron = "0.12.1"
+serde = "1.0"
 
 [features]
 default = []

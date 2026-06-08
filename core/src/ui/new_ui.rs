@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bevy::app::AppExit;
+
 use bevy::ecs::change_detection::Tick;
 use bevy::ecs::message::MessageReader;
 use bevy::ecs::query::WorldQuery;
@@ -40,6 +41,8 @@ use lava::{
     buffer::*,
     image::{Image, format, usage},
 };
+use ron::ser::PrettyConfig;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::cell::UnsafeCell;
 use std::collections::HashSet;
@@ -248,14 +251,16 @@ impl Scrollable {
 }
 
 pub struct UiWindow {
-    pub scrollbar_x: bool,
-    pub scrollbar_y: bool,
     pub open: bool,
+    pub docked: bool,
+    pub sibling_pressed: Option<u32>,
+    pub siblings: Vec<String>,
+    pub layer: u32,
     pub open_headers: HashSet<u64>,
     pub scrollables: HashMap<u64, Scrollable>,
     pub focused: Option<FocusedState>,
-    pub size: Rect,
-    pub layer: u32,
+    pub dock_rect: Rect,
+    pub rect: Rect,
     pub verticies: Vec<UIVertex>,
     pub indicies: Vec<u32>,
     pub top_verticies: Vec<UIVertex>,
@@ -278,7 +283,6 @@ pub struct UiBuilder<'w, 's> {
     ctx: Res<'w, NUiContext>,
     keys: MessageReader<'w, 's, KeyboardInput>,
     keyspressed: Res<'w, ButtonInput<KeyCode>>,
-    cmd: Commands<'w, 's>,
 }
 
 impl<'s, 'w> UiBuilder<'w, 's> {
@@ -287,16 +291,11 @@ impl<'s, 'w> UiBuilder<'w, 's> {
         label: impl AsRef<str>,
         f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>),
     ) {
-        let Some(window) = self.ctx.windows.get(label.as_ref()) else { 
-            let mut index = self.ctx.add_window_count.lock().unwrap();
-            let index = if *index < 8 {
-                let i = *index;
-                *index += 1;
-                i
-            }else {
-                return
+        let Some(window_idx) = self.ctx.window_labels.get(label.as_ref()) else { 
+            let Ok(mut lock) = self.ctx.add_windows.lock() else {
+                return;
             };
-            (*unsafe { self.ctx.add_windows.0.get().as_mut().unwrap() })[index as usize] = Some(label.as_ref().into());
+            lock.push(label.as_ref().into());
             return;
         };
         let mouse = Res::clone(&self.mouse);
@@ -308,7 +307,10 @@ impl<'s, 'w> UiBuilder<'w, 's> {
         let strg = self.keyspressed.pressed(KeyCode::ControlLeft)
             || self.keyspressed.pressed(KeyCode::ControlRight);
 
-        window.get_mut().build(label.as_ref(), mouse, ctx, &self.window, touch, scroll, &mut self.keys, shift, strg, f);
+        let Ok(mut window) = self.ctx.windows[*window_idx as usize].lock() else {
+            return;
+        };
+        window.build(label.as_ref(), mouse, ctx, &self.window, touch, scroll, &mut self.keys, shift, strg, f);
     }
 }
 
@@ -416,17 +418,32 @@ fn from_pos_size(pos: Vec2, size: Vec2) -> Rect {
 }
 
 impl UiWindow {
-    pub fn new(size: Vec2, pos: Vec2, open: bool) -> Self {
-        let size = Rect::from_corners(pos, pos + size);
+    pub fn size(&self) -> Rect {
+        if self.docked {
+            self.dock_rect
+        }else {
+            self.rect
+        }
+    }
+
+    pub fn new(rect: Rect, open: bool, docked: bool) -> Self {
         UiWindow {
-            scrollbar_x: false,
-            scrollbar_y: false,
+            sibling_pressed: None,
+            siblings: Vec::new(),
+            layer: 0,
+            dock_rect: Rect {
+                min: rect.min.round(),
+                max: rect.max.round(),
+            },
+            docked,
             scrollables: HashMap::new(),
             open,
             open_headers: HashSet::new(),
             focused: None,
-            layer: u32::MAX,
-            size,
+            rect: Rect {
+                min: rect.min.round(),
+                max: rect.max.round(),
+            },
             verticies: Vec::new(),
             indicies: Vec::new(),
             top_indicies: Vec::new(),
@@ -519,55 +536,57 @@ impl UiWindow {
                 ds.on_top
             );
         }
-
-        for (offset, start_angle, is_bottom, is_right) in corner_defs {
-            let center = pos + offset;
-
-            let should_round = match (is_bottom, is_right) {
-                (false, false) => ds.round_topleft,
-                (false, true) => ds.round_topright,
-                (true, false) => ds.round_bottomleft,
-                (true, true) => ds.round_bottomright,
-            };
-
-            if !should_round || r == 0.0 {
-                continue;
-            }
-
-            let outer_color = if let Some(border) = border {
-                let h_col = if is_bottom {
-                    border.color_bottom
-                } else {
-                    border.color_top
+        
+        if ds.rounding != 0 {
+            for (offset, start_angle, is_bottom, is_right) in corner_defs {
+                let center = pos + offset;
+    
+                let should_round = match (is_bottom, is_right) {
+                    (false, false) => ds.round_topleft,
+                    (false, true) => ds.round_topright,
+                    (true, false) => ds.round_bottomleft,
+                    (true, true) => ds.round_bottomright,
                 };
-                let v_col = if is_right {
-                    border.color_right
+    
+                if !should_round || r == 0.0 {
+                    continue;
+                }
+    
+                let outer_color = if let Some(border) = border {
+                    let h_col = if is_bottom {
+                        border.color_bottom
+                    } else {
+                        border.color_top
+                    };
+                    let v_col = if is_right {
+                        border.color_right
+                    } else {
+                        border.color_left
+                    };
+                    (h_col + v_col) * 0.5
                 } else {
-                    border.color_left
+                    ds.color
                 };
-                (h_col + v_col) * 0.5
-            } else {
-                ds.color
-            };
-            self.round_corner(
-                center,
-                r,
-                start_angle,
-                outer_color,
-                viewport_size,
-                clip_rect,
-                ds.on_top
-            );
-            if r > b {
                 self.round_corner(
                     center,
-                    r - b,
+                    r,
                     start_angle,
-                    ds.color,
+                    outer_color,
                     viewport_size,
                     clip_rect,
                     ds.on_top
                 );
+                if r > b {
+                    self.round_corner(
+                        center,
+                        r - b,
+                        start_angle,
+                        ds.color,
+                        viewport_size,
+                        clip_rect,
+                        ds.on_top
+                    );
+                }
             }
         }
 
@@ -655,7 +674,7 @@ impl UiWindow {
 
         let viewport_size = window.size();
 
-        let size = self.size.max - self.size.min;
+        let size = self.size().max - self.size().min;
         let r = NUiContext::WINDOW_ROUNDING as f32;
         let b = NUiContext::BORDER as f32;
         let rmb = r.max(b);
@@ -675,12 +694,12 @@ impl UiWindow {
 
         let mut window_ds = DrawSettings {
             on_top: false,
-            color: NUiContext::BG,
+            color: if self.docked {NUiContext::BG_DARK} else {NUiContext::BG},
             rounding: NUiContext::WINDOW_ROUNDING,
             round_topleft: false,
             round_topright: false,
-            round_bottomleft: true,
-            round_bottomright: true,
+            round_bottomleft: !self.docked,
+            round_bottomright: !self.docked,
             border: Some(BorderSettings {
                 color_top: border_color(resize_top),
                 color_bottom: border_color(resize_bottom),
@@ -690,7 +709,7 @@ impl UiWindow {
             }),
         };
         let full_screen = Rect::from_corners(Vec2::ZERO, viewport_size);
-        let content_area = Rect { min: self.size.min + Vec2::new(0.0, header_h), max: self.size.max };
+        let content_area = Rect { min: self.size().min + Vec2::new(0.0, header_h), max: self.size().max };
 
         if self.open {
             self.draw_box(
@@ -701,15 +720,15 @@ impl UiWindow {
             );
         }
 
-        window_ds.round_topleft = true;
-        window_ds.round_topright = true;
+        window_ds.round_topleft = !self.docked;
+        window_ds.round_topright = !self.docked;
         window_ds.round_bottomleft = false;
         window_ds.round_bottomright = false;
         window_ds.color = if focused { NUiContext::BG } else { NUiContext::BG_DARK };
         window_ds.border.as_mut().unwrap().color_bottom = NUiContext::S1;
         self.draw_box(
             from_pos_size(
-            self.size.min,
+            self.size().min,
             Vec2::new(size.x, header_h + NUiContext::BORDER as f32),
             ),
             window_ds,
@@ -717,42 +736,69 @@ impl UiWindow {
             full_screen,
         );
 
-        let header_pos = self.size.min + NUiContext::WINDOW_PAD.as_vec2();
+        let header_pos = self.size().min + NUiContext::WINDOW_PAD.as_vec2();
         let header_size = Vec2::new(size.x, header_h);
         let header_clip = from_pos_size(
             header_pos,
             header_size - Vec2::new(NUiContext::WINDOW_PAD.x as f32, 0.0),
         );
-        self.text_direction(
-            &ctx,
-            header_pos + if !self.open { Vec2::new(0.0, ctx.acent + 2.0) } else { Vec2::ZERO },
-            NUiContext::TEXT,
-            "▼",
-            viewport_size,
-            header_clip,
-            false,
-            if self.open { TextDirection::Right } else { TextDirection::Up },
-        );
+        if !self.docked {
+            self.text_direction(
+                &ctx,
+                header_pos + if !self.open { Vec2::new(0.0, ctx.acent + 2.0) } else { Vec2::ZERO },
+                NUiContext::TEXT,
+                "▼",
+                viewport_size,
+                header_clip,
+                false,
+                if self.open { TextDirection::Right } else { TextDirection::Up },
+            );
+    
+            let arrow_size = Vec2::new(ctx.text_len("▼"), ctx.new_line_size);
+    
+            self.text(
+                &ctx,
+                header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
+                NUiContext::TEXT,
+                label,
+                viewport_size,
+                header_clip,
+                false,
+            );
 
-        let arrow_size = Vec2::new(ctx.text_len("▼"), ctx.new_line_size);
-
-        self.text(
-            &ctx,
-            header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
-            NUiContext::TEXT,
-            label,
-            viewport_size,
-            header_clip,
-            false,
-        );
-
-        if let Some(cursor_pos) = input.cursor_pos
-            && Rect::from_center_half_size(header_pos, arrow_size).contains(cursor_pos)
-            && input.left_mouse_pressed
-            && focused
-            && !(resize_top || resize_left)
-        {
-            self.open = !self.open;
+            if let Some(cursor_pos) = input.cursor_pos
+                && Rect::from_center_half_size(header_pos, arrow_size).contains(cursor_pos)
+                && input.left_mouse_pressed
+                && focused
+                && !(resize_top || resize_left)
+            {
+                self.open = !self.open;
+            }
+        } else {
+            let mut text_cursor = header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32, 0.0);
+            let siblings = self.siblings.drain(..).collect::<Vec<_>>();
+            for i in std::iter::once(label).chain(siblings.iter().map(|e| e.as_str())) {
+                let ds = DrawSettings {
+                    round_bottomleft: false,
+                    round_bottomright: false,
+                    border: None,
+                    ..Default::default()
+                };
+                let size = ctx.text_len(i);
+                
+                self.draw_box(from_pos_size(text_cursor, Vec2::new(size, header_h - NUiContext::ELEMENT_GAP.y as f32)), ds, viewport_size, header_clip);
+                
+                self.text(
+                    &ctx,
+                    text_cursor + UiWindowBuilder::child_offset(),
+                    NUiContext::TEXT,
+                    i,
+                    viewport_size,
+                    header_clip,
+                    false,
+                );
+                text_cursor += size + NUiContext::ELEMENT_GAP.as_vec2();
+            }
         }
 
         let (_, mut scrollable) = self.scrollables.remove_entry(&id).unwrap_or((id, Scrollable {
@@ -810,7 +856,7 @@ impl UiWindow {
         if !scroll_consumed && focused && self.open {
             scrollable.scroll(scroll.delta, content_area.size());
         }
-        scrollable.draw(NonZeroU64::new(id).unwrap(), content_area, self, viewport_size, input.cursor_pos, input.left_mouse_pressed, self.size);
+        scrollable.draw(NonZeroU64::new(id).unwrap(), content_area, self, viewport_size, input.cursor_pos, input.left_mouse_pressed, self.size());
         self.scrollables.insert(id, scrollable);
         Some(r)
     }
@@ -988,7 +1034,7 @@ impl UiWindow {
 
         pen
     }
-    fn rect(
+    pub fn rect(
         &mut self,
         rect: Rect,
         uv: Option<(Vec2, Vec2)>,
@@ -1182,16 +1228,16 @@ impl TextCursor {
 pub struct UiWindowBuilder<'a, 'w, 's> {
     clip_rect: Rect,
     max_width: f32,
-    window: &'a mut UiWindow,
+    pub window: &'a mut UiWindow,
     window_id: u64,
     keys: &'a mut MessageReader<'w, 's, KeyboardInput>,
-    ctx: Res<'w, NUiContext>,
+    pub ctx: Res<'w, NUiContext>,
 
     ctrl: bool,
     shift: bool,
     focuse_next: bool,
     scroll_delta: Vec2,
-    viewport_size: Vec2,
+    pub viewport_size: Vec2,
     
     input: MultiInput,
 
@@ -1827,7 +1873,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             }
         }
 
-        let open = self.window.open_headers.contains(&id.into());
+        let open = !self.window.open_headers.contains(&id.into());
 
         if !open {
             if self.begin_element(size, false) {
@@ -2189,33 +2235,53 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     }
 }
 
-struct UnsafeUiWindowCell(UnsafeCell<UiWindow>);
+#[derive(Serialize, Deserialize, Clone)]
+pub enum Split {
+    Horizontal,
+    Vertical
+}
 
-impl UnsafeUiWindowCell {
-    fn get(&self) -> &UiWindow {
-        unsafe { self.0.get().as_ref().unwrap() }
+impl Split {
+    pub fn direction_vec(&self) -> Vec2 {
+        match self {
+            Self::Horizontal => Vec2::new(1.0, 0.0),
+            Self::Vertical => Vec2::new(0.0, 1.0),
+        }
     }
-    fn get_mut(&self) -> &mut UiWindow {
-        unsafe { self.0.get().as_mut().unwrap() }
+    pub fn to_bytes(&self) -> u8 {
+        match self {
+            Self::Horizontal => 0,
+            Self::Vertical => 1,
+        }
     }
 }
 
-unsafe impl Send for UnsafeUiWindowCell {}
-unsafe impl Sync for UnsafeUiWindowCell {}
+#[derive(Serialize, Deserialize, Clone)]
+pub enum DockingNode {
+    Leaf {
+        windows: SmallVec<[u32; 8]>,
+        root: bool,
+    },
+    Node {
+        split: Split,
+        extend: f32,
+        left: Box<DockingNode>,
+        right: Box<DockingNode>,
+    }
+}
 
-
-struct AddWindowCell(UnsafeCell<[Option<String>; 8]>);
-
-unsafe impl Send for AddWindowCell {}
-unsafe impl Sync for AddWindowCell {}
-
+impl Default for DockingNode{
+    fn default() -> Self {
+        DockingNode::Leaf { windows: SmallVec::new(), root: false }
+    }
+}
 
 #[derive(Resource)]
 pub struct NUiContext {
-    pub add_windows: AddWindowCell,
-    pub add_window_count: Mutex<u32>,
-    pub windows: HashMap<String, UnsafeUiWindowCell>,
-    pub windows_ini: ini::Ini,
+    pub add_windows: Mutex<SmallVec<[String; 4]>>,
+    pub docking_nodes: Box<DockingNode>,
+    pub window_labels: HashMap<String, u32>,
+    pub windows: Vec<Mutex<UiWindow>>,
     pub font: Option<fontdue::Font>,
     pub atlas_lut: Box<[AtlasEntry]>,
     pub atlas_widths: Box<[f32]>,
@@ -2224,7 +2290,10 @@ pub struct NUiContext {
     pub acent: f32,
     pub decent: f32,
     pub min_character_width: f32,
-    pub max_character_width: f32
+    pub max_character_width: f32,
+    pub resize_path: u64,
+    pub resize_depth: u32,
+    pub drag_start: Vec2,
 }
 
 #[derive(Default, Copy, Clone)]
@@ -2290,24 +2359,14 @@ impl NUiContext {
     pub const BAR_THICKNESS: f32 = 6.0f32;
     pub const MIN_THUMB: f32     = 20.0f32;
 
-    pub const SAVE_TIME: Duration = Duration::from_mins(5);
 
     pub(crate) fn new() -> Result<Self> {
         let bytes = fs::read("/home/karsten/code/GameEngine/editor_font.ttf")?;
         let font = Font::from_bytes(bytes, FontSettings::default()).unwrap();
         let font_metrics = font.horizontal_line_metrics(Self::FONTSCALE).unwrap();
-        let windows_ini = ini::Ini::load_from_file("/home/karsten/code/GameEngine/windows.ini").unwrap_or(ini::Ini::new());
 
-        let windows = windows_ini.sections().filter_map(|s| {
-            let label = s?;
-            let section = windows_ini.section(Some(label)).unwrap();
-            let x = section.get("position-x").map(|x| x.parse().unwrap())?;
-            let y = section.get("position-y").map(|x| x.parse().unwrap())?;
-            let width = section.get("width").map(|x| x.parse().unwrap())?;
-            let heigh = section.get("height").map(|x| x.parse().unwrap())?;
-            let open = section.get("open").map(|x| x.parse().unwrap())?;
-            Some((label.to_owned(), UnsafeUiWindowCell(UnsafeCell::new(UiWindow::new(Vec2::new(width, heigh), Vec2::new(x, y), open)))))
-        }).collect::<HashMap<String, UnsafeUiWindowCell>>();
+        let SaveState {docking_nodes, window_labels, windows} = ron::from_str(&fs::read_to_string("windows.ron").unwrap_or("".to_owned())).unwrap_or(SaveState { docking_nodes: Box::new(DockingNode::Leaf { windows: SmallVec::new(), root: true }), windows: Vec::new(), window_labels: HashMap::new() });
+        let windows = windows.iter().map(|w| {Mutex::new(UiWindow::new(w.size, w.open, w.docked))}).collect();
 
         let mut max_character_width = 0.0f32;
         let mut min_character_width = 0.0f32;
@@ -2347,18 +2406,20 @@ impl NUiContext {
         Ok(Self {
             atlas_lut,
             atlas_widths,
-            add_window_count: Mutex::new(0),
-            add_windows: AddWindowCell(UnsafeCell::new([const {None}; 8])),
+            add_windows: Mutex::new(SmallVec::new()),
             windows,
-            windows_ini,
+            docking_nodes,
+            window_labels,
             atlas_size: Vec2::ZERO,
-
+            resize_path: u64::MAX,
+            resize_depth: 0, 
             font: Some(font),
             max_character_width,
             min_character_width,
             new_line_size: font_metrics.new_line_size.round(),
             acent: font_metrics.ascent,
             decent: font_metrics.descent,
+            drag_start: Vec2::ZERO,
         })
     }
 
@@ -2448,6 +2509,157 @@ impl NUiContext {
             num_indicies: 0,
             num_verticies: 0,
         })
+    }
+
+    fn split_area(area: Rect, split: Split, extend: f32) -> (Rect, Rect) {
+        let size = (1.0 - extend) * area.size();
+        let left_area = Rect {min: area.min, max: area.max - split.direction_vec() * size};
+        let size = extend * area.size();
+        let right_area = Rect {min: area.min + split.direction_vec() * size, max: area.max};
+        (left_area, right_area)
+    }
+
+    fn dock(node: &mut Box<DockingNode>, window: u32, cursor_pos: Vec2, area: Rect, header_h: f32) -> bool {
+        match node.as_mut() {
+            DockingNode::Leaf { windows, root } => {
+                if from_pos_size(area.min, Vec2::new(area.width(), header_h)).contains(cursor_pos) {
+                    windows.push(window);
+                    return true;
+                }else if area.contains(cursor_pos) {
+                    let thickness = 40.0;
+                    let top = Rect::from_corners(area.min, Vec2::new(area.max.x, area.min.y + thickness)).contains(cursor_pos);
+                    let bottom = Rect::from_corners(Vec2::new(area.min.x, area.max.y - thickness), area.max).contains(cursor_pos);
+                    let left = Rect::from_corners(Vec2::new(area.min.x, area.min.y + thickness), Vec2::new(area.min.x + thickness, area.max.y - thickness)).contains(cursor_pos);
+                    let right = Rect::from_corners(Vec2::new(area.max.x - thickness, area.min.y + thickness), Vec2::new(area.max.x, area.max.y - thickness)).contains(cursor_pos);
+                    
+                    let split = if bottom || top {Split::Vertical} else {Split::Horizontal};
+                    
+                    if right || bottom {
+                        let right = Box::new(DockingNode::Leaf { windows: SmallVec::from_slice(&[window]), root: false });
+                        let root = std::mem::take(node);
+                        *node = Box::new(DockingNode::Node { split, extend: 0.5, left: root, right });
+                        return true;
+                    }else if left || top{
+                        let left = Box::new(DockingNode::Leaf { windows: SmallVec::from_slice(&[window]), root: false });
+                        let root = std::mem::take(node);
+                        *node = Box::new(DockingNode::Node { split, extend: 0.5, left, right: root });
+                        return true;
+                    }else {
+                        return false;
+                    }
+                }
+                return false;
+            },
+            DockingNode::Node { split, extend, left, right } => {
+                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
+                if left_area.contains(cursor_pos) {
+                    Self::dock(left, window, cursor_pos, left_area, header_h)
+                }else if right_area.contains(cursor_pos) {
+                    Self::dock(right, window, cursor_pos, right_area, header_h)
+                }else {
+                    return false;
+                }
+            },
+        }
+    }
+
+    fn undock(window: u32, root_node: &mut Box<DockingNode>) -> bool {
+        match root_node.as_mut() {
+            DockingNode::Leaf { windows, root } => {
+                if let Some(i) = windows.iter().position(|e| *e == window) {
+                    windows.remove(i);
+                }
+                windows.is_empty() && !*root
+            },
+            DockingNode::Node { split: _, extend: _, left, right } => {
+                let left_empty = Self::undock(window, left);
+                let right_empty = Self::undock(window, right);
+                if left_empty && right_empty {
+                    return true;
+                }
+                if left_empty {
+                    let root = std::mem::take(right);
+                    *root_node = root; 
+                } else if right_empty {
+                    let root = std::mem::take(left);
+                    *root_node = root;                
+                }
+                false
+            },
+        }
+    }
+
+    fn find_resize(node: &DockingNode, cursor_pos: Vec2, area: Rect, path: u64, depth: usize) -> (u64, u32, Vec2) {
+        match node {
+            DockingNode::Leaf { windows, root } => {(u64::MAX, 0, Vec2::ZERO)},
+            DockingNode::Node { split, extend, left, right } => {
+                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
+                let thickness = 20.0;
+                let d = split.direction_vec();
+                let perp = d.yx();
+
+                let split_point = area.min + d * (area.size() * *extend);
+                let divider = Rect {
+                    min: split_point - d * (thickness / 2.0),
+                    max: split_point + d * (thickness / 2.0) + perp * area.size(),
+                };
+
+                let new_path = (path << 1) | 0b1;
+                if divider.contains(cursor_pos) {
+                    (path, depth as u32, area.min)
+                }else if left_area.contains(cursor_pos) {
+                    Self::find_resize(left, cursor_pos, left_area, new_path, depth + 1)
+                }else if right_area.contains(cursor_pos) {
+                    Self::find_resize(right, cursor_pos, right_area, path << 1, depth + 1)
+                }else {
+                    (u64::MAX, 0, Vec2::ZERO)
+                }
+            },
+        }
+    }
+
+    fn resize(node: &mut DockingNode, path: u64, max_depth: u32, depth: u32, delta: Vec2, area: Rect) {
+        match node {
+            DockingNode::Node { split, extend, left, right } => {
+                if depth == max_depth {
+                    *extend = (delta.project_onto(split.clone().direction_vec()) / area.size()).length();
+                }
+                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
+
+                if ((path >> depth) & 1) as u64 > 0 {
+                    Self::resize(left.as_mut(), path, max_depth, depth + 1, delta, left_area);
+                }else {
+                    Self::resize(right.as_mut(), path, max_depth, depth + 1, delta, right_area);
+                }
+            }
+            DockingNode::Leaf { .. } => {}
+        }
+    }
+
+    fn dock_size(node: &DockingNode, window: u32, area: Rect) -> Option<Rect> {
+        match node {
+            DockingNode::Leaf { windows, root } => {
+                if windows.contains(&window) {
+                    Some(area)
+                }else {
+                    None
+                }
+            },
+            DockingNode::Node { split, extend, left, right } => {
+                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
+
+                let left = Self::dock_size(left, window, left_area);
+                if left.is_some() {
+                    left
+                }else {
+                    Self::dock_size(right, window, right_area)
+                }
+            },
+        }
+    }
+
+    fn header_height(&self) -> f32 {
+        (self.acent - self.decent + NUiContext::CHILD_PAD.y as f32 * 2.0).round()
     }
 
     fn get_char(&self, c: char) -> AtlasEntry {
@@ -2551,9 +2763,9 @@ pub fn create_ui_resources(
 pub fn nextract_ui(mut res: If<ResMut<NUiResources>>, ctx: Extract<Res<NUiContext>>) {
     for window in ctx.windows
         .iter()
-        .sorted_by(|a, b| a.1.get().layer.cmp(&b.1.get().layer))
+        .sorted_by_key(|a| a.lock().unwrap().layer)
     {
-        let window = window.1.get();
+        let window = window.lock().unwrap();
         let vertex_offset = res.pending_verticies.len();
         res.pending_indicies
             .extend(window.indicies.iter().map(|e| *e + vertex_offset as u32));
@@ -2606,36 +2818,37 @@ pub fn update_windows(
     mut cursor_icon: Single<&mut CursorIcon>,
     buttons: Res<ButtonInput<MouseButton>>
 ) {
-    let add_window = unsafe { ctx.add_windows.0.get().as_mut().unwrap() };
-    let count = *(ctx.add_window_count.lock().unwrap());
-    for i in 0..count as usize {
-        let Some(label) = add_window[i].take() else {
-            continue
+    {
+        let Ok(add_windows) = ctx.add_windows.replace(SmallVec::new()) else {
+            return
         };
-        ctx.windows.insert(label, UnsafeUiWindowCell(UnsafeCell::new(UiWindow::new(Vec2::splat(100.0), Vec2::ZERO, true))));
+        
+        for label in add_windows {
+            let idx = ctx.windows.len();
+            ctx.windows.push(Mutex::new(UiWindow::new(Rect::from_center_half_size(desktop_window.size() / 2.0, Vec2::splat(100.0)), true, false)));
+            ctx.window_labels.insert(label, idx as u32);
+        }
     }
 
-    *(ctx.add_window_count.lock().unwrap()) = 0;
-
-
     let input = MultiInput::new(&desktop_window, &buttons, &touch);
+    let viewport_size = desktop_window.size();
 
-    let header_h = (ctx.acent - ctx.decent + NUiContext::CHILD_PAD.y as f32 * 2.0).round();
-
-    let mut newly_focused: Option<(&String, &UnsafeUiWindowCell)> = None;
-
-    for (label, window_cell) in ctx.windows.iter().sorted_by(|a, b| a.1.get().layer.cmp(&b.1.get().layer)).rev() {
-        let window = window_cell.get_mut();
+    let header_h = ctx.header_height();
+    let mut newly_focused: Option<usize> = None;
+    **cursor_icon = CursorIcon::System(SystemCursorIcon::Default);
+    let mut focused_window = None;
+    for (i, window_cell) in ctx.windows.iter().enumerate().sorted_by(|a, b| a.1.lock().unwrap().layer.cmp(&b.1.lock().unwrap().layer)).rev() {
+        let mut window = window_cell.lock().unwrap();
 
         let interactive_rect = if window.open {
             Rect::from_corners(
-                window.size.min - Vec2::splat(NUiContext::DRAG_THRESHHOLD),
-                window.size.max + Vec2::splat(NUiContext::DRAG_THRESHHOLD),
+                window.size().min - Vec2::splat(NUiContext::DRAG_THRESHHOLD),
+                window.size().max + Vec2::splat(NUiContext::DRAG_THRESHHOLD),
             )
         } else {
             Rect::from_corners(
-                window.size.min,
-                window.size.min + Vec2::new(window.size.max.x - window.size.min.x, header_h),
+                window.size().min,
+                window.size().min + Vec2::new(window.size().max.x - window.size().min.x, header_h),
             )
         };
 
@@ -2646,7 +2859,7 @@ pub fn update_windows(
 
         if cursor_inside && has_geometry && newly_focused.is_none() {
             if input.left_mouse_pressed {
-                newly_focused = Some((label, window_cell));
+                newly_focused = Some(i);
                 if window.focused.is_none() {
                     window.focused = Some(FocusedState::default());
                 }
@@ -2655,26 +2868,35 @@ pub fn update_windows(
             window.focused = None;
         }
 
-        **cursor_icon = CursorIcon::System(SystemCursorIcon::Default);
+        if window.docked {
+            if let Some(size) = NUiContext::dock_size(&ctx.docking_nodes, i as u32, Rect::from_corners(Vec2::ZERO, desktop_window.size())) {
+                window.dock_rect = Rect {
+                    max: size.max.round(),
+                    min: size.min.round()
+                };
+            }
+        }
+
 
         let mut focused = window.focused.take();
         if let Some(focused) = &mut focused {
-            let header_h    = (ctx.acent - ctx.decent + NUiContext::CHILD_PAD.y as f32 * 2.0).round();
+            focused_window = Some(i);
+            let header_h    = ctx.header_height();
             let header_rect = Rect::from_corners(
-                window.size.min,
-                window.size.min + Vec2::new(window.size.max.x - window.size.min.x, header_h),
+                window.size().min,
+                window.size().min + Vec2::new(window.size().max.x - window.size().min.x, header_h),
             );
 
             if let Some(cursor_pos) = input.cursor_pos {
                 if header_rect.contains(cursor_pos) {
                     if input.left_mouse_pressed {
-                        focused.darg_start      = window.size.min - cursor_pos;
+                        focused.darg_start      = window.size().min - cursor_pos;
                         focused.is_being_draged = true;
                     }
                     **cursor_icon = CursorIcon::System(SystemCursorIcon::Grab);
-                } else if !window.size.contains(cursor_pos) {
-                    let min = window.size.min;
-                    let max = window.size.max;
+                } else if !window.size().contains(cursor_pos) && !window.docked{
+                    let min = window.size().min;
+                    let max = window.size().max;
                     let t   = NUiContext::DRAG_THRESHHOLD;
 
                     let resize_top    = Rect::from_corners(Vec2::new(min.x - t, min.y - t), Vec2::new(max.x + t, min.y + t)).contains(cursor_pos);
@@ -2706,6 +2928,20 @@ pub fn update_windows(
                         _ => CursorIcon::System(SystemCursorIcon::Default),
                     };
                 }
+
+                if input.left_mouse_pressing && !window.docked {
+                    let size = window.rect.max - window.rect.min;
+                    if focused.is_being_draged {
+                        let drag_pos   = (cursor_pos + focused.darg_start).round();
+                        window.rect.min = drag_pos;
+                        window.rect.max = drag_pos + size;
+                        **cursor_icon = CursorIcon::System(SystemCursorIcon::Grabbing);
+                    }
+                    if focused.resize_top    { window.rect.min.y = cursor_pos.y.min(window.rect.max.y - (header_h + 10.0)).round(); }
+                    if focused.resize_bottom { window.rect.max.y = cursor_pos.y.max(window.rect.min.y + (header_h + 10.0)).round(); }
+                    if focused.resize_left   { window.rect.min.x = cursor_pos.x.min(window.rect.max.x - 10.0).round(); }
+                    if focused.resize_right  { window.rect.max.x = cursor_pos.x.max(window.rect.min.x + 10.0).round(); }
+                }
             }
 
             if input.left_mouse_released {
@@ -2717,22 +2953,6 @@ pub fn update_windows(
                 focused.resize_left     = false;
                 focused.resize_right    = false;
             }
-
-            if input.left_mouse_pressing {
-                if let Some(cursor_pos) = input.cursor_pos {
-                    let size = window.size.max - window.size.min;
-                    if focused.is_being_draged {
-                        let drag_pos   = (cursor_pos + focused.darg_start).round();
-                        window.size.min = drag_pos;
-                        window.size.max = drag_pos + size;
-                        **cursor_icon = CursorIcon::System(SystemCursorIcon::Grabbing);
-                    }
-                    if focused.resize_top    { window.size.min.y = cursor_pos.y.min(window.size.max.y - (header_h + 10.0)).round(); }
-                    if focused.resize_bottom { window.size.max.y = cursor_pos.y.max(window.size.min.y + (header_h + 10.0)).round(); }
-                    if focused.resize_left   { window.size.min.x = cursor_pos.x.min(window.size.max.x - 10.0).round(); }
-                    if focused.resize_right  { window.size.max.x = cursor_pos.x.max(window.size.min.x + 10.0).round(); }
-                }
-            }
         }
 
         window.focused = focused;
@@ -2740,34 +2960,269 @@ pub fn update_windows(
         window.verticies.clear();
         window.top_indicies.clear();
         window.top_verticies.clear();
+
+        let size = window.size().max - window.size().min;
+        let r = NUiContext::WINDOW_ROUNDING as f32;
+        let b = NUiContext::BORDER as f32;
+        let rmb = r.max(b);
+
+        let header_h = (ctx.acent - ctx.decent + NUiContext::WINDOW_PAD.y as f32 * 2.0).round();
+        let focused = self.focused.is_some();
+        let input = MultiInput::new(&window, &buttons, &touch);
+
+
+        let (resize_top, resize_bottom, resize_left, resize_right) = self.focused.as_ref().map(|f| {
+            (f.resize_top, f.resize_bottom, f.resize_left, f.resize_right)
+        }).unwrap_or_default();
+
+        let border_color = |active: bool| {
+            if active { NUiContext::BLUE } else { NUiContext::S1 }
+        };
+
+        let mut window_ds = DrawSettings {
+            on_top: false,
+            color: if self.docked {NUiContext::BG_DARK} else {NUiContext::BG},
+            rounding: NUiContext::WINDOW_ROUNDING,
+            round_topleft: false,
+            round_topright: false,
+            round_bottomleft: !self.docked,
+            round_bottomright: !self.docked,
+            border: Some(BorderSettings {
+                color_top: border_color(resize_top),
+                color_bottom: border_color(resize_bottom),
+                color_left: border_color(resize_left),
+                color_right: border_color(resize_right),
+                size: NUiContext::BORDER,
+            }),
+        };
+        let full_screen = Rect::from_corners(Vec2::ZERO, viewport_size);
+        let content_area = Rect { min: self.size().min + Vec2::new(0.0, header_h), max: self.size().max };
+
+        if self.open {
+            self.draw_box(
+                content_area,
+                window_ds,
+                viewport_size,
+                full_screen,
+            );
+        }
+
+        window_ds.round_topleft = !self.docked;
+        window_ds.round_topright = !self.docked;
+        window_ds.round_bottomleft = false;
+        window_ds.round_bottomright = false;
+        window_ds.color = if focused { NUiContext::BG } else { NUiContext::BG_DARK };
+        window_ds.border.as_mut().unwrap().color_bottom = NUiContext::S1;
+        self.draw_box(
+            from_pos_size(
+            self.size().min,
+            Vec2::new(size.x, header_h + NUiContext::BORDER as f32),
+            ),
+            window_ds,
+            viewport_size,
+            full_screen,
+        );
+
+        let header_pos = self.size().min + NUiContext::WINDOW_PAD.as_vec2();
+        let header_size = Vec2::new(size.x, header_h);
+        let header_clip = from_pos_size(
+            header_pos,
+            header_size - Vec2::new(NUiContext::WINDOW_PAD.x as f32, 0.0),
+        );
+        if !self.docked {
+            self.text_direction(
+                &ctx,
+                header_pos + if !self.open { Vec2::new(0.0, ctx.acent + 2.0) } else { Vec2::ZERO },
+                NUiContext::TEXT,
+                "▼",
+                viewport_size,
+                header_clip,
+                false,
+                if self.open { TextDirection::Right } else { TextDirection::Up },
+            );
+    
+            let arrow_size = Vec2::new(ctx.text_len("▼"), ctx.new_line_size);
+    
+            self.text(
+                &ctx,
+                header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
+                NUiContext::TEXT,
+                label,
+                viewport_size,
+                header_clip,
+                false,
+            );
+
+            if let Some(cursor_pos) = input.cursor_pos
+                && Rect::from_center_half_size(header_pos, arrow_size).contains(cursor_pos)
+                && input.left_mouse_pressed
+                && focused
+                && !(resize_top || resize_left)
+            {
+                self.open = !self.open;
+            }
+        } else {
+            let mut text_cursor = header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32, 0.0);
+            let siblings = self.siblings.drain(..).collect::<Vec<_>>();
+            for i in std::iter::once(label).chain(siblings.iter().map(|e| e.as_str())) {
+                let ds = DrawSettings {
+                    round_bottomleft: false,
+                    round_bottomright: false,
+                    border: None,
+                    ..Default::default()
+                };
+                let size = ctx.text_len(i);
+                
+                self.draw_box(from_pos_size(text_cursor, Vec2::new(size, header_h - NUiContext::ELEMENT_GAP.y as f32)), ds, viewport_size, header_clip);
+                
+                self.text(
+                    &ctx,
+                    text_cursor + UiWindowBuilder::child_offset(),
+                    NUiContext::TEXT,
+                    i,
+                    viewport_size,
+                    header_clip,
+                    false,
+                );
+                text_cursor += size + NUiContext::ELEMENT_GAP.as_vec2();
+            }
+        }
+
+        let (_, mut scrollable) = self.scrollables.remove_entry(&id).unwrap_or((id, Scrollable {
+            content_size: content_area.size(),
+            scroll: Vec2::ZERO
+        }));
+        let cursor =
+            (content_area.min + rmb + NUiContext::WINDOW_PAD.as_vec2() - scrollable.scroll).round();
+
+        if !self.open {
+            return None;
+        }
+        let bar_size = NUiContext::BAR_THICKNESS * Vec2::new((scrollable.content_size.y > content_area.size().y) as u32 as f32, (scrollable.content_size.x > content_area.size().x) as u32 as f32);
+        let clip_rect = from_pos_size(content_area.min + b, content_area.size() - b * 2.0 - bar_size);
+        let max_width = (content_area.size().max(scrollable.content_size)).x - NUiContext::WINDOW_PAD.x as f32 - rmb - bar_size.x;
+
+        let mut builder = UiWindowBuilder {
+            max_width,
+            window_id: id,
+            scroll_delta: scroll.delta,
+            content_max: cursor,
+            focuse_next: false,
+            line_height: 0.0,
+            ctx,
+            clip_rect,
+            window: self,
+            viewport_size,
+            cursor,
+            cursor_origin: cursor,
+            prev_element_hoverd: true,
+            prev_element: content_area,
+            input,
+            direction: false,
+            scroll_consumed: false,
+            prev_cursor: cursor,
+            keys,
+            ctrl,
+            shift,
+            hovered_smth: false,
+        };
+
+        let r = f(&mut builder);
+        let content_max = builder.content_max;
+        let scroll_consumed = builder.scroll_consumed;
+
+        if !builder.hovered_smth && input.left_mouse_pressed {
+            if let Some(f) = &mut self.focused {
+                f.focused = None;
+            }
+        }
+
+        let content_size = content_max + NUiContext::WINDOW_PAD.as_vec2() + rmb - cursor;
+        
+        scrollable.content_size = content_size;
+        if !scroll_consumed && focused && self.open {
+            scrollable.scroll(scroll.delta, content_area.size());
+        }
+        scrollable.draw(NonZeroU64::new(id).unwrap(), content_area, self, viewport_size, input.cursor_pos, input.left_mouse_pressed, self.size());
+        self.scrollables.insert(id, scrollable);
+    }
+
+    let full_screen = Rect::from_corners(Vec2::ZERO, viewport_size);
+ 
+    if let Some(window_idx) = focused_window {
+        if ctx.windows[window_idx].lock().unwrap().focused.as_ref().unwrap().is_being_draged && let Some(cursor_pos) = input.cursor_pos {
+            NUiContext::undock(window_idx as u32, &mut ctx.docking_nodes);
+            let header_h = ctx.header_height();
+            let dock = NUiContext::dock(&mut ctx.docking_nodes, window_idx as u32, cursor_pos, full_screen, header_h);
+            ctx.windows[window_idx].lock().unwrap().docked = dock;
+        }
+
+    }
+    if let Some(cursor_pos) = input.cursor_pos {
+        if ctx.resize_path == u64::MAX && input.left_mouse_pressed{
+            let (path, depth, drag_start) = NUiContext::find_resize(&ctx.docking_nodes, cursor_pos, full_screen, 0, 0);
+            ctx.resize_path = path;
+            ctx.resize_depth = depth;
+            ctx.drag_start = drag_start;
+            log::info!("{:b}, {}", ctx.resize_path, ctx.resize_depth)
+        } 
+        if ctx.resize_path != u64::MAX && input.left_mouse_pressing {
+            let delta = cursor_pos - ctx.drag_start;
+            let path = ctx.resize_path;
+            let depth = ctx.resize_depth;
+            NUiContext::resize(&mut ctx.docking_nodes, path, depth, 0, delta, full_screen);
+        }
+        if input.left_mouse_released {
+            ctx.resize_path = u64::MAX;
+            ctx.resize_depth = 0;
+        }
     }
 
     if let Some(focused_entity) = newly_focused {
-        for (i, window) in ctx.windows.iter().sorted_by(|a, b| a.1.get().layer.cmp(&b.1.get().layer))
-            .filter(|(l, _)| *l != focused_entity.0)
-            .chain(std::iter::once(focused_entity))
+        for (i, window) in ctx.windows.iter().enumerate().sorted_by_key(|(entity, window)| {
+                let w = window.lock().unwrap();
+                let tier = if w.docked {0} else if *entity == focused_entity { 2 } else { 1 };
+                (tier, w.layer)
+            }).map(|(_, window)| window)
             .enumerate()
         {
-            window.1.get_mut().layer = i as u32;
+           window.lock().unwrap().layer = i as u32;
         }
     }
 }
 
-pub fn save_windows(events: MessageReader<AppExit>, mut ctx: ResMut<NUiContext>) {
+#[derive(Serialize, Deserialize)]
+struct SaveWindow {
+    size: Rect,
+    open: bool,
+    docked: bool
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveState {
+    docking_nodes: Box<DockingNode>,
+    windows: Vec<SaveWindow>,
+    window_labels: HashMap<String, u32>,
+}
+
+pub fn save_windows(events: MessageReader<AppExit>, ctx: ResMut<NUiContext>) {
     if events.is_empty() {
         return;
     }
-    
-    let mut ini = Ini::new();
-    for (label, cell) in &ctx.windows {
-        let window = cell.get();
-        ini.with_section(Some(label))
-            .add("position-x", format!("{}", window.size.min.x))
-            .add("position-y", format!("{}", window.size.min.y))
-            .add("width", format!("{}", window.size.size().x))
-            .add("height", format!("{}", window.size.size().y))
-            .add("open", format!("{}", window.open));
-    }
 
-    ini.write_to_file("windows.ini").unwrap();
+    let save_state = SaveState {
+        docking_nodes: ctx.docking_nodes.clone(),
+        window_labels: ctx.window_labels.clone(),
+        windows: ctx.windows.iter().map(|w| {
+            let window = w.lock().unwrap();
+            SaveWindow {
+                docked: window.docked,
+                open: window.open,
+                size: window.size(),
+            }
+        }).collect::<Vec<_>>()
+    };
+
+    let config = PrettyConfig::new();
+    std::fs::write("windows.ron", ron::ser::to_string_pretty(&save_state, config).unwrap()).unwrap();    
 }

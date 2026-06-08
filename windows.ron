@@ -1,0 +1,77 @@
+(
+    docking_nodes: Node(
+        split: Horizontal,
+        extend: 0.3142985,
+        left: Node(
+            split: Vertical,
+            extend: 0.3806415,
+            left: Leaf(
+                windows: [
+                    2,
+                    3,
+                ],
+                root: false,
+            ),
+            right: Leaf(
+                windows: [
+                    1,
+                ],
+                root: false,
+            ),
+        ),
+        right: Node(
+            split: Horizontal,
+            extend: 0.37545785,
+            left: Leaf(
+                windows: [],
+                root: true,
+            ),
+            right: Leaf(
+                windows: [
+                    0,
+                ],
+                root: false,
+            ),
+        ),
+    ),
+    windows: [
+        (
+            size: (
+                min: (1098.0, 0.0),
+                max: (1920.0, 1013.0),
+            ),
+            open: true,
+            docked: true,
+        ),
+        (
+            size: (
+                min: (0.0, 386.0),
+                max: (603.0, 1013.0),
+            ),
+            open: true,
+            docked: true,
+        ),
+        (
+            size: (
+                min: (0.0, 0.0),
+                max: (603.0, 386.0),
+            ),
+            open: true,
+            docked: true,
+        ),
+        (
+            size: (
+                min: (0.0, 0.0),
+                max: (603.0, 386.0),
+            ),
+            open: true,
+            docked: true,
+        ),
+    ],
+    window_labels: {
+        "Float Input Edge Cases": 0,
+        "Checkbox Edge Cases": 1,
+        "Color Picker Edge Cases": 3,
+        "Kitchen Sink": 2,
+    },
+)
