@@ -60,19 +60,20 @@ use crate::{
         world::UploadQueue,
     },
     ui::{new_ui::{
-        AtlasEntry, FocusedState, NUiContext, NUiResources, Scrollable, UiWindow, create_ui_resources, nextract_ui, nwrite_ui_data, save_windows, update_windows
+        AtlasEntry, FocusedState, UiContext, NUiResources, Scrollable, UiWindow, create_ui_resources, nextract_ui, nwrite_ui_data, save_windows, update_windows
     }, test::add_tests},
 };
 
 pub mod new_ui;
 pub mod test;
+pub mod builder;
 
 #[derive(Resource)]
-pub struct UiContext {
+pub struct OldUiContext {
     pub(crate) ctx: imgui::Context,
 }
 
-impl UiContext {
+impl OldUiContext {
     pub fn want_capture_mouse(&self) -> bool {
         self.ctx.io().want_capture_mouse
     }
@@ -87,8 +88,8 @@ impl UiContext {
     }
 }
 
-unsafe impl Send for UiContext {}
-unsafe impl Sync for UiContext {}
+unsafe impl Send for OldUiContext {}
+unsafe impl Sync for OldUiContext {}
 
 #[derive(Resource)]
 pub struct UiBuilder {
@@ -219,7 +220,7 @@ fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
 
 fn read_input(
     mut events: MessageReader<WindowEvent>,
-    mut ctx: ResMut<UiContext>,
+    mut ctx: ResMut<OldUiContext>,
     window: Single<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
 ) {
@@ -315,7 +316,7 @@ fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
 
 fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) {
     world.resource_scope(|world, mut builder: Mut<UiBuilder>| {
-        let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
+        let mut ctx = world.get_resource_mut::<OldUiContext>().unwrap();
         if builder.ui().is_none() {
             info!("building font atlas");
             let atlas = ctx.ctx.fonts().build_alpha8_texture();
@@ -546,13 +547,13 @@ pub fn UiPlugin(app: &mut App) {
             style.popup_border_size = 1.0;
             style.frame_border_size = 1.0;
             style.tab_border_size = 0.0;
-            UiContext { ctx }
+            OldUiContext { ctx }
         })
         .insert_resource(UiBuilder {
             ui: std::ptr::null_mut(),
         })
         .add_systems(PreUpdate, update_windows.after(InputSystems))
-        .insert_resource(NUiContext::new().unwrap())
+        .insert_resource(UiContext::new().unwrap())
         .add_systems(PostUpdate, save_windows);
     add_tests(app);
 }

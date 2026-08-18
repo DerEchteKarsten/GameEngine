@@ -71,7 +71,7 @@ use crate::render::{
     ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderStartup, RenderSystems,
 };
 use crate::scene::Instance;
-use crate::ui::UiContext;
+use crate::ui::OldUiContext;
 
 #[derive(Resource)]
 pub struct InstanceManager {

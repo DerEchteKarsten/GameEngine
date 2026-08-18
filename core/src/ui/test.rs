@@ -1,7 +1,7 @@
 use bevy::{app::{App, Update}, log, math::Rect, prelude::Res};
 use glam::{Vec2, Vec4};
 
-use crate::{id, ui::new_ui::{DockingNode, UiBuilder, UiWindowBuilder}};
+use crate::{id, ui::new_ui::{DockingNode, UiBuilder}, ui::builder::UiWindowBuilder};
 
 // fn tree(nodes: &[DockingNode], area: Rect, node: usize, ui: &mut UiWindowBuilder) {
 //     match &nodes[node] {

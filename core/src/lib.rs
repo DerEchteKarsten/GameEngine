@@ -49,7 +49,7 @@ use crate::{
     physics::PhysicsPlugin,
     render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi, world::InstanceFlags},
     scene::{Instance, ScenePlugin, SpawnScene, camera::Camera},
-    ui::{UiBuilder, UiContext, UiPlugin, UiResources},
+    ui::{UiBuilder, OldUiContext, UiPlugin, UiResources},
 };
 
 pub mod assets;

@@ -20,7 +20,7 @@ use bevy::{
 };
 use glam::{Mat4, Quat, Vec3};
 
-use crate::{editor::viewport::ViewPortProxy, scene::camera::Camera, ui::UiContext};
+use crate::{editor::viewport::ViewPortProxy, scene::camera::Camera, ui::OldUiContext};
 
 #[derive(Default, Debug, Clone, Copy, Resource)]
 pub struct CameraSettings {

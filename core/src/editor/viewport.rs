@@ -8,7 +8,7 @@ use bevy::{
 use glam::{IVec2, UVec2, Vec2};
 use imgui::{StyleColor, WindowFlags};
 
-use crate::ui::{UiBuilder, UiContext};
+use crate::ui::{UiBuilder, OldUiContext};
 
 #[derive(Resource, Debug, Copy, Clone)]
 pub struct ViewPort {
@@ -23,7 +23,7 @@ pub(crate) fn update_view_port(
     mut vp: ResMut<ViewPort>,
     window: Single<&Window>,
     mut ui: ResMut<UiBuilder>,
-    mut ctx: ResMut<UiContext>,
+    mut ctx: ResMut<OldUiContext>,
 ) {
     let Some(ui) = ui.ui() else {
         vp.view_pos = IVec2::ZERO;

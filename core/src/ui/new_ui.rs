@@ -34,6 +34,7 @@ use bytemuck::Zeroable;
 use fontdue::layout::GlyphRasterConfig;
 use fontdue::*;
 use glam::{BVec2, I8Vec2, IVec2, U8Vec2, U16Vec2, UVec2, Vec2, Vec2Swizzles, Vec4};
+use imgui::ComboBoxHeight::Small;
 use ini::Ini;
 use itertools::Itertools;
 use lava::state::raw_vulkan::native::{StdVideoH264DisableDeblockingFilterIdc_STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_ENABLED, StdVideoH264DisableDeblockingFilterIdc_STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_PARTIAL};
@@ -64,7 +65,8 @@ use std::{
 };
 use tracing_log::log;
 
-use crate::ui::UiContext;
+use crate::ui::OldUiContext;
+use crate::ui::builder::{TextCursor, UiWindowBuilder};
 use crate::{
     bindings::{self, UIVertex},
     render::{
@@ -97,19 +99,19 @@ macro_rules! id {
 
 #[derive(Clone)]
 pub struct FocusedState {
-    is_being_draged: bool,
-    draging: Option<NonZeroU64>,
-    focused: Option<NonZeroU64>,
-    cursor: TextCursor,
-    selected: Range<usize>,
-    offset: f32,
-    darg_start: Vec2,
-    format_string: String,
+    pub is_being_draged: bool,
+    pub draging: Option<NonZeroU64>,
+    pub focused: Option<NonZeroU64>,
+    pub cursor: TextCursor,
+    pub selected: Range<usize>,
+    pub offset: f32,
+    pub darg_start: Vec2,
+    pub format_string: String,
 
-    resize_top: bool,
-    resize_bottom: bool,
-    resize_left: bool,
-    resize_right: bool,
+    pub resize_top: bool,
+    pub resize_bottom: bool,
+    pub resize_left: bool,
+    pub resize_right: bool,
 }
 
 impl Default for FocusedState {
@@ -160,32 +162,32 @@ impl Scrollable {
     fn draw_bar(&mut self, id: NonZeroU64, area: Rect, window: &mut UiWindow, direction: bool, viewport_size: Vec2, cursor_pos: Option<Vec2>, left_mouse_pressed: bool, clip_rect: Rect) {
         let size = area.size();
         let pos = area.min;
-        let b = NUiContext::BORDER as f32;
+        let b = UiContext::BORDER as f32;
         let track_pos = if direction {
             Vec2::new(
-                pos.x + size.x - NUiContext::BAR_THICKNESS - b,
+                pos.x + size.x - UiContext::BAR_THICKNESS - b,
                 pos.y + b,
             ).round()
         } else {
             Vec2::new(
                 pos.x + b,
-                pos.y + size.y - NUiContext::BAR_THICKNESS - b,
+                pos.y + size.y - UiContext::BAR_THICKNESS - b,
             ).round()
         };
 
         let track_size = if direction {
-            Vec2::new(NUiContext::BAR_THICKNESS, size.y - b * 2.0).round()
+            Vec2::new(UiContext::BAR_THICKNESS, size.y - b * 2.0).round()
         }else {
-            Vec2::new(size.x - b * 2.0, NUiContext::BAR_THICKNESS).round()
+            Vec2::new(size.x - b * 2.0, UiContext::BAR_THICKNESS).round()
         };
     
-        window.rect(Rect::from_corners(track_pos, track_pos + track_size), None, NUiContext::S0,
+        window.rect(Rect::from_corners(track_pos, track_pos + track_size), None, UiContext::S0,
             viewport_size, clip_rect, false);
 
         let scroll_max = (self.content_size - size).max(Vec2::ONE);
 
         let ratio    = (size / self.content_size).clamp(Vec2::ZERO, Vec2::ONE);
-        let thumb_width  = (track_size * ratio).max(Vec2::splat(NUiContext::MIN_THUMB)).round();
+        let thumb_width  = (track_size * ratio).max(Vec2::splat(UiContext::MIN_THUMB)).round();
         let thumb_t  = (self.scroll / scroll_max).clamp(Vec2::ZERO, Vec2::ONE);
         let thumb  = (track_pos + thumb_t * (track_size - thumb_width)).round();
         let thumb_pos  = if direction {
@@ -194,9 +196,9 @@ impl Scrollable {
             Vec2::new(thumb.x, track_pos.y) 
         };
         let thumb_size = if direction {
-            Vec2::new(NUiContext::BAR_THICKNESS, thumb_width.y)
+            Vec2::new(UiContext::BAR_THICKNESS, thumb_width.y)
         }else {
-            Vec2::new(thumb_width.x, NUiContext::BAR_THICKNESS)
+            Vec2::new(thumb_width.x, UiContext::BAR_THICKNESS)
         };
 
         let id_scroll = id.saturating_add(1).saturating_add(!direction as u64);
@@ -230,7 +232,7 @@ impl Scrollable {
             }
         }
 
-        let thumb_color = if dragging || hovered { NUiContext::GRAB_HOT } else { NUiContext::GRAB };
+        let thumb_color = if dragging || hovered { UiContext::GRAB_HOT } else { UiContext::GRAB };
         let ds = DrawSettings {
             color: thumb_color,
             ..Default::default()
@@ -251,10 +253,10 @@ impl Scrollable {
 }
 
 pub struct UiWindow {
+    pub label: String,
     pub open: bool,
     pub docked: bool,
     pub sibling_pressed: Option<u32>,
-    pub siblings: Vec<String>,
     pub layer: u32,
     pub open_headers: HashSet<u64>,
     pub scrollables: HashMap<u64, Scrollable>,
@@ -280,7 +282,7 @@ pub struct UiBuilder<'w, 's> {
     mouse: Res<'w, ButtonInput<MouseButton>>,
     touch: Res<'w, Touches>,
     scroll: Res<'w, AccumulatedMouseScroll>,
-    ctx: Res<'w, NUiContext>,
+    ctx: Res<'w, UiContext>,
     keys: MessageReader<'w, 's, KeyboardInput>,
     keyspressed: Res<'w, ButtonInput<KeyCode>>,
 }
@@ -310,17 +312,17 @@ impl<'s, 'w> UiBuilder<'w, 's> {
         let Ok(mut window) = self.ctx.windows[*window_idx as usize].lock() else {
             return;
         };
-        window.build(label.as_ref(), mouse, ctx, &self.window, touch, scroll, &mut self.keys, shift, strg, f);
+        window.build(mouse, ctx, &self.window, touch, scroll, &mut self.keys, shift, strg, f);
     }
 }
 
 #[derive(Copy, Clone)]
 pub struct BorderSettings {
-    color_top: Vec4,
-    color_bottom: Vec4,
-    color_left: Vec4,
-    color_right: Vec4,
-    size: u32,
+    pub color_top: Vec4,
+    pub color_bottom: Vec4,
+    pub color_left: Vec4,
+    pub color_right: Vec4,
+    pub size: u32,
 }
 
 impl BorderSettings {
@@ -337,30 +339,30 @@ impl BorderSettings {
 
 #[derive(Copy, Clone)]
 pub struct DrawSettings {
-    color: Vec4,
-    on_top: bool,
+    pub color: Vec4,
+    pub on_top: bool,
 
-    rounding: u32,
-    round_topleft: bool,
-    round_topright: bool,
-    round_bottomleft: bool,
-    round_bottomright: bool,
-
-    border: Option<BorderSettings>,
+    pub rounding: u32,
+    pub round_topleft: bool,
+    pub round_topright: bool,
+    pub round_bottomleft: bool,
+    pub round_bottomright: bool,
+ 
+    pub border: Option<BorderSettings>,
 }
 
 impl Default for DrawSettings {
     fn default() -> Self {
-        let bc = NUiContext::S2;
+        let bc = UiContext::S2;
         Self {
-            color: NUiContext::S0,
-            rounding: NUiContext::ROUNDING,
+            color: UiContext::S0,
+            rounding: UiContext::ROUNDING,
             border: Some(BorderSettings {
                 color_bottom: bc,
                 color_left: bc,
                 color_right: bc,
                 color_top: bc,
-                size: NUiContext::BORDER,
+                size: UiContext::BORDER,
             }),
             round_bottomleft: true,
             round_bottomright: true,
@@ -393,11 +395,11 @@ impl DrawSettings {
     pub fn new(hoverd: bool, clicked: bool) -> Self {
         Self {
             color: if clicked {
-                NUiContext::S2
+                UiContext::S2
             }else if hoverd {
-                NUiContext::S1
+                UiContext::S1
             }else {
-                NUiContext::S0
+                UiContext::S0
             },
             ..Default::default()
         }
@@ -413,7 +415,7 @@ pub enum TextDirection {
     Down,
 }
 
-fn from_pos_size(pos: Vec2, size: Vec2) -> Rect {
+pub fn from_pos_size(pos: Vec2, size: Vec2) -> Rect {
     Rect::from_corners(pos, pos + size)
 }
 
@@ -426,10 +428,10 @@ impl UiWindow {
         }
     }
 
-    pub fn new(rect: Rect, open: bool, docked: bool) -> Self {
+    pub fn new(label: String, rect: Rect, open: bool, docked: bool) -> Self {
         UiWindow {
+            label,
             sibling_pressed: None,
-            siblings: Vec::new(),
             layer: 0,
             dock_rect: Rect {
                 min: rect.min.round(),
@@ -657,9 +659,8 @@ impl UiWindow {
 
     pub fn build<'w, 's, R>(
         &mut self,
-        label: &str,
         buttons: Res<'w, ButtonInput<MouseButton>>,
-        ctx: Res<'w, NUiContext>,
+        ctx: Res<'w, UiContext>,
         window: &Window,
         touch: Res<'w, Touches>,
         scroll: Res<'w, AccumulatedMouseScroll>,
@@ -668,152 +669,34 @@ impl UiWindow {
         ctrl: bool,
         f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>) -> R,
     ) -> Option<R> {
-        let mut hash = DefaultHasher::new();
-        label.hash(&mut hash);
-        let id = hash.finish();
-
+        let mut id = DefaultHasher::new();
+        self.label.hash(&mut id);
+        let id = id.finish();
         let viewport_size = window.size();
 
-        let size = self.size().max - self.size().min;
-        let r = NUiContext::WINDOW_ROUNDING as f32;
-        let b = NUiContext::BORDER as f32;
+        let r = UiContext::WINDOW_ROUNDING as f32;
+        let b = UiContext::BORDER as f32;
         let rmb = r.max(b);
 
-        let header_h = (ctx.acent - ctx.decent + NUiContext::WINDOW_PAD.y as f32 * 2.0).round();
+        let header_h = (ctx.acent - ctx.decent + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
         let focused = self.focused.is_some();
         let input = MultiInput::new(&window, &buttons, &touch);
 
-
-        let (resize_top, resize_bottom, resize_left, resize_right) = self.focused.as_ref().map(|f| {
-            (f.resize_top, f.resize_bottom, f.resize_left, f.resize_right)
-        }).unwrap_or_default();
-
-        let border_color = |active: bool| {
-            if active { NUiContext::BLUE } else { NUiContext::S1 }
-        };
-
-        let mut window_ds = DrawSettings {
-            on_top: false,
-            color: if self.docked {NUiContext::BG_DARK} else {NUiContext::BG},
-            rounding: NUiContext::WINDOW_ROUNDING,
-            round_topleft: false,
-            round_topright: false,
-            round_bottomleft: !self.docked,
-            round_bottomright: !self.docked,
-            border: Some(BorderSettings {
-                color_top: border_color(resize_top),
-                color_bottom: border_color(resize_bottom),
-                color_left: border_color(resize_left),
-                color_right: border_color(resize_right),
-                size: NUiContext::BORDER,
-            }),
-        };
-        let full_screen = Rect::from_corners(Vec2::ZERO, viewport_size);
         let content_area = Rect { min: self.size().min + Vec2::new(0.0, header_h), max: self.size().max };
-
-        if self.open {
-            self.draw_box(
-                content_area,
-                window_ds,
-                viewport_size,
-                full_screen,
-            );
-        }
-
-        window_ds.round_topleft = !self.docked;
-        window_ds.round_topright = !self.docked;
-        window_ds.round_bottomleft = false;
-        window_ds.round_bottomright = false;
-        window_ds.color = if focused { NUiContext::BG } else { NUiContext::BG_DARK };
-        window_ds.border.as_mut().unwrap().color_bottom = NUiContext::S1;
-        self.draw_box(
-            from_pos_size(
-            self.size().min,
-            Vec2::new(size.x, header_h + NUiContext::BORDER as f32),
-            ),
-            window_ds,
-            viewport_size,
-            full_screen,
-        );
-
-        let header_pos = self.size().min + NUiContext::WINDOW_PAD.as_vec2();
-        let header_size = Vec2::new(size.x, header_h);
-        let header_clip = from_pos_size(
-            header_pos,
-            header_size - Vec2::new(NUiContext::WINDOW_PAD.x as f32, 0.0),
-        );
-        if !self.docked {
-            self.text_direction(
-                &ctx,
-                header_pos + if !self.open { Vec2::new(0.0, ctx.acent + 2.0) } else { Vec2::ZERO },
-                NUiContext::TEXT,
-                "▼",
-                viewport_size,
-                header_clip,
-                false,
-                if self.open { TextDirection::Right } else { TextDirection::Up },
-            );
-    
-            let arrow_size = Vec2::new(ctx.text_len("▼"), ctx.new_line_size);
-    
-            self.text(
-                &ctx,
-                header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
-                NUiContext::TEXT,
-                label,
-                viewport_size,
-                header_clip,
-                false,
-            );
-
-            if let Some(cursor_pos) = input.cursor_pos
-                && Rect::from_center_half_size(header_pos, arrow_size).contains(cursor_pos)
-                && input.left_mouse_pressed
-                && focused
-                && !(resize_top || resize_left)
-            {
-                self.open = !self.open;
-            }
-        } else {
-            let mut text_cursor = header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32, 0.0);
-            let siblings = self.siblings.drain(..).collect::<Vec<_>>();
-            for i in std::iter::once(label).chain(siblings.iter().map(|e| e.as_str())) {
-                let ds = DrawSettings {
-                    round_bottomleft: false,
-                    round_bottomright: false,
-                    border: None,
-                    ..Default::default()
-                };
-                let size = ctx.text_len(i);
-                
-                self.draw_box(from_pos_size(text_cursor, Vec2::new(size, header_h - NUiContext::ELEMENT_GAP.y as f32)), ds, viewport_size, header_clip);
-                
-                self.text(
-                    &ctx,
-                    text_cursor + UiWindowBuilder::child_offset(),
-                    NUiContext::TEXT,
-                    i,
-                    viewport_size,
-                    header_clip,
-                    false,
-                );
-                text_cursor += size + NUiContext::ELEMENT_GAP.as_vec2();
-            }
-        }
 
         let (_, mut scrollable) = self.scrollables.remove_entry(&id).unwrap_or((id, Scrollable {
             content_size: content_area.size(),
             scroll: Vec2::ZERO
         }));
         let cursor =
-            (content_area.min + rmb + NUiContext::WINDOW_PAD.as_vec2() - scrollable.scroll).round();
+            (content_area.min + rmb + UiContext::WINDOW_PAD.as_vec2() - scrollable.scroll).round();
 
         if !self.open {
             return None;
         }
-        let bar_size = NUiContext::BAR_THICKNESS * Vec2::new((scrollable.content_size.y > content_area.size().y) as u32 as f32, (scrollable.content_size.x > content_area.size().x) as u32 as f32);
+        let bar_size = UiContext::BAR_THICKNESS * Vec2::new((scrollable.content_size.y > content_area.size().y) as u32 as f32, (scrollable.content_size.x > content_area.size().x) as u32 as f32);
         let clip_rect = from_pos_size(content_area.min + b, content_area.size() - b * 2.0 - bar_size);
-        let max_width = (content_area.size().max(scrollable.content_size)).x - NUiContext::WINDOW_PAD.x as f32 - rmb - bar_size.x;
+        let max_width = (content_area.size().max(scrollable.content_size)).x - UiContext::WINDOW_PAD.x as f32 - rmb - bar_size.x;
 
         let mut builder = UiWindowBuilder {
             max_width,
@@ -850,7 +733,7 @@ impl UiWindow {
             }
         }
 
-        let content_size = content_max + NUiContext::WINDOW_PAD.as_vec2() + rmb - cursor;
+        let content_size = content_max + UiContext::WINDOW_PAD.as_vec2() + rmb - cursor;
         
         scrollable.content_size = content_size;
         if !scroll_consumed && focused && self.open {
@@ -861,9 +744,9 @@ impl UiWindow {
         Some(r)
     }
 
-    fn text(
+    pub fn text(
         &mut self,
-        ctx: &NUiContext,
+        ctx: &UiContext,
         pos: Vec2,
         color: Vec4,
         text: &str,
@@ -895,9 +778,9 @@ impl UiWindow {
         pen
     }
 
-    fn text_direction(
+    pub fn text_direction(
         &mut self,
-        ctx: &NUiContext,
+        ctx: &UiContext,
         pos: Vec2,
         color: Vec4,
         text: &str,
@@ -1171,1069 +1054,6 @@ impl UiWindow {
     }
 }
 
-#[derive(Copy, Clone, Reflect)]
-pub struct TextCursor {
-    pub byte_pos: usize,
-}
-
-impl TextCursor {
-    pub fn move_right(&mut self, text: &str) {
-        if let Some((_, ch)) = text[self.byte_pos..].char_indices().next() {
-            self.byte_pos += ch.len_utf8();
-        }
-    }
-
-    pub fn move_left(&mut self, text: &str) {
-        if self.byte_pos == 0 {
-            return;
-        }
-        self.byte_pos -= 1;
-        while !text.is_char_boundary(self.byte_pos) {
-            self.byte_pos -= 1;
-        }
-    }
-
-    pub fn insert(&mut self, text: &mut String, str: &str) {
-        text.insert_str(self.byte_pos, str);
-        self.byte_pos += str.len();
-    }
-
-    pub fn delete_before(&mut self, text: &mut String) {
-        if self.byte_pos == 0 {
-            return;
-        }
-        self.move_left(text);
-        text.remove(self.byte_pos);
-    }
-
-    pub fn delete_after(&mut self, text: &mut String) {
-        if self.byte_pos < text.len() {
-            text.remove(self.byte_pos);
-        }
-    }
-
-    pub fn ch(&self, text: &str) -> Option<char> {
-        text[self.byte_pos..].chars().next()
-    }
-
-    pub fn ch_before(&self, text: &str) -> Option<char> {
-        if self.byte_pos == 0 {
-            None
-        }else {
-            text[(self.byte_pos-1)..].chars().next()
-        }
-    }
-}
-
-pub struct UiWindowBuilder<'a, 'w, 's> {
-    clip_rect: Rect,
-    max_width: f32,
-    pub window: &'a mut UiWindow,
-    window_id: u64,
-    keys: &'a mut MessageReader<'w, 's, KeyboardInput>,
-    pub ctx: Res<'w, NUiContext>,
-
-    ctrl: bool,
-    shift: bool,
-    focuse_next: bool,
-    scroll_delta: Vec2,
-    pub viewport_size: Vec2,
-    
-    input: MultiInput,
-
-    line_height: f32,
-    pub content_max: Vec2,
-    prev_cursor: Vec2,
-    cursor: Vec2,
-    cursor_origin: Vec2,
-    prev_element: Rect,
-    prev_element_hoverd: bool,
-    direction: bool,
-    hovered_smth: bool,
-    scroll_consumed: bool,
-}
-
-
-enum InputMode<'a> {
-    String(&'a mut String),
-    Float(f32),
-    Int(i32),
-}
-
-enum InputModeOutput {
-    Float(f32),
-    Int(i32),
-    None,
-}
-
-fn rgb_to_hsv(c: Vec4) -> (f32, f32, f32, f32) {
-    let r = c.x; let g = c.y; let b = c.z;
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let delta = max - min;
-
-    let v = max;
-    let s = if max > 0.0 { delta / max } else { 0.0 };
-    let h = if delta < 1e-6 {
-        0.0
-    } else if max == r {
-        ((g - b) / delta).rem_euclid(6.0) / 6.0
-    } else if max == g {
-        ((b - r) / delta + 2.0) / 6.0
-    } else {
-        ((r - g) / delta + 4.0) / 6.0
-    };
-    (h, s, v, c.w)
-}
-
-fn hsv_to_rgb(h: f32, s: f32, v: f32, a: f32) -> Vec4 {
-    let h6 = h * 6.0;
-    let i  = h6.floor() as i32;
-    let f  = h6 - i as f32;
-    let p  = v * (1.0 - s);
-    let q  = v * (1.0 - s * f);
-    let t  = v * (1.0 - s * (1.0 - f));
-    let (r, g, b) = match i % 6 {
-        0 => (v, t, p),
-        1 => (q, v, p),
-        2 => (p, v, t),
-        3 => (p, q, v),
-        4 => (t, p, v),
-        _ => (v, p, q),
-    };
-    Vec4::new(r, g, b, a)
-}
-
-impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
-    fn id(&self, h: &impl Hash) -> NonZeroU64 {
-        let mut hash = DefaultHasher::new();
-        h.hash(&mut hash);
-        self.window_id.hash(&mut hash);
-        NonZeroU64::new(hash.finish()).unwrap()
-    }
-
-    fn element_clicked(&self, rect: Rect) -> bool {
-        self.hoverd(rect) && self.input.left_mouse_pressed
-    }
-
-    fn hoverd(&self, rect: Rect) -> bool {
-        Self::hoverdp(
-            rect,
-            self.clip_rect,
-            self.input.cursor_pos,
-            self.hovered_smth
-        ) && self.window.focused.is_some()
-    }
-
-    fn hoverdp(
-        rect: Rect,
-        clip: Rect,
-        cursor_pos: Option<Vec2>,
-        hovered_smth: bool,
-    ) -> bool {
-        let clipped_rect = rect.intersect(clip);
-        if let Some(mouse_pos) = cursor_pos
-            && clipped_rect.contains(mouse_pos)
-            && !hovered_smth
-        {
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn rect(&mut self, size: Vec2, ds: DrawSettings) {
-        self.window.draw_box(
-            from_pos_size(
-            self.cursor,
-            size,
-            ),
-            ds,
-            self.viewport_size,
-            self.clip_rect,
-        );
-        self.finish_element(size, false);
-    }
-
-    fn begin_element(&mut self, size: Vec2, consume_scroll: bool) -> bool{
-        if (self.cursor.cmpgt(self.clip_rect.max)).any() || ((self.cursor + size).cmplt(self.clip_rect.min)).any() {
-            self.finish_element(size, consume_scroll);
-            true
-        }else {
-            false
-        }
-    }
-
-    fn finish_element(&mut self, size: Vec2, consume_scroll: bool) {
-        let size = size.round();
-        let rect = from_pos_size(self.cursor, size);
-        self.prev_element = rect;
-        self.line_height = self.line_height.max(size.y);
-        self.content_max = self.content_max.max(self.cursor + size);
-        if self.hoverd(rect) {
-            self.prev_element_hoverd = true;
-            self.hovered_smth = true;
-            self.scroll_consumed |= consume_scroll;
-        } else {
-            self.prev_element_hoverd = false;
-        }
-        if self.direction {
-            self.cursor.x += size.x + NUiContext::ELEMENT_GAP.x as f32;
-        } else {
-            self.cursor.y += size.y + NUiContext::ELEMENT_GAP.y as f32;
-        }
-    }
-
-    pub fn text(&mut self, label: impl AsRef<str>) {
-        let size = self.ctx.text_size(label.as_ref());
-        if self.begin_element(size, false) {
-            return;
-        }
-        self.window.text(
-            &self.ctx,
-            self.cursor,
-            NUiContext::TEXT,
-            label.as_ref(),
-            self.viewport_size,
-            self.clip_rect,
-            false,
-        );
-        self.finish_element(size, false);
-    }
-
-    fn child_offset() -> Vec2 {
-        NUiContext::CHILD_PAD.as_vec2() + NUiContext::BORDER.max(NUiContext::ROUNDING) as f32
-    }
-
-    fn contain_size(size: Vec2) -> Vec2 {
-        (size + Self::child_offset() * 2.0).round()
-    }
-    
-    fn child_cursor(&self) -> Vec2 {
-        (self.cursor + Self::child_offset()).round()
-    }
-
-    pub fn button(&mut self, label: impl AsRef<str>) -> bool {
-        let size = Self::contain_size(Vec2::new(self.ctx.text_len(label.as_ref()), self.ctx.acent - self.ctx.decent));
-        if self.begin_element(size, false) {
-            return false;
-        }
-        let hoverd = self.hoverd(Rect::from_corners(self.cursor,  self.cursor + size));
-        let clicked = self.input.left_mouse_pressed && hoverd;
-
-        self.window.draw_box(from_pos_size(self.cursor, size), DrawSettings::new(hoverd, clicked), self.viewport_size, self.clip_rect);
-        self.window.text(&self.ctx, self.child_cursor(), NUiContext::TEXT, label.as_ref(), self.viewport_size, self.clip_rect, false);
-        self.finish_element(size, false);
-        clicked
-    }
-
-    pub fn slider(&mut self, id: impl Hash, min: f32, max: f32, width: f32, value: f32) -> f32 {
-        let id = self.id(&id);
-        let mut ds = DrawSettings::default();
-
-        let line_size = self.ctx.acent - self.ctx.decent;
-        let slider_height = line_size / 3.0;
-
-        let size = Vec2::new(width, slider_height);
-        let slide_size = Vec2::new(16.0, line_size);
-        
-        if self.begin_element(Vec2::new(width, slide_size.y), false) {
-            return value;
-        }
-        let slider_pos = self.cursor + Vec2::new(0.0, (line_size - slider_height) / 2.0);
-        self.window.draw_box(from_pos_size(slider_pos, size), ds, self.viewport_size, self.clip_rect);
-        
-        let slide_pos = if max != min {
-            self.cursor +
-                Vec2::new(f32::clamp((value - min) / (max - min) * width, 0.0, width) - slide_size.x * 0.5, 0.0).round()
-        }else {
-            (self.cursor + Vec2::new(width / 2.0, 0.0)).round()
-        };
-
-        let slide = from_pos_size(slide_pos, slide_size);
-
-        if self.element_clicked(slide) {
-            if let Some(f) = &mut self.window.focused {
-                f.draging = Some(id);
-                f.darg_start = self.cursor;
-            }
-        }
-
-        ds.color = NUiContext::BLUE;
-        ds.rounding = 4;
-
-        self.window.draw_box(slide, ds, self.viewport_size, self.clip_rect);
-
-        let mut ret = value;
-        if let Some(f) = &self.window.focused && min != max {
-            if let Some(draging) = f.draging && draging == id.try_into().unwrap() && let Some(cursor) = self.input.cursor_pos {
-                let val = (cursor - f.darg_start).project_onto(Vec2::new(1.0, 0.0)).x;
-                ret = f32::clamp(val / width * (max - min) + min, min, max);
-            }    
-        }
-        
-        self.finish_element(Vec2::new(width, slide_size.y), false);
-        ret
-    }
-
-    const WORD_DELIMITER: [char; 6] = [' ', '.', ',', ':', '(', ')'];
-
-    fn text_input_private(&mut self, id: impl Hash, width: f32, input_mode: InputMode) -> InputModeOutput {
-        let id = self.id(&id);
-        let inner_size = Vec2::new(width, self.ctx.acent - self.ctx.decent);
-        let size = Self::contain_size(inner_size);
-        if self.begin_element(size, false) {
-            return InputModeOutput::None;
-        }
-        let clicked = self.element_clicked(from_pos_size(self.cursor, size));
-        let text_cursor = self.child_cursor();
-        
-        enum InputType {
-            String,
-            Float(f32),
-            Int(i32)
-        }
-        let (mut value, need_format_string, input_mode) = match input_mode {
-            InputMode::String(s) => (s, false, InputType::String),
-            InputMode::Float(f) => {
-                (&mut format!("{:.2}", f), true, InputType::Float(f))
-            },
-            InputMode::Int(i) => {
-                (&mut format!("{}", i), true, InputType::Int(i))
-            },
-        };
-        let text_clip = from_pos_size(text_cursor, inner_size).intersect(self.clip_rect);
-
-        let mut just_focused = false;
-        let mut focused = if let Some(focused) = self.window.focused.as_mut() {
-            if (clicked && focused.focused != Some(id)) || self.focuse_next {
-                focused.focused = Some(id);
-                self.focuse_next = false;
-                if need_format_string {
-                    focused.format_string = value.clone();
-                }
-                focused.cursor = TextCursor {
-                    byte_pos: value.len(),
-                };
-                focused.offset = 0.0;
-                focused.selected = 0..value.len();
-                just_focused = true;
-            }
-            if focused.focused == Some(id) {
-                if need_format_string {
-                    value = &mut focused.format_string;
-                }
-
-                focused.cursor.byte_pos = focused.cursor.byte_pos.min(value.len());
-                focused.selected.end = focused.selected.end.min(value.len()); 
-                focused.selected.start = focused.selected.start.min(value.len()); 
-                Some((
-                    &mut focused.cursor,
-                    &mut focused.offset,
-                    &mut focused.selected,
-                    &mut focused.focused,
-                ))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let mut ds = DrawSettings::default();
-        if let Some((cursor, view, selected, focused)) = &mut focused {
-            ds = ds.border_color(NUiContext::BLUE);
-            for key in self.keys.read() {
-                let has_selection = selected.start != selected.end;
-                let sel_min = selected.start.min(selected.end);
-                let sel_max = selected.start.max(selected.end);
-                if !(key.repeat || key.state.is_pressed()) {
-                    continue;
-                }
-
-                let mut navigation = false;
-                if key.key_code == KeyCode::ArrowLeft {
-                    navigation = true;
-                    if has_selection && !self.shift {
-                        cursor.byte_pos = sel_min;
-                    } else {
-                        cursor.move_left(&value);
-                        if self.ctrl {
-                            while let Some(char) = cursor.ch_before(&value)
-                                && !Self::WORD_DELIMITER.contains(&char)
-                                && cursor.byte_pos != 0
-                            {
-                                cursor.move_left(&value);
-                            }
-                        }
-                    }
-                } else if key.key_code == KeyCode::ArrowRight {
-                    navigation = true;
-                    if has_selection && !self.shift {
-                        cursor.byte_pos = sel_max;
-                    } else {
-                        cursor.move_right(&value);
-                        if self.ctrl {
-                            while let Some(char) = cursor.ch(&value)
-                                && !Self::WORD_DELIMITER.contains(&char)
-                                && cursor.byte_pos != value.len()
-                            {
-                                cursor.move_right(&value);
-                            }
-                        }
-                    }
-                } else if key.key_code == KeyCode::Home {
-                    navigation = true;
-                    cursor.byte_pos = 0;
-                } else if key.key_code == KeyCode::End {
-                    navigation = true;
-                    cursor.byte_pos = value.len();
-                } else if key.key_code == KeyCode::Backspace {
-                    if has_selection {
-                        value.drain(sel_min..sel_max);
-                        cursor.byte_pos = sel_min;
-                        selected.start = sel_min;
-                        selected.end = sel_min;
-                    } else {
-                        cursor.delete_before(value);
-                        if self.ctrl {
-                            while let Some(char) = cursor.ch_before(&value)
-                                && !Self::WORD_DELIMITER.contains(&char)
-                                && cursor.byte_pos != 0
-                            {
-                                cursor.delete_before(value);
-                            }
-                        }
-                    }
-                    selected.start = cursor.byte_pos;
-                    selected.end = cursor.byte_pos;
-                    continue;
-                } else if key.key_code == KeyCode::Delete {
-                    if has_selection {
-                        value.drain(sel_min..sel_max);
-                        cursor.byte_pos = sel_min;
-                        selected.start = sel_min;
-                        selected.end = sel_min;
-                    } else {
-                        cursor.delete_after(value);
-                        if self.ctrl {
-                            while let Some(char) = cursor.ch(&value)
-                                && !Self::WORD_DELIMITER.contains(&char)
-                                && cursor.byte_pos != value.len()
-                            {
-                                cursor.delete_after(value);
-                            }
-                        }
-                    }
-                    selected.start = cursor.byte_pos;
-                    selected.end = cursor.byte_pos;
-                    continue;
-                } else if self.ctrl && key.key_code == KeyCode::KeyA {
-                    selected.start = 0;
-                    selected.end = value.len();
-                    cursor.byte_pos = value.len();
-                    continue;
-                } else if key.key_code == KeyCode::Enter || key.key_code == KeyCode::Escape {
-                    **focused = None;
-                    break;
-                } else if key.key_code == KeyCode::Tab {
-                    self.focuse_next = true;
-                    break;
-                } else if let Some(str) = &key.text {
-                    if str.chars().all(|c| self.ctx.has_char(c)) {
-                        if has_selection {
-                            value.drain(sel_min..sel_max);
-                            cursor.byte_pos = sel_min;
-                            selected.start = cursor.byte_pos;
-                            selected.end = cursor.byte_pos;
-                        }
-                        cursor.insert(value, str);
-                    }
-                }
-                if !self.shift {
-                    selected.start = cursor.byte_pos;
-                    selected.end = cursor.byte_pos;
-                } else if navigation {
-                    selected.end = cursor.byte_pos;
-                }
-            }
-
-            let mut pos = -**view;
-            let mut any_clicked = false;
-            for (i, c) in value.char_indices() {
-                let mut ae = self.ctx.get_char(c);
-                if self.input.left_mouse_pressing
-                    && Self::hoverdp(
-                        from_pos_size(
-                        text_cursor
-                            + Vec2::new(pos, 0.0),
-                        Vec2::new(ae.advance_width, self.ctx.acent - self.ctx.decent),
-                        ),
-                        self.clip_rect,
-                        self.input.cursor_pos,
-                        self.hovered_smth
-                    ) && !just_focused
-                {   
-                    any_clicked = true;
-                    cursor.byte_pos = i;
-                    if self.shift {
-                        selected.end = i;
-                    }else {
-                        selected.start = i;
-                        selected.end = i;
-                    }
-                }
-                pos += ae.advance_width;
-            }
-            if !any_clicked && clicked && !just_focused {
-                let end = value.len();
-                cursor.byte_pos = end;
-                if self.shift {
-                    selected.end = end;
-                }else {
-                    selected.start = end;
-                    selected.end = end;
-                }
-            }
-
-            let offset = self.ctx.text_len(&value[..cursor.byte_pos]).round();
-            let left = (offset - 5.0).max(0.0);
-            if left < **view {
-                **view = left;
-            }
-            let right = (offset - width + 5.0).max(0.0);
-            if right > **view {
-                **view = right;
-            }
-        }
-        let focused = focused.map(|(e1, e2, e3, _)| (*e1, *e2, e3.clone()));
-        let value = value.clone();
-        
-        self.window.draw_box(from_pos_size(self.cursor, size), ds, self.viewport_size, self.clip_rect);
-       
-        let p = text_cursor - Vec2::new(focused.as_ref().map(|e| e.1).unwrap_or(0.0), 0.0);
-        self.window.text(&self.ctx, p, NUiContext::TEXT, &value, self.viewport_size, text_clip, false);
-
-        if let Some((cursor, offset, selected)) = &focused {
-            let x = self.ctx.text_len(&value[..cursor.byte_pos]);
-            let mut ds = DrawSettings {
-                color: Vec4::ONE,
-                round_bottomleft: false,
-                round_bottomright: false,
-                round_topleft: false,
-                round_topright: false,
-                rounding: 0,
-                border: None,
-                on_top: false,
-            };
-            self.window.draw_box(from_pos_size(text_cursor + Vec2::new(x - *offset, 0.0), Vec2::new(1.0, self.ctx.acent - self.ctx.decent)), ds, self.viewport_size, text_clip);
-
-            ds.color = NUiContext::BLUE_DIM;
-            let start = selected.start.min(selected.end);
-            let end = selected.start.max(selected.end);
-
-            let start = self.ctx.text_len(&value[..start]);
-            let end = self.ctx.text_len(&value[..end]);
-
-            self.window.draw_box(from_pos_size(text_cursor + Vec2::new(start - offset, 0.0), Vec2::new(end - start, self.ctx.acent - self.ctx.decent)), ds, self.viewport_size, text_clip);
-        }
-
-        self.finish_element(size, false);
-        match input_mode {
-            InputType::Float(f) => InputModeOutput::Float(value.parse().unwrap_or(f)),
-            InputType::Int(i) => InputModeOutput::Int(value.parse().unwrap_or(i)),
-            InputType::String => InputModeOutput::None
-        }
-    }
-
-    pub fn text_input(&mut self, id: impl Hash, value: &mut String, width: f32) {
-        self.text_input_private(id, width, InputMode::String(value));
-    }
-    
-    pub fn float_input(&mut self, id: impl Hash, value: f32, width: f32) -> f32 {
-        if let InputModeOutput::Float(v) = self.text_input_private(id, width, InputMode::Float(value)) {
-            v
-        }else {
-            value
-        }
-    }
-
-    pub fn check_box(&mut self, mut value: bool) -> bool {
-        let size = Self::contain_size(Vec2::new(self.ctx.text_len("✓"), self.ctx.acent - self.ctx.decent));
-        if self.begin_element(size, false) {
-            return value;
-        }
-        let rect = from_pos_size(self.cursor, size);
-        let hoverd = self.hoverd(rect);
-        if self.input.left_mouse_pressed && hoverd {
-            value = !value; 
-        }
-        let ds = DrawSettings::new(hoverd, false);
-        self.window.draw_box(rect, ds, self.viewport_size, self.clip_rect);
-        if value {
-            self.window.text(&self.ctx, self.child_cursor(), NUiContext::BLUE, "✓", self.viewport_size, self.clip_rect, false);
-        }
-        self.finish_element(size, false);
-        value
-    }
-
-    pub fn dropdown(&mut self, id: impl Hash, mut selected: usize, options: &[&str]) -> usize {
-        let id = self.id(&id);
-
-        let sizex = options.iter().map(|o| self.ctx.text_len(*o)).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less)).unwrap_or(0.0);
-        let arrow_size = self.ctx.text_len("▼") + NUiContext::ELEMENT_GAP.x as f32;
-        let button_size = Self::contain_size(Vec2::new(sizex + arrow_size, self.ctx.acent - self.ctx.decent));
-        if self.begin_element(button_size, false) {
-            return selected;
-        }
-        
-        let rect = from_pos_size(self.cursor, button_size);
-        let hoverd = self.hoverd(rect);
-        let open = self.window.focused.as_ref().map(|e| e.focused == Some(id)).unwrap_or(false);
-
-        let ds = DrawSettings{
-            color: if hoverd {NUiContext::S1} else {NUiContext::S0},
-            round_bottomleft: !open,
-            round_bottomright: !open,
-            ..Default::default()
-        };
-
-        self.window.draw_box(rect, ds, self.viewport_size, self.clip_rect);
-        self.window.text(&self.ctx, self.child_cursor(), NUiContext::TEXT, options[selected], self.viewport_size, self.clip_rect, false);
-        self.window.text_direction(&self.ctx, self.child_cursor() + Vec2::new(sizex + NUiContext::ELEMENT_GAP.x as f32, if open {self.ctx.acent + 1.0}else{0.0}), NUiContext::TEXT, "▼", self.viewport_size, self.clip_rect, false, if !open {TextDirection::Right} else {TextDirection::Up});
-        if hoverd && self.input.left_mouse_pressed{
-            if let Some(f) = &mut self.window.focused {
-                if f.focused != Some(id) {
-                    f.focused = Some(id);
-                }else if f.focused == Some(id) {
-                    f.focused = None;
-                }
-            }
-        }
-        if let Some(f) = &mut self.window.focused && f.focused == Some(id) {
-            let mut cursor = self.cursor + Vec2::new(0.0, button_size.y);
-            for (i, o) in options.iter().enumerate() {
-                let rect = from_pos_size(cursor, button_size);
-                let last = i + 1 == options.len();
-                let mut ds = DrawSettings {
-                    color: NUiContext::S0,
-                    border: Some(BorderSettings {
-                        color_bottom: if last { NUiContext::S2 } else { NUiContext::S0 },
-                        color_top: NUiContext::S0,
-                        color_left: NUiContext::S2,
-                        color_right: NUiContext::S2,
-                        size: NUiContext::BORDER,
-                    }),
-                    round_bottomleft: last,
-                    round_bottomright: last,
-                    round_topleft: false,
-                    round_topright: false,
-                    rounding: 0,
-                    on_top: true,
-                };
-                if self.hoverd(rect) {
-                    self.hovered_smth = true;
-                    ds.color = NUiContext::S1;
-                    ds.border.as_mut().unwrap().color_top = NUiContext::S1;
-                    if !last {
-                        ds.border.as_mut().unwrap().color_bottom = NUiContext::S1;
-                    }
-                    if self.input.left_mouse_pressed {
-                        selected = i;
-                        if let Some(f) = &mut self.window.focused {
-                            f.focused = None;
-                        }
-                    }
-                }
-                self.window.draw_box(rect, ds, self.viewport_size, self.clip_rect);
-                self.window.text(&self.ctx, (cursor + Self::child_offset()).round(), NUiContext::TEXT, o, self.viewport_size, self.clip_rect, true);
-                cursor.y += button_size.y;
-            }
-        }
-        self.finish_element(button_size, false);
-        selected
-    }
-
-
-    pub fn collapsable<R>(&mut self, label: impl Hash + AsRef<str>, children: impl FnOnce(&mut Self) -> R) -> Option<R> {
-        let id = self.id(&label);
-
-        let rmb = NUiContext::ROUNDING.max(NUiContext::BORDER) as f32;
-        let size = Vec2::new(self.remaining_width() - (NUiContext::CHILD_PAD.x as f32 + rmb), self.ctx.acent - self.ctx.decent + (NUiContext::CHILD_PAD.y as f32 + rmb) * 2.0).floor();
-        let rect = from_pos_size(self.cursor, size);
-
-        let hoverd = self.hoverd(rect);
-        
-        let text_cursor = self.child_cursor();
-        if hoverd && self.input.left_mouse_pressed {
-            if self.window.open_headers.contains(&id.into()) {
-                self.window.open_headers.remove(&id.into());
-            }else {
-                self.window.open_headers.insert(id.into());
-            }
-        }
-
-        let open = !self.window.open_headers.contains(&id.into());
-
-        if !open {
-            if self.begin_element(size, false) {
-                return None;
-            }
-        }
-
-        self.window.draw_box(rect, DrawSettings::new(hoverd, false), self.viewport_size, self.clip_rect);
-
-        self.window.text_direction(&self.ctx, text_cursor + if !open {Vec2::new(0.0, self.ctx.acent + 1.0)} else {Vec2::ZERO}, NUiContext::TEXT, "▼", self.viewport_size, self.clip_rect.intersect(rect), false, if open {TextDirection::Right} else {TextDirection::Up});
-        
-        let end = self.ctx.get_width('▼');
-        self.window.text(&self.ctx, Vec2::new(text_cursor.x + end + NUiContext::ELEMENT_GAP.x as f32 * 2.0, text_cursor.y), NUiContext::TEXT, label.as_ref(), self.viewport_size, self.clip_rect.intersect(rect), false);
-
-        self.finish_element(size, false);
-
-        let prev = self.cursor;
-        self.cursor += NUiContext::INDENT.as_vec2();
-        let res = if open {
-            Some(children(self))
-        }else {
-            None
-        };
-        let cursor = self.cursor;
-        self.cursor = prev;
-        if open {
-            self.finish_element(Vec2::new(0.0, cursor.y - prev.y), false);
-        }
-        res
-    }
-
-    pub fn remaining_width(&self) -> f32 {
-        (self.cursor_origin.x + self.max_width - self.cursor.x).max(0.0)
-    }
-
-    pub fn color_picker(&mut self, id: impl Hash, color: Vec4) -> Vec4 {
-        let color = color.clamp(Vec4::ZERO, Vec4::ONE);
-        let picker_size = 150.0f32;
-        let bar_width   = 14.0f32;
-        let gap         = NUiContext::ELEMENT_GAP.x as f32;
-        let rmb         = NUiContext::ROUNDING.max(NUiContext::BORDER) as f32;
-
-        let input_width = picker_size / 4.0 - gap + NUiContext::BORDER as f32;
-        let input_h     = self.ctx.acent - self.ctx.decent + (NUiContext::CHILD_PAD.as_vec2().y + rmb) * 2.0;
-        let full_width  = picker_size + gap + bar_width + gap + bar_width;
-
-        let total_size = Vec2::new(
-            full_width,
-            picker_size + gap + bar_width + gap + input_h,
-        );
-
-        if self.begin_element(total_size, false) {
-            return color;
-        }
-
-        let id = self.id(&id);
-
-        let sv_pos      = self.cursor;
-        let hue_pos     = self.cursor + Vec2::new(picker_size + gap, 0.0);
-        let alpha_pos   = self.cursor + Vec2::new(picker_size + gap + bar_width + gap, 0.0);
-        let preview_pos = self.cursor + Vec2::new(0.0, picker_size + gap);
-        let preview_size = Vec2::new(full_width, bar_width);
-        let inputs_pos  = self.cursor + Vec2::new(0.0, picker_size + gap + bar_width + gap);
-
-        let (mut h, mut s, mut v, mut a) = rgb_to_hsv(color);
-
-        let id_sv    = NonZeroU64::new(id.get()    ).unwrap();
-        let id_hue   = NonZeroU64::new(id.get() + 1).unwrap();
-        let id_alpha = NonZeroU64::new(id.get() + 2).unwrap();
-
-        if let Some(cursor_pos) = self.input.cursor_pos {
-            if self.input.left_mouse_pressing {
-                if let Some(f) = &mut self.window.focused {
-                    if self.input.left_mouse_pressed {
-                        let sv_rect    = Rect::from_corners(sv_pos,    sv_pos    + Vec2::splat(picker_size));
-                        let hue_rect   = Rect::from_corners(hue_pos,   hue_pos   + Vec2::new(bar_width, picker_size));
-                        let alpha_rect = Rect::from_corners(alpha_pos, alpha_pos + Vec2::new(bar_width, picker_size));
-                        if sv_rect.contains(cursor_pos) {
-                            f.draging = Some(id_sv);
-                        } else if hue_rect.contains(cursor_pos) {
-                            f.draging = Some(id_hue);
-                        } else if alpha_rect.contains(cursor_pos) {
-                            f.draging = Some(id_alpha);
-                        }
-                    }
-                    if f.draging == Some(id_sv) {
-                        s = ((cursor_pos.x - sv_pos.x) / picker_size).clamp(0.0, 1.0);
-                        v = 1.0 - ((cursor_pos.y - sv_pos.y) / picker_size).clamp(0.0, 1.0);
-                    } else if f.draging == Some(id_hue) {
-                        h = ((cursor_pos.y - hue_pos.y) / picker_size).clamp(0.0, 1.0);
-                    } else if f.draging == Some(id_alpha) {
-                        a = 1.0 - ((cursor_pos.y - alpha_pos.y) / picker_size).clamp(0.0, 1.0);
-                    }
-                }
-            }
-        }
-
-        let new_color = hsv_to_rgb(h, s, v, a);
-        let pure_hue  = hsv_to_rgb(h, 1.0, 1.0, 1.0);
-        let half_vp   = self.viewport_size / 2.0;
-        let clip_min  = self.clip_rect.min;
-        let clip_max  = self.clip_rect.max;
-        let solid     = Vec2::splat(20.0);
-
-        let to_ndc = |p: Vec2| (p / half_vp) - Vec2::splat(1.0);
-
-        let emit_quad = |
-            verts: &mut Vec<UIVertex>,
-            idxs: &mut Vec<u32>,
-            corners: [(Vec2, Vec4); 4],
-        | {
-            let min_x = corners.iter().fold(f32::MAX, |acc, (p, _)| acc.min(p.x));
-            let min_y = corners.iter().fold(f32::MAX, |acc, (p, _)| acc.min(p.y));
-            let max_x = corners.iter().fold(f32::MIN, |acc, (p, _)| acc.max(p.x));
-            let max_y = corners.iter().fold(f32::MIN, |acc, (p, _)| acc.max(p.y));
-
-            let cmin_x = min_x.max(clip_min.x);
-            let cmin_y = min_y.max(clip_min.y);
-            let cmax_x = max_x.min(clip_max.x);
-            let cmax_y = max_y.min(clip_max.y);
-
-            if cmin_x >= cmax_x || cmin_y >= cmax_y { return; }
-
-            let x_range = max_x - min_x;
-            let y_range = max_y - min_y;
-
-            let bilerp = |px: f32, py: f32| -> Vec4 {
-                let tx = if x_range > 0.0 { (px - min_x) / x_range } else { 0.0 };
-                let ty = if y_range > 0.0 { (py - min_y) / y_range } else { 0.0 };
-                let top    = corners[0].1.lerp(corners[1].1, tx);
-                let bottom = corners[3].1.lerp(corners[2].1, tx);
-                top.lerp(bottom, ty)
-            };
-
-            let vi = verts.len() as u32;
-            verts.extend_from_slice(&[
-                UIVertex { pos: to_ndc(Vec2::new(cmin_x, cmin_y)), color: bilerp(cmin_x, cmin_y), uv: solid },
-                UIVertex { pos: to_ndc(Vec2::new(cmax_x, cmin_y)), color: bilerp(cmax_x, cmin_y), uv: solid },
-                UIVertex { pos: to_ndc(Vec2::new(cmax_x, cmax_y)), color: bilerp(cmax_x, cmax_y), uv: solid },
-                UIVertex { pos: to_ndc(Vec2::new(cmin_x, cmax_y)), color: bilerp(cmin_x, cmax_y), uv: solid },
-            ]);
-            idxs.extend_from_slice(&[vi, vi+1, vi+2, vi, vi+3, vi+2]);
-        };
-
-        let checker = |win: &mut UiWindow, pos: Vec2, size: Vec2| {
-            let check = 3.0f32;
-            let dark  = Vec4::new(0.4, 0.4, 0.4, 1.0);
-            let light = Vec4::new(0.7, 0.7, 0.7, 1.0);
-            let cols = (size.x / check).ceil() as u32;
-            let rows = (size.y / check).ceil() as u32;
-            for row in 0..rows {
-                for col in 0..cols {
-                    let c = if (row + col) % 2 == 0 { dark } else { light };
-                    let p = pos + Vec2::new(col as f32 * check, row as f32 * check);
-                    let s = Vec2::new(
-                        check.min(size.x - col as f32 * check),
-                        check.min(size.y - row as f32 * check),
-                    );
-                    win.rect(from_pos_size(p, s), None, c, self.viewport_size, self.clip_rect, false);
-                }
-            }
-        };
-
-        {
-            let tl = sv_pos;
-            let tr = sv_pos + Vec2::new(picker_size, 0.0);
-            let br = sv_pos + Vec2::splat(picker_size);
-            let bl = sv_pos + Vec2::new(0.0, picker_size);
-
-            emit_quad(&mut self.window.verticies, &mut self.window.indicies, [
-                (tl, Vec4::ONE),
-                (tr, pure_hue),
-                (br, pure_hue),
-                (bl, Vec4::ONE),
-            ]);
-            emit_quad(&mut self.window.verticies, &mut self.window.indicies, [
-                (tl, Vec4::new(0.0, 0.0, 0.0, 0.0)),
-                (tr, Vec4::new(0.0, 0.0, 0.0, 0.0)),
-                (br, Vec4::new(0.0, 0.0, 0.0, 1.0)),
-                (bl, Vec4::new(0.0, 0.0, 0.0, 1.0)),
-            ]);
-
-            let cx = sv_pos + Vec2::new(s * picker_size, (1.0 - v) * picker_size);
-            let cross = 4.0f32;
-            self.window.rect(from_pos_size(cx - Vec2::new(cross, 1.0), Vec2::new(cross * 2.0, 2.0)), None, Vec4::ONE, self.viewport_size, self.clip_rect, false);
-            self.window.rect(from_pos_size(cx - Vec2::new(1.0, cross), Vec2::new(2.0, cross * 2.0)), None, Vec4::ONE, self.viewport_size, self.clip_rect, false);
-        }
-
-        {
-            let sextants: [(f32, f32); 6] = [
-                (0.0/6.0, 1.0/6.0), (1.0/6.0, 2.0/6.0), (2.0/6.0, 3.0/6.0),
-                (3.0/6.0, 4.0/6.0), (4.0/6.0, 5.0/6.0), (5.0/6.0, 6.0/6.0),
-            ];
-            for (t0, t1) in sextants {
-                let y0 = hue_pos.y + t0 * picker_size;
-                let y1 = hue_pos.y + t1 * picker_size;
-                let c0 = hsv_to_rgb(t0, 1.0, 1.0, 1.0);
-                let c1 = hsv_to_rgb(t1, 1.0, 1.0, 1.0);
-                emit_quad(&mut self.window.verticies, &mut self.window.indicies, [
-                    (Vec2::new(hue_pos.x,             y0), c0),
-                    (Vec2::new(hue_pos.x + bar_width, y0), c0),
-                    (Vec2::new(hue_pos.x + bar_width, y1), c1),
-                    (Vec2::new(hue_pos.x,             y1), c1),
-                ]);
-            }
-            let cy = hue_pos.y + h * picker_size;
-            self.window.rect(from_pos_size(Vec2::new(hue_pos.x, cy - 1.0), Vec2::new(bar_width, 2.0)), None, Vec4::ONE, self.viewport_size, self.clip_rect, false);
-        }
-
-        {
-            checker(&mut self.window, alpha_pos, Vec2::new(bar_width, picker_size));
-            let c_top = Vec4::new(new_color.x, new_color.y, new_color.z, 1.0);
-            let c_bot = Vec4::new(new_color.x, new_color.y, new_color.z, 0.0);
-            emit_quad(&mut self.window.verticies, &mut self.window.indicies, [
-                (alpha_pos,                                      c_top),
-                (alpha_pos + Vec2::new(bar_width, 0.0),         c_top),
-                (alpha_pos + Vec2::new(bar_width, picker_size), c_bot),
-                (alpha_pos + Vec2::new(0.0,       picker_size), c_bot),
-            ]);
-            let cy = alpha_pos.y + (1.0 - a) * picker_size;
-            self.window.rect(from_pos_size(Vec2::new(alpha_pos.x, cy - 1.0), Vec2::new(bar_width, 2.0)), None, Vec4::ONE, self.viewport_size, self.clip_rect, false);
-        }
-
-        {
-            checker(&mut self.window, preview_pos, preview_size);
-            self.window.rect(from_pos_size(preview_pos, preview_size), None, new_color, self.viewport_size, self.clip_rect, false);
-        }
-
-        {
-            let saved_cursor   = self.cursor;
-            let saved_direction = self.direction;
-
-            self.cursor = inputs_pos;
-            self.direction = true;
-
-            let r = self.float_input(id.get() + 10, new_color.x, input_width);
-            let g = self.float_input(id.get() + 11, new_color.y, input_width);
-            let b = self.float_input(id.get() + 12, new_color.z, input_width);
-            let a = self.float_input(id.get() + 13, new_color.w, input_width);
-
-            self.cursor = saved_cursor;
-            self.direction = saved_direction;
-
-            self.finish_element(total_size, false);
-
-            Vec4::new(r, g, b, a).clamp(Vec4::ZERO, Vec4::ONE)
-        }
-    }
-
-    pub fn container<R>(&mut self, id: impl Hash, size: Vec2, f: impl FnOnce(&mut Self) -> R) -> R{
-        let id = self.id(&id);
-        let scroll = self.window.scrollables.entry(id.into()).or_insert(Scrollable { content_size: size, scroll: Vec2::ZERO }).scroll;
-        
-        let rect = from_pos_size(self.cursor, size);
-        self.window.draw_box(rect, DrawSettings::default(), self.viewport_size, self.clip_rect);
-
-        let prev_cursor = self.cursor;
-        let cr = self.clip_rect;
-
-        let content_max = self.content_max;
-
-        self.clip_rect = self.clip_rect.intersect(rect);
-        self.cursor = (self.cursor + NUiContext::WINDOW_PAD.as_vec2() - scroll).round();
-        let org = self.cursor;
-        self.content_max = Vec2::ZERO;
-
-        let r = f(self);
-
-        let (_, mut scrollable) = self.window.scrollables.remove_entry(&id.into()).unwrap();
-        scrollable.content_size = self.content_max - org;
-        scrollable.draw(id, rect, self.window, self.viewport_size, self.input.cursor_pos, self.input.left_mouse_pressed, self.clip_rect);
-        
-        if self.hoverd(rect) && !self.scroll_consumed {
-            scrollable.scroll(self.scroll_delta, size);
-        }
-
-        self.window.scrollables.insert(id.into(), scrollable);
-        self.cursor = prev_cursor;
-        self.content_max = content_max;
-        self.finish_element(size, true);
-        self.clip_rect = cr;
-        r
-    }
-
-    pub fn histogram<'b>(&mut self, width: f32, height: f32, max: f32, min: f32, values: impl ExactSizeIterator<Item = &'b f32>) {
-        let size = Self::contain_size(Vec2::new(width, height));
-        if self.begin_element(size, false) {
-            return;
-        }
-
-        let rect = from_pos_size(self.cursor, size);
-        self.window.draw_box(rect, DrawSettings {
-            rounding: 0,
-            round_bottomleft: false,
-            round_bottomright: false,
-            round_topleft: false,
-            round_topright: false,
-            ..Default::default()
-        }, self.viewport_size, self.clip_rect);
-
-        let mut child_cursor = self.child_cursor() + Vec2::new(0.0, height);
-        let value_width = width / values.len() as f32;
-        let values_per_pixel = (value_width.recip()).ceil() as usize;
-        for values in &values.chunks(values_per_pixel) {
-            let value: f32 = values.cloned().sum::<f32>() / values_per_pixel as f32;
-            let t = (value + min) / (max - min);
-            let value_height = 0.0.lerp(height, t.clamp(0.0, 1.0));
-            let color = if t > 1.0 || t < 0.0 {
-                NUiContext::ERROR
-            }else {
-                NUiContext::BLUE
-            };
-            let value_rect = Rect::from_corners(child_cursor, child_cursor - Vec2::new(-value_width, value_height));
-            self.window.rect(value_rect, None, color, self.viewport_size, self.clip_rect, false);
-            if self.hoverd(value_rect) {
-                self.tooltip_label(format!("{:.5}", value));
-            }
-            child_cursor.x += value_width;
-        }
-
-        self.finish_element(size, false);
-    }
-
-    fn tooltip_label(&mut self, label: impl AsRef<str>) {
-        if let Some(cursor_pos) = self.input.cursor_pos {
-            let cursor_pos = cursor_pos.round();
-            let info_size = Self::contain_size(self.ctx.text_size(label.as_ref()).round());
-            let fullscreen_rect = Rect { min: Vec2::ZERO, max: self.viewport_size };
-            let info_rect = Rect { min: cursor_pos - info_size, max: cursor_pos };
-            self.window.draw_box(info_rect, DrawSettings {
-                on_top: true,
-                ..Default::default()
-            }, self.viewport_size, fullscreen_rect);
-            self.window.text(&self.ctx, info_rect.min + Self::child_offset(), NUiContext::TEXT, label.as_ref(), self.viewport_size, fullscreen_rect, true);
-        }
-    }
-
-    pub fn tooltip(&mut self, label: impl AsRef<str>) {
-        if self.prev_element_hoverd {
-            self.tooltip_label(label);
-        }
-    }
-
-    pub fn horizontal(&mut self) {
-        if !self.direction {
-            self.direction = true;
-            self.prev_cursor = self.cursor;
-            self.line_height = 0.0;
-        }
-    }
-
-    pub fn vertical(&mut self) {
-        if self.direction {
-            self.direction = false;
-            self.cursor = self.prev_cursor;
-
-            self.cursor.y += self.line_height + NUiContext::ELEMENT_GAP.y as f32;
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Split {
@@ -2256,9 +1076,10 @@ impl Split {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Resource)]
 pub enum DockingNode {
     Leaf {
+        focused: u32,
         windows: SmallVec<[u32; 8]>,
         root: bool,
     },
@@ -2270,18 +1091,163 @@ pub enum DockingNode {
     }
 }
 
+impl DockingNode {
+    fn split_area(area: Rect, split: Split, extend: f32) -> (Rect, Rect) {
+        let size = (1.0 - extend) * area.size();
+        let left_area = Rect {min: area.min, max: area.max - split.direction_vec() * size};
+        let size = extend * area.size();
+        let right_area = Rect {min: area.min + split.direction_vec() * size, max: area.max};
+        (left_area, right_area)
+    }
+
+    fn dock(&mut self, window: u32, cursor_pos: Vec2, area: Rect, header_h: f32) -> bool {
+        match self {
+            DockingNode::Leaf { windows, root, focused } => {
+                if from_pos_size(area.min, Vec2::new(area.width(), header_h)).contains(cursor_pos) {
+                    windows.push(window);
+                    return true;
+                }else if area.contains(cursor_pos) {
+                    let thickness = 40.0;
+                    let top = Rect::from_corners(area.min, Vec2::new(area.max.x, area.min.y + thickness)).contains(cursor_pos);
+                    let bottom = Rect::from_corners(Vec2::new(area.min.x, area.max.y - thickness), area.max).contains(cursor_pos);
+                    let left = Rect::from_corners(Vec2::new(area.min.x, area.min.y + thickness), Vec2::new(area.min.x + thickness, area.max.y - thickness)).contains(cursor_pos);
+                    let right = Rect::from_corners(Vec2::new(area.max.x - thickness, area.min.y + thickness), Vec2::new(area.max.x, area.max.y - thickness)).contains(cursor_pos);
+                    
+                    let split = if bottom || top {Split::Vertical} else {Split::Horizontal};
+                    
+                    if right || bottom {
+                        let right = Box::new(DockingNode::Leaf { windows: SmallVec::from_slice(&[window]), root: false, focused: 0 });
+                        let root = std::mem::take(self);
+                        *self = DockingNode::Node { split, extend: 0.5, left: Box::new(root), right };
+                        return true;
+                    }else if left || top{
+                        let left = Box::new(DockingNode::Leaf { windows: SmallVec::from_slice(&[window]), root: false, focused: 0 });
+                        let root = std::mem::take(self);
+                        *self = DockingNode::Node { split, extend: 0.5, left, right: Box::new(root) };
+                        return true;
+                    }else {
+                        return false;
+                    }
+                }
+                return false;
+            },
+            DockingNode::Node { split, extend, left, right } => {
+                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
+                if left_area.contains(cursor_pos) {
+                    Self::dock(left, window, cursor_pos, left_area, header_h)
+                }else if right_area.contains(cursor_pos) {
+                    Self::dock(right, window, cursor_pos, right_area, header_h)
+                }else {
+                    return false;
+                }
+            },
+        }
+    }
+
+    fn undock(&mut self, window: u32) -> bool {
+        match self {
+            DockingNode::Leaf { windows, root, focused } => {
+                if let Some(i) = windows.iter().position(|e| *e == window) {
+                    windows.remove(i);
+                }
+                windows.is_empty() && !*root
+            },
+            DockingNode::Node { split: _, extend: _, left, right } => {
+                let left_empty = left.undock(window);
+                let right_empty = right.undock(window);
+                if left_empty && right_empty {
+                    return true;
+                }
+                if left_empty {
+                    let root = std::mem::take(right);
+                    *self = *root; 
+                } else if right_empty {
+                    let root = std::mem::take(left);
+                    *self = *root;                
+                }
+                false
+            },
+        }
+    }
+
+    fn find_resize(node: &DockingNode, cursor_pos: Vec2, area: Rect, path: u64, depth: usize) -> (u64, u32, Vec2) {
+        match node {
+            DockingNode::Leaf { windows, root, focused } => {(u64::MAX, 0, Vec2::ZERO)},
+            DockingNode::Node { split, extend, left, right } => {
+                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
+                let thickness = 100.0;
+                let d = split.direction_vec();
+                let perp = d.yx();
+
+                let split_point = area.min + d * (area.size() * *extend);
+                let divider = Rect {
+                    min: split_point - d * (thickness / 2.0),
+                    max: split_point + d * (thickness / 2.0) + perp * area.size(),
+                };
+
+                let new_path = (path << 1) | 0b1;
+                if divider.contains(cursor_pos) {
+                    (path, depth as u32, area.min)
+                }else if left_area.contains(cursor_pos) {
+                    Self::find_resize(left, cursor_pos, left_area, new_path, depth + 1)
+                }else if right_area.contains(cursor_pos) {
+                    Self::find_resize(right, cursor_pos, right_area, path << 1, depth + 1)
+                }else {
+                    (u64::MAX, 0, Vec2::ZERO)
+                }
+            },
+        }
+    }
+
+    fn resize(node: &mut DockingNode, path: u64, max_depth: u32, depth: u32, delta: Vec2, area: Rect) {
+        match node {
+            DockingNode::Node { split, extend, left, right } => {
+                if depth == max_depth {
+                    *extend = (delta.project_onto(split.clone().direction_vec()) / area.size()).length();
+                }
+                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
+
+                if ((path >> depth) & 1) as u64 > 0 {
+                    Self::resize(left.as_mut(), path, max_depth, depth + 1, delta, left_area);
+                }else {
+                    Self::resize(right.as_mut(), path, max_depth, depth + 1, delta, right_area);
+                }
+            }
+            DockingNode::Leaf { .. } => {}
+        }
+    }
+
+    fn dock_info(node: &DockingNode, window: u32, area: Rect) -> Option<(Rect, SmallVec<[u32; 8]>, u32)> {
+        match node {
+            DockingNode::Leaf { windows, root, focused } => {
+                if windows.contains(&window) {
+                    Some((area, windows.clone(), *focused))
+                }else {
+                    None
+                }
+            },
+            DockingNode::Node { split, extend, left, right } => {
+                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
+
+                let left = Self::dock_info(left, window, left_area);
+                if left.is_some() {
+                    left
+                }else {
+                    Self::dock_info(right, window, right_area)
+                }
+            },
+        }
+    }
+}
+
 impl Default for DockingNode{
     fn default() -> Self {
-        DockingNode::Leaf { windows: SmallVec::new(), root: false }
+        DockingNode::Leaf { windows: SmallVec::new(), focused: 0, root: false }
     }
 }
 
 #[derive(Resource)]
-pub struct NUiContext {
-    pub add_windows: Mutex<SmallVec<[String; 4]>>,
-    pub docking_nodes: Box<DockingNode>,
-    pub window_labels: HashMap<String, u32>,
-    pub windows: Vec<Mutex<UiWindow>>,
+pub struct UiContext {
     pub font: Option<fontdue::Font>,
     pub atlas_lut: Box<[AtlasEntry]>,
     pub atlas_widths: Box<[f32]>,
@@ -2295,6 +1261,14 @@ pub struct NUiContext {
     pub resize_depth: u32,
     pub drag_start: Vec2,
 }
+
+#[derive(Resource)]
+pub struct UiWindows {
+    pub add_windows: Mutex<SmallVec<[String; 4]>>,
+    pub window_labels: HashMap<String, u32>,
+    pub windows: Vec<Mutex<UiWindow>>,
+}
+
 
 #[derive(Default, Copy, Clone)]
 pub struct AtlasEntry {
@@ -2322,7 +1296,7 @@ pub struct NUiResources {
     pub pending_indicies: Vec<u32>,
 }
 
-impl NUiContext {
+impl UiContext {
     pub const BG: Vec4 = Vec4::new(0.155, 0.155, 0.155, 1.0);
     pub const BG_DARK: Vec4 = Vec4::new(0.130, 0.130, 0.130, 1.0);
     pub const S0: Vec4 = Vec4::new(0.220, 0.220, 0.220, 1.0);
@@ -2360,13 +1334,17 @@ impl NUiContext {
     pub const MIN_THUMB: f32     = 20.0f32;
 
 
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<(Self, UiWindows, DockingNode)> {
         let bytes = fs::read("/home/karsten/code/GameEngine/editor_font.ttf")?;
         let font = Font::from_bytes(bytes, FontSettings::default()).unwrap();
         let font_metrics = font.horizontal_line_metrics(Self::FONTSCALE).unwrap();
 
-        let SaveState {docking_nodes, window_labels, windows} = ron::from_str(&fs::read_to_string("windows.ron").unwrap_or("".to_owned())).unwrap_or(SaveState { docking_nodes: Box::new(DockingNode::Leaf { windows: SmallVec::new(), root: true }), windows: Vec::new(), window_labels: HashMap::new() });
-        let windows = windows.iter().map(|w| {Mutex::new(UiWindow::new(w.size, w.open, w.docked))}).collect();
+        let SaveState {docking_nodes, window_labels, windows} = ron::from_str(&fs::read_to_string("windows.ron").unwrap_or("".to_owned())).unwrap_or(SaveState { docking_nodes: DockingNode::Leaf { windows: SmallVec::new(), root: true, focused: 0 }, windows: Vec::new(), window_labels: HashMap::new() });
+        let windows = UiWindows {
+            add_windows: Mutex::new(SmallVec::new()),
+            windows: windows.into_iter().map(|w| {Mutex::new(UiWindow::new(w.label, w.size, w.open, w.docked))}).collect(),
+            window_labels,
+        };
 
         let mut max_character_width = 0.0f32;
         let mut min_character_width = 0.0f32;
@@ -2403,13 +1381,9 @@ impl NUiContext {
         atlas_widths['\t' as usize] = 32.0;
 
 
-        Ok(Self {
+        Ok((Self {
             atlas_lut,
             atlas_widths,
-            add_windows: Mutex::new(SmallVec::new()),
-            windows,
-            docking_nodes,
-            window_labels,
             atlas_size: Vec2::ZERO,
             resize_path: u64::MAX,
             resize_depth: 0, 
@@ -2420,7 +1394,7 @@ impl NUiContext {
             acent: font_metrics.ascent,
             decent: font_metrics.descent,
             drag_start: Vec2::ZERO,
-        })
+        }, windows, docking_nodes))
     }
 
     pub(crate) fn build_ui_resources(&mut self) -> Result<NUiResources> {
@@ -2511,158 +1485,12 @@ impl NUiContext {
         })
     }
 
-    fn split_area(area: Rect, split: Split, extend: f32) -> (Rect, Rect) {
-        let size = (1.0 - extend) * area.size();
-        let left_area = Rect {min: area.min, max: area.max - split.direction_vec() * size};
-        let size = extend * area.size();
-        let right_area = Rect {min: area.min + split.direction_vec() * size, max: area.max};
-        (left_area, right_area)
-    }
-
-    fn dock(node: &mut Box<DockingNode>, window: u32, cursor_pos: Vec2, area: Rect, header_h: f32) -> bool {
-        match node.as_mut() {
-            DockingNode::Leaf { windows, root } => {
-                if from_pos_size(area.min, Vec2::new(area.width(), header_h)).contains(cursor_pos) {
-                    windows.push(window);
-                    return true;
-                }else if area.contains(cursor_pos) {
-                    let thickness = 40.0;
-                    let top = Rect::from_corners(area.min, Vec2::new(area.max.x, area.min.y + thickness)).contains(cursor_pos);
-                    let bottom = Rect::from_corners(Vec2::new(area.min.x, area.max.y - thickness), area.max).contains(cursor_pos);
-                    let left = Rect::from_corners(Vec2::new(area.min.x, area.min.y + thickness), Vec2::new(area.min.x + thickness, area.max.y - thickness)).contains(cursor_pos);
-                    let right = Rect::from_corners(Vec2::new(area.max.x - thickness, area.min.y + thickness), Vec2::new(area.max.x, area.max.y - thickness)).contains(cursor_pos);
-                    
-                    let split = if bottom || top {Split::Vertical} else {Split::Horizontal};
-                    
-                    if right || bottom {
-                        let right = Box::new(DockingNode::Leaf { windows: SmallVec::from_slice(&[window]), root: false });
-                        let root = std::mem::take(node);
-                        *node = Box::new(DockingNode::Node { split, extend: 0.5, left: root, right });
-                        return true;
-                    }else if left || top{
-                        let left = Box::new(DockingNode::Leaf { windows: SmallVec::from_slice(&[window]), root: false });
-                        let root = std::mem::take(node);
-                        *node = Box::new(DockingNode::Node { split, extend: 0.5, left, right: root });
-                        return true;
-                    }else {
-                        return false;
-                    }
-                }
-                return false;
-            },
-            DockingNode::Node { split, extend, left, right } => {
-                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
-                if left_area.contains(cursor_pos) {
-                    Self::dock(left, window, cursor_pos, left_area, header_h)
-                }else if right_area.contains(cursor_pos) {
-                    Self::dock(right, window, cursor_pos, right_area, header_h)
-                }else {
-                    return false;
-                }
-            },
-        }
-    }
-
-    fn undock(window: u32, root_node: &mut Box<DockingNode>) -> bool {
-        match root_node.as_mut() {
-            DockingNode::Leaf { windows, root } => {
-                if let Some(i) = windows.iter().position(|e| *e == window) {
-                    windows.remove(i);
-                }
-                windows.is_empty() && !*root
-            },
-            DockingNode::Node { split: _, extend: _, left, right } => {
-                let left_empty = Self::undock(window, left);
-                let right_empty = Self::undock(window, right);
-                if left_empty && right_empty {
-                    return true;
-                }
-                if left_empty {
-                    let root = std::mem::take(right);
-                    *root_node = root; 
-                } else if right_empty {
-                    let root = std::mem::take(left);
-                    *root_node = root;                
-                }
-                false
-            },
-        }
-    }
-
-    fn find_resize(node: &DockingNode, cursor_pos: Vec2, area: Rect, path: u64, depth: usize) -> (u64, u32, Vec2) {
-        match node {
-            DockingNode::Leaf { windows, root } => {(u64::MAX, 0, Vec2::ZERO)},
-            DockingNode::Node { split, extend, left, right } => {
-                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
-                let thickness = 20.0;
-                let d = split.direction_vec();
-                let perp = d.yx();
-
-                let split_point = area.min + d * (area.size() * *extend);
-                let divider = Rect {
-                    min: split_point - d * (thickness / 2.0),
-                    max: split_point + d * (thickness / 2.0) + perp * area.size(),
-                };
-
-                let new_path = (path << 1) | 0b1;
-                if divider.contains(cursor_pos) {
-                    (path, depth as u32, area.min)
-                }else if left_area.contains(cursor_pos) {
-                    Self::find_resize(left, cursor_pos, left_area, new_path, depth + 1)
-                }else if right_area.contains(cursor_pos) {
-                    Self::find_resize(right, cursor_pos, right_area, path << 1, depth + 1)
-                }else {
-                    (u64::MAX, 0, Vec2::ZERO)
-                }
-            },
-        }
-    }
-
-    fn resize(node: &mut DockingNode, path: u64, max_depth: u32, depth: u32, delta: Vec2, area: Rect) {
-        match node {
-            DockingNode::Node { split, extend, left, right } => {
-                if depth == max_depth {
-                    *extend = (delta.project_onto(split.clone().direction_vec()) / area.size()).length();
-                }
-                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
-
-                if ((path >> depth) & 1) as u64 > 0 {
-                    Self::resize(left.as_mut(), path, max_depth, depth + 1, delta, left_area);
-                }else {
-                    Self::resize(right.as_mut(), path, max_depth, depth + 1, delta, right_area);
-                }
-            }
-            DockingNode::Leaf { .. } => {}
-        }
-    }
-
-    fn dock_size(node: &DockingNode, window: u32, area: Rect) -> Option<Rect> {
-        match node {
-            DockingNode::Leaf { windows, root } => {
-                if windows.contains(&window) {
-                    Some(area)
-                }else {
-                    None
-                }
-            },
-            DockingNode::Node { split, extend, left, right } => {
-                let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
-
-                let left = Self::dock_size(left, window, left_area);
-                if left.is_some() {
-                    left
-                }else {
-                    Self::dock_size(right, window, right_area)
-                }
-            },
-        }
-    }
 
     fn header_height(&self) -> f32 {
-        (self.acent - self.decent + NUiContext::CHILD_PAD.y as f32 * 2.0).round()
+        (self.acent - self.decent + UiContext::CHILD_PAD.y as f32 * 2.0).round()
     }
 
-    fn get_char(&self, c: char) -> AtlasEntry {
+    pub fn get_char(&self, c: char) -> AtlasEntry {
         if (c as usize) < u16::MAX as usize {
             let entry = self.atlas_lut[c as usize];
             if entry.is_empty() {
@@ -2674,7 +1502,7 @@ impl NUiContext {
             self.atlas_lut['?' as usize]
         }
     }
-    fn get_width(&self, c: char) -> f32 {
+    pub fn get_width(&self, c: char) -> f32 {
         if (c as usize) < u16::MAX as usize {
             let entry = self.atlas_widths[c as usize];
             if entry < 0.0 {
@@ -2687,11 +1515,11 @@ impl NUiContext {
         }
     }
 
-    fn has_char(&self, c: char) -> bool {
+    pub fn has_char(&self, c: char) -> bool {
         (c as usize) < u16::MAX as usize && !self.atlas_lut[c as usize].is_empty()
     }
 
-    fn text_size(&self, str: &str) -> Vec2 {
+    pub fn text_size(&self, str: &str) -> Vec2 {
         let mut len = 0.0f32;
         let mut line_length = 0.0f32;
         let mut height = self.new_line_size;
@@ -2707,7 +1535,7 @@ impl NUiContext {
         Vec2::new(len, height)
     }
 
-    fn text_len(&self, str: &str) -> f32 {
+    pub fn text_len(&self, str: &str) -> f32 {
         let mut len = 0.0;
         for char in str.chars() {
             len += self.get_width(char);
@@ -2715,11 +1543,11 @@ impl NUiContext {
         len
     }
 
-    fn min_text_len(&self, len: usize) -> f32 {
+    pub fn min_text_len(&self, len: usize) -> f32 {
         len as f32 * self.min_character_width
     }
 
-    fn max_text_len(&self, len: usize) -> f32 {
+    pub fn max_text_len(&self, len: usize) -> f32 {
         len as f32 * self.max_character_width
     }
 }
@@ -2756,11 +1584,11 @@ pub fn create_ui_resources(
     if res.is_some() {
         return;
     }
-    let mut ctx = world.get_resource_mut::<NUiContext>().unwrap();
+    let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
     cmd.insert_resource(ctx.build_ui_resources().unwrap());
 }
 
-pub fn nextract_ui(mut res: If<ResMut<NUiResources>>, ctx: Extract<Res<NUiContext>>) {
+pub fn nextract_ui(mut res: If<ResMut<NUiResources>>, ctx: Extract<Res<UiContext>>) {
     for window in ctx.windows
         .iter()
         .sorted_by_key(|a| a.lock().unwrap().layer)
@@ -2778,11 +1606,11 @@ pub fn nextract_ui(mut res: If<ResMut<NUiResources>>, ctx: Extract<Res<NUiContex
 }
 
 #[derive(Clone, Copy)]
-struct MultiInput {
-    left_mouse_pressed: bool,
-    left_mouse_pressing: bool,
-    left_mouse_released: bool,
-    cursor_pos: Option<Vec2>
+pub struct MultiInput {
+    pub left_mouse_pressed: bool,
+    pub left_mouse_pressing: bool,
+    pub left_mouse_released: bool,
+    pub cursor_pos: Option<Vec2>
 }
 
 impl MultiInput {
@@ -2814,7 +1642,7 @@ impl MultiInput {
 pub fn update_windows(
     desktop_window: Single<&Window>,
     touch: Res<Touches>,
-    mut ctx: ResMut<NUiContext>,
+    mut ctx: ResMut<UiContext>,
     mut cursor_icon: Single<&mut CursorIcon>,
     buttons: Res<ButtonInput<MouseButton>>
 ) {
@@ -2825,7 +1653,7 @@ pub fn update_windows(
         
         for label in add_windows {
             let idx = ctx.windows.len();
-            ctx.windows.push(Mutex::new(UiWindow::new(Rect::from_center_half_size(desktop_window.size() / 2.0, Vec2::splat(100.0)), true, false)));
+            ctx.windows.push(Mutex::new(UiWindow::new(label.clone(), Rect::from_center_half_size(desktop_window.size() / 2.0, Vec2::splat(100.0)), true, false)));
             ctx.window_labels.insert(label, idx as u32);
         }
     }
@@ -2840,10 +1668,14 @@ pub fn update_windows(
     for (i, window_cell) in ctx.windows.iter().enumerate().sorted_by(|a, b| a.1.lock().unwrap().layer.cmp(&b.1.lock().unwrap().layer)).rev() {
         let mut window = window_cell.lock().unwrap();
 
+        let mut id = DefaultHasher::new();
+        window.label.hash(&mut id);
+        let id = id.finish();
+
         let interactive_rect = if window.open {
             Rect::from_corners(
-                window.size().min - Vec2::splat(NUiContext::DRAG_THRESHHOLD),
-                window.size().max + Vec2::splat(NUiContext::DRAG_THRESHHOLD),
+                window.size().min - Vec2::splat(UiContext::DRAG_THRESHHOLD),
+                window.size().max + Vec2::splat(UiContext::DRAG_THRESHHOLD),
             )
         } else {
             Rect::from_corners(
@@ -2855,9 +1687,8 @@ pub fn update_windows(
         let cursor_inside = input.cursor_pos
             .map(|p| interactive_rect.contains(p))
             .unwrap_or(false);
-        let has_geometry = !window.indicies.is_empty();
 
-        if cursor_inside && has_geometry && newly_focused.is_none() {
+        if cursor_inside && newly_focused.is_none() {
             if input.left_mouse_pressed {
                 newly_focused = Some(i);
                 if window.focused.is_none() {
@@ -2868,14 +1699,21 @@ pub fn update_windows(
             window.focused = None;
         }
 
-        if window.docked {
-            if let Some(size) = NUiContext::dock_size(&ctx.docking_nodes, i as u32, Rect::from_corners(Vec2::ZERO, desktop_window.size())) {
+        let siblings = if window.docked {
+            if let Some((size, siblings, focused)) = UiContext::dock_info(&ctx.docking_nodes, i as u32, Rect::from_corners(Vec2::ZERO, desktop_window.size())) {
                 window.dock_rect = Rect {
                     max: size.max.round(),
                     min: size.min.round()
                 };
+                Some((siblings, focused))
+            }else {
+                None
             }
-        }
+        }else {
+            None
+        };
+
+        window.open = siblings.as_ref().map(|s| s.0[s.1 as usize] as usize == i).unwrap_or(window.open);
 
 
         let mut focused = window.focused.take();
@@ -2897,7 +1735,7 @@ pub fn update_windows(
                 } else if !window.size().contains(cursor_pos) && !window.docked{
                     let min = window.size().min;
                     let max = window.size().max;
-                    let t   = NUiContext::DRAG_THRESHHOLD;
+                    let t   = UiContext::DRAG_THRESHHOLD;
 
                     let resize_top    = Rect::from_corners(Vec2::new(min.x - t, min.y - t), Vec2::new(max.x + t, min.y + t)).contains(cursor_pos);
                     let resize_bottom = Rect::from_corners(Vec2::new(min.x - t, max.y - t), Vec2::new(max.x + t, max.y + t)).contains(cursor_pos);
@@ -2961,45 +1799,41 @@ pub fn update_windows(
         window.top_indicies.clear();
         window.top_verticies.clear();
 
-        let size = window.size().max - window.size().min;
-        let r = NUiContext::WINDOW_ROUNDING as f32;
-        let b = NUiContext::BORDER as f32;
-        let rmb = r.max(b);
+        let size = window.size().size();
+        let pos = window.size().min;
 
-        let header_h = (ctx.acent - ctx.decent + NUiContext::WINDOW_PAD.y as f32 * 2.0).round();
-        let focused = self.focused.is_some();
-        let input = MultiInput::new(&window, &buttons, &touch);
+        let header_h = (ctx.acent - ctx.decent + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
+        let focused = window.focused.is_some();
 
-
-        let (resize_top, resize_bottom, resize_left, resize_right) = self.focused.as_ref().map(|f| {
+        let (resize_top, resize_bottom, resize_left, resize_right) = window.focused.as_ref().map(|f| {
             (f.resize_top, f.resize_bottom, f.resize_left, f.resize_right)
         }).unwrap_or_default();
 
         let border_color = |active: bool| {
-            if active { NUiContext::BLUE } else { NUiContext::S1 }
+            if active { UiContext::BLUE } else { UiContext::S1 }
         };
 
         let mut window_ds = DrawSettings {
             on_top: false,
-            color: if self.docked {NUiContext::BG_DARK} else {NUiContext::BG},
-            rounding: NUiContext::WINDOW_ROUNDING,
+            color: if window.docked {UiContext::BG_DARK} else {UiContext::BG},
+            rounding: UiContext::WINDOW_ROUNDING,
             round_topleft: false,
             round_topright: false,
-            round_bottomleft: !self.docked,
-            round_bottomright: !self.docked,
+            round_bottomleft: !window.docked,
+            round_bottomright: !window.docked,
             border: Some(BorderSettings {
                 color_top: border_color(resize_top),
                 color_bottom: border_color(resize_bottom),
                 color_left: border_color(resize_left),
                 color_right: border_color(resize_right),
-                size: NUiContext::BORDER,
+                size: UiContext::BORDER,
             }),
         };
         let full_screen = Rect::from_corners(Vec2::ZERO, viewport_size);
-        let content_area = Rect { min: self.size().min + Vec2::new(0.0, header_h), max: self.size().max };
+        let content_area = Rect { min: window.size().min + Vec2::new(0.0, header_h), max: window.size().max };
 
-        if self.open {
-            self.draw_box(
+        if window.open {
+            window.draw_box(
                 content_area,
                 window_ds,
                 viewport_size,
@@ -3007,47 +1841,87 @@ pub fn update_windows(
             );
         }
 
-        window_ds.round_topleft = !self.docked;
-        window_ds.round_topright = !self.docked;
+        window_ds.round_topleft = !window.docked;
+        window_ds.round_topright = !window.docked;
         window_ds.round_bottomleft = false;
         window_ds.round_bottomright = false;
-        window_ds.color = if focused { NUiContext::BG } else { NUiContext::BG_DARK };
-        window_ds.border.as_mut().unwrap().color_bottom = NUiContext::S1;
-        self.draw_box(
+        window_ds.color = if focused { UiContext::BG } else { UiContext::BG_DARK };
+        window_ds.border.as_mut().unwrap().color_bottom = UiContext::S1;
+        window.draw_box(
             from_pos_size(
-            self.size().min,
-            Vec2::new(size.x, header_h + NUiContext::BORDER as f32),
+            pos,
+            Vec2::new(size.x, header_h + UiContext::BORDER as f32),
             ),
             window_ds,
             viewport_size,
             full_screen,
         );
 
-        let header_pos = self.size().min + NUiContext::WINDOW_PAD.as_vec2();
+        let header_pos = window.size().min;
         let header_size = Vec2::new(size.x, header_h);
         let header_clip = from_pos_size(
             header_pos,
-            header_size - Vec2::new(NUiContext::WINDOW_PAD.x as f32, 0.0),
+            header_size - Vec2::new(UiContext::WINDOW_PAD.x as f32, 0.0),
         );
-        if !self.docked {
-            self.text_direction(
+        if let Some((siblings, focused)) = &siblings {
+            let mut text_cursor = header_pos + Vec2::new(UiContext::ELEMENT_GAP.x as f32, 0.0) ;
+            for j in siblings.iter() {
+                let sibling;
+                let label = if i != *j as usize  {
+                    sibling = ctx.windows[*j as usize].lock().unwrap();
+                    sibling.label.clone()
+                } else {
+                    window.label.clone()
+                };
+                let ds = DrawSettings {
+                    round_bottomleft: false,
+                    round_bottomright: false,
+                    border: None,
+                    ..Default::default()
+                };
+                let size = ctx.text_len(&label);
+
+                let label_rect = from_pos_size(text_cursor + UiContext::WINDOW_PAD.as_vec2(), Vec2::new(size, header_h) + UiContext::WINDOW_PAD.as_vec2());
+                window.draw_box(label_rect, ds, viewport_size, header_clip);
+                if let Some(c) = input.cursor_pos {
+                    if label_rect.contains(c) {
+
+                    }
+                }
+
+
+                window.text(
+                    &ctx,
+                    text_cursor,
+                    UiContext::TEXT,
+                    &label,
+                    viewport_size,
+                    header_clip,
+                    false,
+                );
+                text_cursor += Vec2::new(size + UiContext::ELEMENT_GAP.as_vec2().x, 0.0);
+            }
+        }else {
+            let open = window.open;
+            window.text_direction(
                 &ctx,
-                header_pos + if !self.open { Vec2::new(0.0, ctx.acent + 2.0) } else { Vec2::ZERO },
-                NUiContext::TEXT,
+                header_pos + if !open { Vec2::new(0.0, ctx.acent + 2.0) } else { Vec2::ZERO },
+                UiContext::TEXT,
                 "▼",
                 viewport_size,
                 header_clip,
                 false,
-                if self.open { TextDirection::Right } else { TextDirection::Up },
+                if open { TextDirection::Right } else { TextDirection::Up },
             );
     
             let arrow_size = Vec2::new(ctx.text_len("▼"), ctx.new_line_size);
     
-            self.text(
+            let lable = window.label.clone();
+            window.text(
                 &ctx,
-                header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
-                NUiContext::TEXT,
-                label,
+                header_pos + Vec2::new(UiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
+                UiContext::TEXT,
+                &lable,
                 viewport_size,
                 header_clip,
                 false,
@@ -3059,108 +1933,33 @@ pub fn update_windows(
                 && focused
                 && !(resize_top || resize_left)
             {
-                self.open = !self.open;
-            }
-        } else {
-            let mut text_cursor = header_pos + Vec2::new(NUiContext::ELEMENT_GAP.x as f32, 0.0);
-            let siblings = self.siblings.drain(..).collect::<Vec<_>>();
-            for i in std::iter::once(label).chain(siblings.iter().map(|e| e.as_str())) {
-                let ds = DrawSettings {
-                    round_bottomleft: false,
-                    round_bottomright: false,
-                    border: None,
-                    ..Default::default()
-                };
-                let size = ctx.text_len(i);
-                
-                self.draw_box(from_pos_size(text_cursor, Vec2::new(size, header_h - NUiContext::ELEMENT_GAP.y as f32)), ds, viewport_size, header_clip);
-                
-                self.text(
-                    &ctx,
-                    text_cursor + UiWindowBuilder::child_offset(),
-                    NUiContext::TEXT,
-                    i,
-                    viewport_size,
-                    header_clip,
-                    false,
-                );
-                text_cursor += size + NUiContext::ELEMENT_GAP.as_vec2();
+                window.open = !window.open;
             }
         }
-
-        let (_, mut scrollable) = self.scrollables.remove_entry(&id).unwrap_or((id, Scrollable {
+ 
+        let (_, mut scrollable) = window.scrollables.remove_entry(&id).unwrap_or((id, Scrollable {
             content_size: content_area.size(),
             scroll: Vec2::ZERO
         }));
-        let cursor =
-            (content_area.min + rmb + NUiContext::WINDOW_PAD.as_vec2() - scrollable.scroll).round();
-
-        if !self.open {
-            return None;
-        }
-        let bar_size = NUiContext::BAR_THICKNESS * Vec2::new((scrollable.content_size.y > content_area.size().y) as u32 as f32, (scrollable.content_size.x > content_area.size().x) as u32 as f32);
-        let clip_rect = from_pos_size(content_area.min + b, content_area.size() - b * 2.0 - bar_size);
-        let max_width = (content_area.size().max(scrollable.content_size)).x - NUiContext::WINDOW_PAD.x as f32 - rmb - bar_size.x;
-
-        let mut builder = UiWindowBuilder {
-            max_width,
-            window_id: id,
-            scroll_delta: scroll.delta,
-            content_max: cursor,
-            focuse_next: false,
-            line_height: 0.0,
-            ctx,
-            clip_rect,
-            window: self,
-            viewport_size,
-            cursor,
-            cursor_origin: cursor,
-            prev_element_hoverd: true,
-            prev_element: content_area,
-            input,
-            direction: false,
-            scroll_consumed: false,
-            prev_cursor: cursor,
-            keys,
-            ctrl,
-            shift,
-            hovered_smth: false,
-        };
-
-        let r = f(&mut builder);
-        let content_max = builder.content_max;
-        let scroll_consumed = builder.scroll_consumed;
-
-        if !builder.hovered_smth && input.left_mouse_pressed {
-            if let Some(f) = &mut self.focused {
-                f.focused = None;
-            }
-        }
-
-        let content_size = content_max + NUiContext::WINDOW_PAD.as_vec2() + rmb - cursor;
-        
-        scrollable.content_size = content_size;
-        if !scroll_consumed && focused && self.open {
-            scrollable.scroll(scroll.delta, content_area.size());
-        }
-        scrollable.draw(NonZeroU64::new(id).unwrap(), content_area, self, viewport_size, input.cursor_pos, input.left_mouse_pressed, self.size());
-        self.scrollables.insert(id, scrollable);
+        let rect = window.size();
+        scrollable.draw(NonZeroU64::new(id).unwrap(), content_area, &mut window, viewport_size, input.cursor_pos, input.left_mouse_pressed, rect);
+        window.scrollables.insert(id, scrollable);
     }
 
     let full_screen = Rect::from_corners(Vec2::ZERO, viewport_size);
  
     if let Some(window_idx) = focused_window {
         if ctx.windows[window_idx].lock().unwrap().focused.as_ref().unwrap().is_being_draged && let Some(cursor_pos) = input.cursor_pos {
-            NUiContext::undock(window_idx as u32, &mut ctx.docking_nodes);
+            UiContext::undock(window_idx as u32, &mut ctx.docking_nodes);
             let header_h = ctx.header_height();
-            let dock = NUiContext::dock(&mut ctx.docking_nodes, window_idx as u32, cursor_pos, full_screen, header_h);
+            let dock = UiContext::dock(&mut ctx.docking_nodes, window_idx as u32, cursor_pos, full_screen, header_h);
             ctx.windows[window_idx].lock().unwrap().docked = dock;
         }
 
     }
     if let Some(cursor_pos) = input.cursor_pos {
         if ctx.resize_path == u64::MAX && input.left_mouse_pressed{
-            let (path, depth, drag_start) = NUiContext::find_resize(&ctx.docking_nodes, cursor_pos, full_screen, 0, 0);
+            let (path, depth, drag_start) = UiContext::find_resize(&ctx.docking_nodes, cursor_pos, full_screen, 0, 0);
             ctx.resize_path = path;
             ctx.resize_depth = depth;
             ctx.drag_start = drag_start;
@@ -3170,7 +1969,7 @@ pub fn update_windows(
             let delta = cursor_pos - ctx.drag_start;
             let path = ctx.resize_path;
             let depth = ctx.resize_depth;
-            NUiContext::resize(&mut ctx.docking_nodes, path, depth, 0, delta, full_screen);
+            UiContext::resize(&mut ctx.docking_nodes, path, depth, 0, delta, full_screen);
         }
         if input.left_mouse_released {
             ctx.resize_path = u64::MAX;
@@ -3193,6 +1992,7 @@ pub fn update_windows(
 
 #[derive(Serialize, Deserialize)]
 struct SaveWindow {
+    label: String,
     size: Rect,
     open: bool,
     docked: bool
@@ -3200,22 +2000,23 @@ struct SaveWindow {
 
 #[derive(Serialize, Deserialize)]
 struct SaveState {
-    docking_nodes: Box<DockingNode>,
+    docking_nodes: DockingNode,
     windows: Vec<SaveWindow>,
     window_labels: HashMap<String, u32>,
 }
 
-pub fn save_windows(events: MessageReader<AppExit>, ctx: ResMut<NUiContext>) {
+pub fn save_windows(events: MessageReader<AppExit>, windows: Res<UiWindows>, docking_nodes: Res<DockingNode>) {
     if events.is_empty() {
         return;
     }
 
     let save_state = SaveState {
-        docking_nodes: ctx.docking_nodes.clone(),
-        window_labels: ctx.window_labels.clone(),
-        windows: ctx.windows.iter().map(|w| {
+        docking_nodes: docking_nodes.clone(),
+        window_labels: windows.window_labels.clone(),
+        windows: windows.windows.iter().map(|w| {
             let window = w.lock().unwrap();
             SaveWindow {
+                label: window.label.clone(),
                 docked: window.docked,
                 open: window.open,
                 size: window.size(),

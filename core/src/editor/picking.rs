@@ -9,7 +9,7 @@ use crate::{
     physics::bvh::Raycast,
     render::world::InstanceFlags,
     scene::{Instance, camera::Camera},
-    ui::{UiBuilder, UiContext},
+    ui::{UiBuilder, OldUiContext},
 };
 use bevy::{
     asset::{AssetId, Assets, Handle, StrongHandle},
