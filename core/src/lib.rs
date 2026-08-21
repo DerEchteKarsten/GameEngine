@@ -2,6 +2,7 @@
 #![feature(random)]
 #![feature(const_default)]
 #![feature(lock_value_accessors)]
+#![feature(integer_casts)]
 use std::{
     any::type_name,
     mem::offset_of,
@@ -49,7 +50,7 @@ use crate::{
     physics::PhysicsPlugin,
     render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi, world::InstanceFlags},
     scene::{Instance, ScenePlugin, SpawnScene, camera::Camera},
-    ui::{UiBuilder, OldUiContext, UiPlugin, UiResources},
+    ui::{OldUiContext, UiBuilder, UiPlugin, UiResources},
 };
 
 pub mod assets;

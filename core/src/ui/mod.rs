@@ -59,14 +59,23 @@ use crate::{
         render::{FrameCount, Swapchain},
         world::UploadQueue,
     },
-    ui::{new_ui::{
-        AtlasEntry, FocusedState, UiContext, NUiResources, Scrollable, UiWindow, create_ui_resources, nextract_ui, nwrite_ui_data, save_windows, update_windows
-    }, test::add_tests},
+    ui::{
+        new_ui::{
+            FocusedState, NUiResources, UiContext, create_ui_resources, nextract_ui,
+            nwrite_ui_data, save_windows,
+        },
+        test::add_tests,
+        update_windows::update_windows,
+    },
 };
 
-pub mod new_ui;
-pub mod test;
 pub mod builder;
+pub mod dock;
+pub mod new_ui;
+pub mod scrollable;
+pub mod test;
+pub mod update_windows;
+pub mod window;
 
 #[derive(Resource)]
 pub struct OldUiContext {
@@ -224,7 +233,7 @@ fn read_input(
     window: Single<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
 ) {
-    let size = window.size();
+    let size = window.physical_size().as_vec2();
     let io = ctx.ctx.io_mut();
     io.update_delta_time(time.delta());
 
@@ -434,10 +443,10 @@ impl UiBuilder {
     pub const BLUE_DIM: [f32; 4] = [0.118, 0.565, 0.831, 0.6]; // UE blue dimmed
     pub const BLUE_REALY_DIM: [f32; 4] = [0.118, 0.565, 0.831, 0.35];
 
-    pub const TRACE: [f32; 4] = [0.380, 0.380, 0.380, 1.0]; // trace    
-    pub const DEBUG: [f32; 4] = [0.400, 0.560, 0.700, 1.0]; // debug 
-    pub const INFO: [f32; 4] = [0.820, 0.820, 0.820, 1.0]; // info   
-    pub const WARN: [f32; 4] = [0.980, 0.760, 0.110, 1.0]; // warn   
+    pub const TRACE: [f32; 4] = [0.380, 0.380, 0.380, 1.0]; // trace
+    pub const DEBUG: [f32; 4] = [0.400, 0.560, 0.700, 1.0]; // debug
+    pub const INFO: [f32; 4] = [0.820, 0.820, 0.820, 1.0]; // info
+    pub const WARN: [f32; 4] = [0.980, 0.760, 0.110, 1.0]; // warn
     pub const ERROR: [f32; 4] = [0.950, 0.180, 0.180, 1.0]; // error
 }
 
@@ -454,6 +463,7 @@ pub fn UiPlugin(app: &mut App) {
             ExtractSchedule,
             (extract_ui, nextract_ui, create_ui_resources),
         );
+    let (ctx, windows, dock) = UiContext::new().unwrap();
     app.add_systems(PreUpdate, read_input.after(InputSystems))
         .insert_resource({
             let mut ctx = imgui::Context::create();
@@ -553,7 +563,9 @@ pub fn UiPlugin(app: &mut App) {
             ui: std::ptr::null_mut(),
         })
         .add_systems(PreUpdate, update_windows.after(InputSystems))
-        .insert_resource(UiContext::new().unwrap())
+        .insert_resource(ctx)
+        .insert_resource(windows)
+        .insert_resource(dock)
         .add_systems(PostUpdate, save_windows);
     add_tests(app);
 }

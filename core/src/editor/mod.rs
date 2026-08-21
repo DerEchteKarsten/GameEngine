@@ -30,7 +30,7 @@ use crate::{
         ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderApp, RenderStartup, RenderSystems,
         extract_param::Extract, render::RenderDebugUi, world::MAX_INSTANCES,
     },
-    ui::{UiBuilder, OldUiContext},
+    ui::{OldUiContext, UiBuilder},
 };
 
 pub mod asset_browser;

@@ -604,7 +604,14 @@ pub(super) fn render(
                                     },
                                 );
                         }
-                        // cmd.blit_image(font_atlas.whole(), swapchain.image().region(UVec2::new(font_atlas.extent.width, font_atlas.extent.height)), Filter::Nearest);
+                        // cmd.blit_image(
+                        //     font_atlas.whole(),
+                        //     swapchain.image().region(UVec2::new(
+                        //         font_atlas.extent.width,
+                        //         font_atlas.extent.height,
+                        //     )),
+                        //     Filter::Nearest,
+                        // );
                     }
 
                     cmd.raster::<RasterUi>()
@@ -622,7 +629,14 @@ pub(super) fn render(
                                     .range(..nui_resources.num_indicies),
                             },
                         );
-                    // cmd.blit_image(nui_resources.font_atlas.whole(), swapchain.image().region(UVec2::new(nui_resources.font_atlas.extent.width, nui_resources.font_atlas.extent.height)), Filter::Nearest);
+                    // cmd.blit_image(
+                    //     nui_resources.font_atlas.whole(),
+                    //     swapchain.image().region(UVec2::new(
+                    //         nui_resources.font_atlas.extent.width,
+                    //         nui_resources.font_atlas.extent.height,
+                    //     )),
+                    //     Filter::Nearest,
+                    // );
                     cmd.present(swapchain.image());
                 },
             )

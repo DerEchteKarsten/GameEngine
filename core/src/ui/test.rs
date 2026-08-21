@@ -1,7 +1,12 @@
-use bevy::{app::{App, Update}, log, math::Rect, prelude::Res};
+use bevy::{
+    app::{App, Update},
+    log,
+    math::Rect,
+    prelude::Res,
+};
 use glam::{Vec2, Vec4};
 
-use crate::{id, ui::new_ui::{DockingNode, UiBuilder}, ui::builder::UiWindowBuilder};
+use crate::{id, ui::builder::UiBuilder};
 
 // fn tree(nodes: &[DockingNode], area: Rect, node: usize, ui: &mut UiWindowBuilder) {
 //     match &nodes[node] {
@@ -17,7 +22,7 @@ use crate::{id, ui::new_ui::{DockingNode, UiBuilder}, ui::builder::UiWindowBuild
 //             let right = *right as usize;
 //             // ui.window.rect(left_area, None, Vec4::new(1.0, 0.0, 0.0, 0.5), ui.viewport_size, Rect::from_corners(Vec2::ZERO, ui.viewport_size), true);
 //             // ui.window.rect(right_area, None, Vec4::new(0.0, 1.0, 0.0, 0.5), ui.viewport_size, Rect::from_corners(Vec2::ZERO, ui.viewport_size), true);
-            
+
 //             ui.collapsable(format!("Children of {}", left), |ui| {
 //                 tree(nodes, area, left, ui);
 //             });
@@ -242,11 +247,15 @@ fn test_dropdown_edge_cases(mut ui: UiBuilder) {
         // Many options
         ui.dropdown(id!(), 3, &["A", "B", "C", "D", "E", "F", "G", "H"]);
         // Long labels
-        ui.dropdown(id!(), 0, &[
-            "Short",
-            "A much longer option label that takes up space",
-            "Another long one here too",
-        ]);
+        ui.dropdown(
+            id!(),
+            0,
+            &[
+                "Short",
+                "A much longer option label that takes up space",
+                "Another long one here too",
+            ],
+        );
         // Selected index at last element
         ui.dropdown(id!(), 2, &["X", "Y", "Z"]);
     });
@@ -257,12 +266,12 @@ fn test_dropdown_edge_cases(mut ui: UiBuilder) {
 /// Color pickers with boundary and special colors
 fn test_color_picker_edge_cases(mut ui: UiBuilder) {
     ui.build("Color Picker Edge Cases", |ui| {
-        ui.color_picker(id!(), Vec4::ZERO);                       // black, transparent
-        ui.color_picker(id!(), Vec4::ONE);                        // white, opaque
-        ui.color_picker(id!(), Vec4::new(1.0, 0.0, 0.0, 1.0));   // red
-        ui.color_picker(id!(), Vec4::new(0.0, 1.0, 0.0, 1.0));   // green
-        ui.color_picker(id!(), Vec4::new(0.0, 0.0, 1.0, 1.0));   // blue
-        ui.color_picker(id!(), Vec4::new(0.5, 0.5, 0.5, 0.5));   // mid grey, half alpha
+        ui.color_picker(id!(), Vec4::ZERO); // black, transparent
+        ui.color_picker(id!(), Vec4::ONE); // white, opaque
+        ui.color_picker(id!(), Vec4::new(1.0, 0.0, 0.0, 1.0)); // red
+        ui.color_picker(id!(), Vec4::new(0.0, 1.0, 0.0, 1.0)); // green
+        ui.color_picker(id!(), Vec4::new(0.0, 0.0, 1.0, 1.0)); // blue
+        ui.color_picker(id!(), Vec4::new(0.5, 0.5, 0.5, 0.5)); // mid grey, half alpha
         // Out of range values (should clamp)
         ui.color_picker(id!(), Vec4::new(-1.0, 2.0, -0.5, 1.5));
     });
@@ -353,24 +362,27 @@ fn test_kitchen_sink(mut ui: UiBuilder) {
 }
 
 pub fn add_tests(app: &mut App) {
-    app.add_systems(Update, (
-        // tree_visulizer,
-        // test_vertical_layout,
-        // test_horizontal_layout,
-        // test_multiple_horizontal_rows,
-        // test_mixed_horizontal_row,
-        // test_nested_collapsables,
-        // test_collapsable_with_horizontal,
-        // test_sibling_collapsables,
-        // test_scrollable_container,
-        // test_nested_containers,
-        // test_container_with_horizontal,
-        // test_text_edge_cases,
-        // test_slider_edge_cases,
-        // test_dropdown_edge_cases,
-        test_color_picker_edge_cases,
-        test_checkbox_edge_cases,
-        test_float_input_edge_cases,
-        test_kitchen_sink,
-    ));
+    app.add_systems(
+        Update,
+        (
+            // tree_visulizer,
+            // test_vertical_layout,
+            // test_horizontal_layout,
+            // test_multiple_horizontal_rows,
+            // test_mixed_horizontal_row,
+            // test_nested_collapsables,
+            // test_collapsable_with_horizontal,
+            // test_sibling_collapsables,
+            // test_scrollable_container,
+            // test_nested_containers,
+            // test_container_with_horizontal,
+            // test_text_edge_cases,
+            // test_slider_edge_cases,
+            // test_dropdown_edge_cases,
+            test_color_picker_edge_cases,
+            test_checkbox_edge_cases,
+            test_float_input_edge_cases,
+            test_kitchen_sink,
+        ),
+    );
 }

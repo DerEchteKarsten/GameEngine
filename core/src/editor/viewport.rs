@@ -8,7 +8,7 @@ use bevy::{
 use glam::{IVec2, UVec2, Vec2};
 use imgui::{StyleColor, WindowFlags};
 
-use crate::ui::{UiBuilder, OldUiContext};
+use crate::ui::{OldUiContext, UiBuilder};
 
 #[derive(Resource, Debug, Copy, Clone)]
 pub struct ViewPort {
@@ -55,9 +55,9 @@ pub(crate) fn update_view_port(
         vp.view_pos = abs_min.as_ivec2();
         vp.view_size = (content_max - content_min).as_uvec2();
 
-        let screen_size = window.size();
+        let screen_size = window.physical_size();
         let scissor_min = abs_min.max(Vec2::ZERO);
-        let scissor_max = abs_max.min(screen_size);
+        let scissor_max = abs_max.min(screen_size.as_vec2());
         let scissor_size = (scissor_max - scissor_min).max(Vec2::ZERO);
 
         vp.scissor_pos = scissor_min.as_uvec2();

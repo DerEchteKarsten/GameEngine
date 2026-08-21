@@ -7,20 +7,19 @@ edition = "2024"
 core = { version = "0.1.0", path = "../core" }
 glam = {version = "0.30.5", features = ["mint"]}
 bevy = {version = "0.18.0", default-features = false, features = [
-    "trace", 
-    "detailed_trace",
     "debug",
     "wayland",
-    "asset_processor", 
-    "embedded_watcher", 
-    "file_watcher", 
+    "asset_processor",
+    "embedded_watcher",
+    "file_watcher",
     "multi_threaded",
     "bevy_asset",
     "bevy_window",
 ]}
-walkdir = "2.5.0"
-rand = "0.10.0"
 
 [features]
 default = []
-trace = ["core/trace", "bevy/trace_tracy"]
+trace = ["core/trace", "bevy/trace_tracy", "bevy/trace", "bevy/detailed_trace"]
+# Dev-only: builds bevy as a dynamic library so `cargo run` skips relinking it on
+# every iteration. Do NOT enable this for release builds.
+dynamic_linking = ["core/dynamic_linking", "bevy/dynamic_linking"]

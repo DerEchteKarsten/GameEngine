@@ -52,7 +52,48 @@
                                         "name": "val",
                                         "type": {
                                             "kind": "pointer",
-                                            "valueType": "UIVertex"
+                                            "valueType": {
+                                                "kind": "struct",
+                                                "name": "UIVertex",
+                                                "fields": [
+                                                    {
+                                                        "name": "pos",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 2,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 4}
+                                                    },
+                                                    {
+                                                        "name": "uv",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 2,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 4}
+                                                    },
+                                                    {
+                                                        "name": "color",
+                                                        "type": {
+                                                            "kind": "vector",
+                                                            "elementCount": 4,
+                                                            "elementType": {
+                                                                "kind": "scalar",
+                                                                "scalarType": "float32"
+                                                            }
+                                                        },
+                                                        "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                                                    }
+                                                ]
+                                            }
                                         },
                                         "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
                                     }
@@ -106,7 +147,48 @@
                                             "name": "val",
                                             "type": {
                                                 "kind": "pointer",
-                                                "valueType": "UIVertex"
+                                                "valueType": {
+                                                    "kind": "struct",
+                                                    "name": "UIVertex",
+                                                    "fields": [
+                                                        {
+                                                            "name": "pos",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 2,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 4}
+                                                        },
+                                                        {
+                                                            "name": "uv",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 2,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 4}
+                                                        },
+                                                        {
+                                                            "name": "color",
+                                                            "type": {
+                                                                "kind": "vector",
+                                                                "elementCount": 4,
+                                                                "elementType": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "float32"
+                                                                }
+                                                            },
+                                                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                                                        }
+                                                    ]
+                                                }
                                             },
                                             "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
                                         }

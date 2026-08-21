@@ -12,7 +12,7 @@ use core::{
         SpawnScene,
         camera::{Camera, CameraBundle},
     },
-    ui::{UiBuilder, OldUiContext},
+    ui::{OldUiContext, UiBuilder},
 };
 use std::{
     f32::consts::PI,
@@ -47,7 +47,6 @@ use bevy::{
     window::Window,
 };
 use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4, Vec4Swizzles, vec3};
-use walkdir::WalkDir;
 
 use bevy::ecs::reflect::ReflectComponent;
 

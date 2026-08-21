@@ -344,10 +344,7 @@ pub fn generate_from_json_str(
     structs: &mut HashMap<String, String>,
 ) -> String {
     let file_name = file_name.split(".").next().unwrap();
-    let Ok(root) = serde_json::from_str(json) else {
-        panic!();
-        return "".into();
-    };
+    let root = serde_json::from_str(json).unwrap();
 
     let fields = extract_push_constant(&root).expect("No pushConstantBuffer found!");
     let pc_name = format!("{file_name}Bindings");
@@ -381,7 +378,7 @@ impl RasterVertexShaderPass for {file_name} {{
     const VERTEX: &'static str = "{vertex_entry}\0";
     const FRAGMENT: &'static str = "{fragment_entry}\0";
     const BYTES: &[u8] = include_bytes!("{file_path}");
-    
+
     fn module_cache() -> &'static OnceLock<VkShaderModule> {{
         static CACHE: OnceLock<VkShaderModule> = OnceLock::new();
         &CACHE
@@ -495,9 +492,8 @@ fn capitalize_first(s: &str) -> String {
 
 fn main() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    println!("cargo:rerun-if-changed={manifest_dir}/src");
-    println!("cargo:rerun-if-changed={manifest_dir}/../shaders/passes");
-    println!("cargo:rerun-if-changed={manifest_dir}/../shaders/include");
+    println!("cargo::rerun-if-changed={manifest_dir}/../shaders/passes");
+    println!("cargo::rerun-if-changed={manifest_dir}/../shaders/include");
 
     let out = PathBuf::from("src/bindings.rs");
 
@@ -512,7 +508,7 @@ fn main() {
 
     let mut bindings = r#"
 use std::collections::HashMap;
-use std::sync::{OnceLock, Mutex}; 
+use std::sync::{OnceLock, Mutex};
 use glam::*;
 use bytemuck::{Pod, Zeroable};
 use lava::command_buffer::{Binding, ResourceHandle, ResourceState, ShaderHash, RasterHash, ComputePass, RasterPass, RayTracingPass, RasterMeshShaderPass, RasterVertexShaderPass};
