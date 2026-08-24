@@ -1,23 +1,14 @@
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 use bevy::{ecs::resource::Resource, math::Rect};
 use glam::{Vec2, Vec2Swizzles};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use crate::ui::{new_ui::from_pos_size, window::UiWindow};
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Siblings {
-    pub members: SmallVec<[u32; 8]>,
-    pub active: u32,
-}
-
-impl Siblings {
-    pub fn active(&self) -> u32 {
-        self.members[self.active as usize]
-    }
-}
+use crate::ui::{
+    new_ui::{UiContext, from_pos_size},
+    window::TabState,
+};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Split {
@@ -43,8 +34,7 @@ impl Split {
 #[derive(Serialize, Deserialize, Clone, Resource)]
 pub enum DockingNode {
     Leaf {
-        siblings: Siblings,
-        root: bool,
+        window: u32,
     },
     Node {
         split: Split,
@@ -55,6 +45,15 @@ pub enum DockingNode {
 }
 
 impl DockingNode {
+    pub fn contains(&self, window: u32) -> bool {
+        match self {
+            DockingNode::Leaf { window: w, .. } => *w == window,
+            DockingNode::Node { left, right, .. } => {
+                left.contains(window) || right.contains(window)
+            }
+        }
+    }
+
     fn split_area(area: Rect, split: Split, extend: f32) -> (Rect, Rect) {
         let size = (1.0 - extend) * area.size();
         let left_area = Rect {
@@ -69,13 +68,17 @@ impl DockingNode {
         (left_area, right_area)
     }
 
-    pub fn dock(&mut self, window: u32, cursor_pos: Vec2, area: Rect, header_h: f32) -> bool {
+    pub fn dock(&mut self, window: u32, cursor_pos: Vec2, area: Rect) -> Option<u32> {
         match self {
-            DockingNode::Leaf { siblings, .. } => {
-                if from_pos_size(area.min, Vec2::new(area.width(), header_h)).contains(cursor_pos) {
-                    siblings.members.push(window);
-                    siblings.active = siblings.members.len() as u32 - 1;
-                    return true;
+            DockingNode::Leaf { window: w, .. } => {
+                if *w != u32::MAX
+                    && from_pos_size(
+                        area.min,
+                        Vec2::new(area.width(), UiContext::WINDOW_HEADER_HEIGHT),
+                    )
+                    .contains(cursor_pos)
+                {
+                    return Some(w.clone());
                 } else if area.contains(cursor_pos) {
                     let thickness = 40.0;
                     let top =
@@ -102,13 +105,7 @@ impl DockingNode {
                     };
 
                     if right || bottom {
-                        let right = Box::new(DockingNode::Leaf {
-                            siblings: Siblings {
-                                members: SmallVec::from_slice(&[window]),
-                                active: 0,
-                            },
-                            root: false,
-                        });
+                        let right = Box::new(DockingNode::Leaf { window });
                         let root = std::mem::take(self);
                         *self = DockingNode::Node {
                             split,
@@ -116,15 +113,8 @@ impl DockingNode {
                             left: Box::new(root),
                             right,
                         };
-                        return true;
                     } else if left || top {
-                        let left = Box::new(DockingNode::Leaf {
-                            siblings: Siblings {
-                                members: SmallVec::from_slice(&[window]),
-                                active: 0,
-                            },
-                            root: false,
-                        });
+                        let left = Box::new(DockingNode::Leaf { window });
                         let root = std::mem::take(self);
                         *self = DockingNode::Node {
                             split,
@@ -132,12 +122,9 @@ impl DockingNode {
                             left,
                             right: Box::new(root),
                         };
-                        return true;
-                    } else {
-                        return false;
                     }
                 }
-                return false;
+                None
             }
             DockingNode::Node {
                 split,
@@ -147,20 +134,26 @@ impl DockingNode {
             } => {
                 let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
                 if left_area.contains(cursor_pos) {
-                    Self::dock(left, window, cursor_pos, left_area, header_h)
+                    Self::dock(left, window, cursor_pos, left_area)
                 } else if right_area.contains(cursor_pos) {
-                    Self::dock(right, window, cursor_pos, right_area, header_h)
+                    Self::dock(right, window, cursor_pos, right_area)
                 } else {
-                    return false;
+                    None
                 }
             }
         }
     }
 
-    pub fn preview_dock(&self, cursor_pos: Vec2, area: Rect, header_h: f32) -> Option<Rect> {
+    pub fn preview_dock(&self, cursor_pos: Vec2, area: Rect) -> Option<Rect> {
         match self {
-            DockingNode::Leaf { .. } => {
-                if from_pos_size(area.min, Vec2::new(area.width(), header_h)).contains(cursor_pos) {
+            DockingNode::Leaf { window } => {
+                if *window != u32::MAX
+                    && from_pos_size(
+                        area.min,
+                        Vec2::new(area.width(), UiContext::WINDOW_HEADER_HEIGHT),
+                    )
+                    .contains(cursor_pos)
+                {
                     Some(area)
                 } else if area.contains(cursor_pos) {
                     let thickness = 40.0;
@@ -206,9 +199,9 @@ impl DockingNode {
             } => {
                 let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
                 if left_area.contains(cursor_pos) {
-                    left.preview_dock(cursor_pos, left_area, header_h)
+                    left.preview_dock(cursor_pos, left_area)
                 } else if right_area.contains(cursor_pos) {
-                    right.preview_dock(cursor_pos, right_area, header_h)
+                    right.preview_dock(cursor_pos, right_area)
                 } else {
                     None
                 }
@@ -218,23 +211,7 @@ impl DockingNode {
 
     pub fn undock(&mut self, window: u32) -> bool {
         match self {
-            DockingNode::Leaf {
-                siblings: Siblings { members, active },
-                root,
-            } => {
-                if let Some(i) = members.iter().position(|e| *e == window) {
-                    members.remove(i);
-                    if !members.is_empty() {
-                        if (i as u32) < *active {
-                            *active -= 1;
-                        }
-                        *active = (*active).min(members.len() as u32 - 1);
-                    } else {
-                        *active = 0;
-                    }
-                }
-                members.is_empty() && !*root
-            }
+            DockingNode::Leaf { window: w, .. } => *w == window,
             DockingNode::Node {
                 split: _,
                 extend: _,
@@ -325,30 +302,11 @@ impl DockingNode {
         }
     }
 
-    pub fn set_active_tab(&mut self, window: u32) -> bool {
+    pub fn dock_info(&self, window: u32, area: Rect) -> Option<Rect> {
         match self {
-            DockingNode::Leaf {
-                siblings: Siblings { members, active },
-                ..
-            } => {
-                if let Some(pos) = members.iter().position(|w| *w == window) {
-                    *active = pos as u32;
-                    true
-                } else {
-                    false
-                }
-            }
-            DockingNode::Node { left, right, .. } => {
-                left.set_active_tab(window) || right.set_active_tab(window)
-            }
-        }
-    }
-
-    pub fn dock_info(&self, window: u32, area: Rect) -> Option<(Rect, Siblings)> {
-        match self {
-            DockingNode::Leaf { siblings, .. } => {
-                if siblings.members.contains(&window) {
-                    Some((area, siblings.clone()))
+            DockingNode::Leaf { window: w, .. } => {
+                if *w == window {
+                    Some(area)
                 } else {
                     None
                 }
@@ -370,16 +328,33 @@ impl DockingNode {
             }
         }
     }
+
+    pub fn remap(self, map: &HashMap<u32, u32>) -> Self {
+        match self {
+            DockingNode::Leaf { window: w } => {
+                if let Some(new_w) = map.get(&w) {
+                    DockingNode::Leaf { window: *new_w }
+                } else {
+                    self
+                }
+            }
+            DockingNode::Node {
+                split,
+                extend,
+                left,
+                right,
+            } => DockingNode::Node {
+                split,
+                extend: extend,
+                left: Box::new(left.remap(map)),
+                right: Box::new(right.remap(map)),
+            },
+        }
+    }
 }
 
 impl Default for DockingNode {
     fn default() -> Self {
-        DockingNode::Leaf {
-            siblings: Siblings {
-                members: SmallVec::new(),
-                active: 0,
-            },
-            root: false,
-        }
+        DockingNode::Leaf { window: u32::MAX }
     }
 }

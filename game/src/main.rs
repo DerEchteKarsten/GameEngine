@@ -43,6 +43,7 @@ use bevy::{
         bounding::{BoundingVolume, RayCast3d},
     },
     reflect::{self, Reflect},
+    time::Time,
     transform::components::{GlobalTransform, Transform},
     window::Window,
 };
@@ -70,14 +71,16 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn update_mesh(
-    mut cmd: Commands,
-    mut ui: ResMut<UiBuilder>,
-    mut model: Single<(Entity, &mut Transform), With<MyModel>>,
-    asset_server: Res<AssetServer>,
-    mut local: Local<(usize, Vec<String>)>,
-    mut gizzmos: DrawGizzmos,
-    viewport: ViewPortProxy,
+    // mut cmd: Commands,
+    // mut ui: ResMut<UiBuilder>,
+    // mut model: Single<(Entity, &mut Transform), With<MyModel>>,
+    // asset_server: Res<AssetServer>,
+    // mut local: Local<(usize, Vec<String>)>,
+    // mut gizzmos: DrawGizzmos,
+    // viewport: ViewPortProxy,
+    time: Res<Time>,
 ) {
+    // log::info!("{:#?}", time.delta());
     // if let Some(pos) = window.cursor_position() {
     //     let cam_pos = settings.freez_pos.unwrap_or(camera.1.translation().extend(0.0)).xyz();
     //     gizzmos.draw_gizzmo(&ArrowGizzmo {

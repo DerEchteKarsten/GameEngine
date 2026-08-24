@@ -65,7 +65,7 @@ use crate::{
             nwrite_ui_data, save_windows,
         },
         test::add_tests,
-        update_windows::update_windows,
+        update_windows::{draw_windows, update_windows},
     },
 };
 
@@ -563,6 +563,7 @@ pub fn UiPlugin(app: &mut App) {
             ui: std::ptr::null_mut(),
         })
         .add_systems(PreUpdate, update_windows.after(InputSystems))
+        .add_systems(Update, draw_windows)
         .insert_resource(ctx)
         .insert_resource(windows)
         .insert_resource(dock)

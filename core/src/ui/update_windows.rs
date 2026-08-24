@@ -1,23 +1,32 @@
-use crate::ui::dock::{DockingNode, Siblings};
+use crate::ui::{
+    dock::DockingNode,
+    new_ui::Draggable,
+    window::{Drawable, Tab, TabState, UiWindow},
+};
 use bevy::{
     ecs::system::{Res, ResMut, Single},
-    input::{ButtonInput, mouse::MouseButton, touch::Touches},
+    input::{
+        ButtonInput,
+        mouse::{AccumulatedMouseScroll, MouseButton},
+        touch::Touches,
+    },
+    log,
     math::{Rect, VectorSpace},
     window::Window,
 };
 use glam::{Vec2, Vec4};
+use itertools::Itertools;
 use smallvec::SmallVec;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     num::NonZeroU64,
     sync::Mutex,
 };
-use tracing_log::log;
 
 use crate::ui::{
     new_ui::{FocusedState, MultiInput, UiContext, UiWindows, from_pos_size},
     scrollable::Scrollable,
-    window::{BorderSettings, DrawSettings, TextDirection, UiWindow},
+    window::{BorderSettings, DrawSettings, TextDirection},
 };
 
 struct FrameInfo {
@@ -26,57 +35,126 @@ struct FrameInfo {
     full_screen_rect: Rect,
 }
 
-#[derive(Clone, Copy, Default)]
-struct ResizeEdges {
-    top: bool,
-    bottom: bool,
-    left: bool,
-    right: bool,
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ResizeEdges {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
 }
 
 impl ResizeEdges {
-    fn hovered(rect: Rect, cursor_pos: Vec2, threshold: f32) -> Self {
+    fn hoverd(&mut self, rect: Rect, input: &MultiInput, threshold: f32) {
         let (min, max, t) = (rect.min, rect.max, threshold);
-        Self {
-            top: Rect::from_corners(
-                Vec2::new(min.x - t, min.y - t),
-                Vec2::new(max.x + t, min.y + t),
-            )
-            .contains(cursor_pos),
-            bottom: Rect::from_corners(
-                Vec2::new(min.x - t, max.y - t),
-                Vec2::new(max.x + t, max.y + t),
-            )
-            .contains(cursor_pos),
-            left: Rect::from_corners(
-                Vec2::new(min.x - t, min.y - t),
-                Vec2::new(min.x + t, max.y + t),
-            )
-            .contains(cursor_pos),
-            right: Rect::from_corners(
-                Vec2::new(max.x - t, min.y - t),
-                Vec2::new(max.x + t, max.y + t),
-            )
-            .contains(cursor_pos),
-        }
+        self.top = input.hovered(Rect::from_corners(
+            Vec2::new(min.x - t, min.y - t),
+            Vec2::new(max.x + t, min.y),
+        ));
+        self.bottom = input.hovered(Rect::from_corners(
+            Vec2::new(min.x + t, max.y),
+            Vec2::new(max.x + t, max.y + t),
+        ));
+        self.left = input.hovered(Rect::from_corners(
+            Vec2::new(min.x - t, min.y - t),
+            Vec2::new(min.x, max.y + t),
+        ));
+        self.right = input.hovered(Rect::from_corners(
+            Vec2::new(max.x, min.y - t),
+            Vec2::new(max.x + t, max.y + t),
+        ));
     }
-
-    fn store_in(self, focused: &mut FocusedState) {
-        focused.resize_top = self.top;
-        focused.resize_bottom = self.bottom;
-        focused.resize_left = self.left;
-        focused.resize_right = self.right;
+    fn any(&self) -> bool {
+        self.top || self.bottom || self.left || self.right
     }
 }
 
-impl From<&FocusedState> for ResizeEdges {
-    fn from(focused: &FocusedState) -> Self {
-        Self {
-            top: focused.resize_top,
-            bottom: focused.resize_bottom,
-            left: focused.resize_left,
-            right: focused.resize_right,
+pub fn draw_windows(
+    mut windows: ResMut<UiWindows>,
+    desktop_window: Single<&Window>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    touch: Res<Touches>,
+    dock: Res<DockingNode>,
+    scroll_delta: Res<AccumulatedMouseScroll>,
+) {
+    let viewport_size = desktop_window.physical_size().as_vec2();
+    let frame = FrameInfo {
+        input: MultiInput::new(&desktop_window, &buttons, &touch),
+        viewport_size,
+        full_screen_rect: Rect::from_corners(Vec2::ZERO, viewport_size),
+    };
+    for (i, window) in windows.by_layer_mut() {
+        let mut cursor = window.rect.min;
+        let header_rect = window.header_rect();
+        draw_window(window, &frame, dock.contains(i as u32));
+
+        let tabs = std::mem::take(&mut window.tabs);
+        for (j, tab) in tabs.iter().enumerate() {
+            let tab_rect = Rect::from_corners(
+                cursor - window.tab_scroll.scroll,
+                cursor - window.tab_scroll.scroll
+                    + Vec2::new(
+                        UiContext::text_len(&tab.label),
+                        UiContext::WINDOW_HEADER_HEIGHT,
+                    )
+                    + UiContext::TAB_PAD.as_vec2() * 2.0,
+            );
+            let active = j == window.active_tab as usize;
+
+            let hoverd = frame
+                .input
+                .cursor_pos
+                .is_some_and(|cp| tab_rect.contains(cp));
+
+            let ds = DrawSettings {
+                border: Some(BorderSettings::uniform(UiContext::S1, 2)),
+                color: if hoverd {
+                    UiContext::S2
+                } else if active {
+                    UiContext::S1
+                } else {
+                    UiContext::BG
+                },
+                rounding: UiContext::ROUNDING,
+                on_top: false,
+                round_bottomleft: false,
+                round_topright: false,
+                ..Default::default()
+            };
+            window.draw_box(tab_rect, ds, frame.viewport_size, header_rect);
+
+            window.draw_text(
+                tab_rect.min + UiContext::TAB_PAD.as_vec2(),
+                UiContext::TEXT,
+                &tab.label,
+                frame.viewport_size,
+                header_rect,
+                false,
+            );
+            cursor.x += tab_rect.width() + UiContext::TAB_GAP.x as f32;
         }
+        window.tabs = tabs;
+        let mut focused = window.focused.take();
+        let mut scroll = window.tab_scroll;
+        scroll.content_size = Rect::from_corners(
+            window.rect.min,
+            cursor + Vec2::new(0.0, UiContext::WINDOW_HEADER_HEIGHT),
+        )
+        .size();
+        scroll.update_and_draw(
+            Draggable::TabScrollHandle,
+            header_rect,
+            window,
+            &mut focused.as_mut(),
+            viewport_size,
+            frame.input.cursor_pos,
+            frame.input.left_mouse_pressed,
+            header_rect,
+        );
+        if focused.is_some() {
+            scroll.scroll(scroll_delta.delta, header_rect.size());
+        }
+        window.tab_scroll = scroll;
+        window.focused = focused;
     }
 }
 
@@ -93,15 +171,16 @@ pub fn update_windows(
     } else {
         SmallVec::new()
     };
-    for label in new_windows.into_iter() {
-        let id = windows.windows.len() as u32;
-        windows.windows.push(Mutex::new(UiWindow::new(
-            label.clone(),
-            Rect::from_corners(Vec2::ZERO, Vec2::splat(100.0)),
-            true,
-            false,
-        )));
-        windows.window_labels.insert(label, id);
+    for (i, label) in new_windows.into_iter().enumerate() {
+        let pos = Vec2::new(500.0 * i as f32, 0.0);
+        windows.append(UiWindow::new(
+            vec![Tab {
+                label,
+                state: Mutex::new(TabState::default()),
+            }],
+            Rect::from_corners(pos, pos + Vec2::new(500.0, 500.0)),
+            0,
+        ));
     }
 
     let ctx: &mut UiContext = &mut ctx;
@@ -114,307 +193,243 @@ pub fn update_windows(
         full_screen_rect: Rect::from_corners(Vec2::ZERO, viewport_size),
     };
 
-    let mut newly_focused: Option<usize> = None;
-    let mut drag_release: Option<usize> = None;
-    let mut header_hoverd: bool = false;
-
-    for (i, window_cell) in windows.by_layer().rev() {
-        let Ok(mut window) = window_cell.lock() else {
-            continue;
-        };
-
-        let siblings = get_dock_info(&mut window, i as u32, dock, frame.full_screen_rect);
-
-        let sibling_rects = siblings
-            .as_ref()
-            .map(|siblings| sibling_rects(&mut window, i, siblings, &windows.windows));
-
-        let drag_rect = sibling_rects
-            .as_ref()
-            .map(|a| {
-                Rect::from_corners(
-                    a.0.min + window.full_rect().min,
-                    a.0.max + window.full_rect().min,
-                )
-            })
-            .unwrap_or(window.header_text_rect());
-
-        if frame
-            .input
-            .cursor_pos
-            .is_some_and(|cp| drag_rect.contains(cp))
-        {
-            header_hoverd = true;
-        }
-
-        window_focused(&mut window, i, drag_rect, dock, &frame, &mut newly_focused);
-
-        let (preview_rect, drag_released) =
-            handle_focused_input(&mut window, i, drag_rect, dock, &frame);
-
-        if drag_released {
-            drag_release = Some(i);
-        }
-
-        draw_window(
-            &mut window,
-            i,
-            siblings,
-            sibling_rects.map(|r| r.1),
-            &windows.windows,
-            &frame,
-        );
-
-        if let Some(preview) = preview_rect {
-            draw_dock_preview(&mut window, preview, &frame);
-        }
-    }
-
-    handle_dock_resizing(ctx, dock, &frame, header_hoverd);
-
-    if let Some(window_idx) = drag_release
-        && let Some(cursor_pos) = frame.input.cursor_pos
-    {
-        let docked = dock.dock(
-            window_idx as u32,
-            cursor_pos,
-            frame.full_screen_rect,
-            UiContext::WINDOW_HEADER_HEIGHT,
-        );
-        if let Ok(mut window) = windows.windows[window_idx].lock() {
-            window.docked = docked;
-        }
-    }
-
-    reorder_layers(&windows);
-}
-
-fn sibling_rects(
-    window: &mut UiWindow,
-    index: usize,
-    siblings: &Siblings,
-    all_windows: &[Mutex<UiWindow>],
-) -> (Rect, Vec<Rect>) {
-    let mut text_cursor = Vec2::new(UiContext::ELEMENT_GAP.x as f32, 0.0);
-    let mut rects = Vec::with_capacity(siblings.members.len());
-    let mut own_rect = None;
-
-    for &sibling_id in siblings.members.iter() {
-        let label_width = if index != sibling_id as usize {
-            let Ok(sibling) = all_windows[sibling_id as usize].lock() else {
-                continue;
-            };
-            UiContext::text_len(&sibling.label)
-        } else {
-            UiContext::text_len(&window.label)
-        };
-
-        let label_rect = from_pos_size(
-            text_cursor + UiContext::WINDOW_PAD.as_vec2() + UiContext::ELEMENT_GAP.as_vec2(),
-            Vec2::new(
-                label_width + UiContext::WINDOW_PAD.x as f32 + UiContext::ELEMENT_GAP.x as f32,
-                UiContext::WINDOW_HEADER_HEIGHT,
-            ) - Vec2::new(
-                0.0,
-                UiContext::WINDOW_PAD.y as f32 + UiContext::ELEMENT_GAP.y as f32,
-            ),
-        );
-
-        text_cursor += Vec2::new(label_rect.width() + UiContext::ELEMENT_GAP.as_vec2().x, 0.0);
-
-        rects.push(label_rect);
-        if sibling_id == index as u32 {
-            own_rect = Some(label_rect);
-        }
-    }
-    (
-        own_rect.expect("Window isnt inside its own siblings?"),
-        rects,
-    )
-}
-
-fn window_focused(
-    window: &mut UiWindow,
-    index: usize,
-    drag_rect: Rect,
-    dock: &mut DockingNode,
-    frame: &FrameInfo,
-    newly_focused: &mut Option<usize>,
-) {
-    let input = &frame.input;
-
-    if input.left_mouse_pressed {
-        let clicked = input.cursor_pos.is_some_and(|p| drag_rect.contains(p));
-        if clicked && newly_focused.is_none() {
-            *newly_focused = Some(index);
-            if window.docked {
-                dock.set_active_tab(index as u32);
-            }
-            if window.focused.is_none() {
-                window.focused = Some(FocusedState::default());
-            }
-        } else {
-            window.focused = None;
-        }
-    }
-}
-
-fn get_dock_info(
-    window: &mut UiWindow,
-    index: u32,
-    dock: &DockingNode,
-    full_screen_rect: Rect,
-) -> Option<Siblings> {
-    let siblings = if window.docked {
-        dock.dock_info(index, full_screen_rect)
-            .map(|(rect, siblings)| {
-                window.dock_rect = Rect {
-                    min: rect.min.round(),
-                    max: rect.max.round(),
-                };
-                siblings
-            })
-    } else {
-        None
-    };
-
-    window.open = siblings
-        .as_ref()
-        .map(|siblings| siblings.active() == index)
-        .unwrap_or(window.open);
-
-    siblings
-}
-
-fn handle_focused_input(
-    window: &mut UiWindow,
-    index: usize,
-    drag_rect: Rect,
-    dock: &mut DockingNode,
-    frame: &FrameInfo,
-) -> (Option<Rect>, bool) {
-    let input = &frame.input;
-    let Some(mut focused) = window.focused.take() else {
-        return (None, false);
-    };
-
+    let mut found_new_focused = false;
+    let mut hovering_tab = false;
+    let mut spawn_window = None;
+    let mut drag_released = None;
     let mut preview_rect = None;
-    let mut drag_released = false;
 
-    if let Some(cursor_pos) = input.cursor_pos {
-        if drag_rect.contains(cursor_pos) {
-            if input.left_mouse_pressed {
-                focused.darg_start = window.full_rect().min - cursor_pos;
-                focused.drag_press_pos = cursor_pos;
-                focused.is_being_draged = true;
+    for (i, window) in windows.by_layer_mut().rev() {
+        window.indicies.clear();
+        window.verticies.clear();
+
+        let info = dock.dock_info(i as u32, frame.full_screen_rect);
+        let docked = info.is_some();
+
+        if let Some(info) = info {
+            window.rect = info;
+        }
+
+        let hoverd = frame
+            .input
+            .hovered(window.rect.inflate(UiContext::RESIZE_THRESHOLD));
+
+        if frame.input.left_mouse_pressed {
+            if !found_new_focused && hoverd {
+                found_new_focused = true;
+                if window.focused.is_none() {
+                    window.focused = Some(FocusedState::default());
+                }
+            } else {
+                window.focused = None;
             }
-        } else if !window.full_rect().contains(cursor_pos)
-            && !window.docked
-            && input.left_mouse_pressed
+        }
+
+        if let Some(focused) = window.focused.as_mut()
+            && frame.input.left_mouse_pressed
+            && !docked
         {
-            ResizeEdges::hovered(window.full_rect(), cursor_pos, UiContext::DRAG_THRESHHOLD)
-                .store_in(&mut focused);
+            focused
+                .edges
+                .hoverd(window.rect, &frame.input, UiContext::RESIZE_THRESHOLD);
         }
 
-        if focused.is_being_draged
-            && window.docked
-            && cursor_pos.distance(focused.drag_press_pos) > UiContext::DRAG_THRESHHOLD
-        {
-            window.docked = false;
-            dock.undock(index as u32);
-        }
-
-        if input.left_mouse_pressing && !window.docked {
-            apply_drag_and_resize(window, &focused, cursor_pos);
-        }
-
-        if focused.is_being_draged && !window.docked {
-            preview_rect = dock.preview_dock(
-                cursor_pos,
-                frame.full_screen_rect,
-                UiContext::WINDOW_HEADER_HEIGHT,
+        let mut detatch_tab = None;
+        let mut cursor = window.rect.min;
+        for (j, tab) in window.tabs.iter().enumerate() {
+            if let Ok(mut tab_state) = tab.state.lock() {
+                tab_state.verticies.clear();
+                tab_state.indicies.clear();
+                tab_state.top_verticies.clear();
+                tab_state.top_indicies.clear();
+            }
+            let tab_rect = Rect::from_corners(
+                cursor - window.tab_scroll.scroll,
+                cursor - window.tab_scroll.scroll
+                    + Vec2::new(
+                        UiContext::text_len(&tab.label),
+                        UiContext::WINDOW_HEADER_HEIGHT,
+                    )
+                    + UiContext::TAB_PAD.as_vec2(),
             );
+            let hovering = frame.input.hovered(tab_rect);
+
+            if hovering {
+                hovering_tab = true;
+            }
+            if let Some(focused) = window.focused.as_mut() {
+                if hovering && frame.input.left_mouse_pressed {
+                    window.active_tab = j as u32;
+                    if let Some(cursor_pos) = frame.input.cursor_pos
+                        && !focused.edges.any()
+                    {
+                        focused.draging = if window.tabs.len() > 1 {
+                            Some(Draggable::ActiveTab)
+                        } else {
+                            Some(Draggable::Window)
+                        };
+                        focused.drag_start = cursor_pos;
+                        focused.drag_press_pos = window.rect.min - cursor_pos;
+                    }
+                }
+                if window.active_tab == j as u32 {
+                    if let Some(cp) = frame.input.cursor_pos
+                        && focused.draging == Some(Draggable::ActiveTab)
+                        && (focused.drag_start - cp).length() > UiContext::DRAG_THRESHHOLD
+                    {
+                        detatch_tab = Some(j as u32);
+                    }
+                }
+            }
+            cursor.x += tab_rect.width() + UiContext::TAB_GAP.x as f32;
+        }
+
+        if let Some(tab) = detatch_tab
+            && window.tabs.len() > 1
+        {
+            let tab = window.tabs.remove(tab as usize);
+            if window.active_tab != 0 {
+                window.active_tab -= 1;
+            }
+            if let Some(focused) = &mut window.focused {
+                focused.draging = Some(Draggable::Window);
+            }
+            spawn_window = Some(UiWindow {
+                tab_scroll: Scrollable::default(),
+                active_tab: 0,
+                tabs: vec![tab],
+                layer: window.layer,
+                rect: window.rect,
+                focused: window.focused.take(),
+                verticies: Vec::new(),
+                indicies: Vec::new(),
+            })
+        }
+
+        let header_rect = window.header_rect();
+        if let Some(focused) = &mut window.focused {
+            if frame.input.left_mouse_pressed {
+                if frame.input.hovered(header_rect) && !hovering_tab && !focused.edges.any() {
+                    focused.draging = Some(Draggable::Window);
+                    let cp = frame.input.cursor_pos.unwrap();
+                    focused.drag_start = cp;
+                    focused.drag_press_pos = window.rect.min - cp;
+                }
+            }
+
+            if frame.input.left_mouse_released {
+                if focused.draging == Some(Draggable::Window) && !docked {
+                    drag_released = Some(i);
+                }
+
+                focused.edges = ResizeEdges::default();
+                focused.draging = None;
+            }
+
+            if let Some(cursor_pos) = frame.input.cursor_pos
+                && focused.draging == Some(Draggable::Window)
+            {
+                if docked {
+                    if (focused.drag_start - cursor_pos).length() > UiContext::DRAG_THRESHHOLD {
+                        dock.undock(i as u32);
+                    }
+                } else {
+                    let size = window.rect.size();
+                    window.rect.min = cursor_pos + focused.drag_press_pos;
+                    window.rect.max = window.rect.min + size;
+
+                    preview_rect = dock
+                        .preview_dock(cursor_pos, frame.full_screen_rect)
+                        .map(|r| (i, r));
+                }
+            }
+
+            if let Some(cursor_pos) = frame.input.cursor_pos {
+                let min_size = UiContext::WINDOW_HEADER_HEIGHT + 10.0;
+                if focused.edges.top {
+                    window.rect.min.y = cursor_pos.y.min(window.rect.max.y - min_size).round();
+                }
+                if focused.edges.bottom {
+                    window.rect.max.y = cursor_pos.y.max(window.rect.min.y + min_size).round();
+                }
+                if focused.edges.left {
+                    window.rect.min.x = cursor_pos.x.min(window.rect.max.x - 10.0).round();
+                }
+                if focused.edges.right {
+                    window.rect.max.x = cursor_pos.x.max(window.rect.min.x + 10.0).round();
+                }
+            }
         }
     }
 
-    if input.left_mouse_released {
-        drag_released = focused.is_being_draged && !window.docked;
-        focused.draging = None;
-        focused.darg_start = Vec2::ZERO;
-        focused.is_being_draged = false;
-        ResizeEdges::default().store_in(&mut focused);
+    if let Some((i, preview)) = preview_rect {
+        windows.windows[i].as_mut().unwrap().draw_box(
+            preview,
+            DrawSettings {
+                color: UiContext::ACENT_DIM,
+                on_top: true,
+                border: Some(BorderSettings::uniform(UiContext::ACENT, UiContext::BORDER)),
+                ..Default::default()
+            },
+            frame.viewport_size,
+            frame.full_screen_rect,
+        );
     }
 
-    window.focused = Some(focused);
-    (preview_rect, drag_released)
+    if let Some(w) = drag_released
+        && let Some(cp) = frame.input.cursor_pos
+    {
+        let dock_window = dock.dock(w as u32, cp, frame.full_screen_rect);
+        let merge_window = dock_window.or_else(|| {
+            windows
+                .by_layer()
+                .rev()
+                .find(|(i, win)| *i != w && win.header_rect().contains(cp))
+                .map(|(i, _)| i as u32)
+        });
+        if let Some(merge_window) = merge_window {
+            let mut old = windows.remove(w);
+            let focused = old.focused.take();
+            let window = windows.windows[merge_window as usize].as_mut().unwrap();
+            if let Some(focused) = focused {
+                window.focused = Some(focused);
+            }
+            let tabs = window.tabs.len();
+            window.tabs.append(&mut old.tabs);
+            window.active_tab = tabs as u32;
+        }
+    };
+
+    if let Some(spawn_window) = spawn_window {
+        windows.append(spawn_window);
+    }
+
+    handle_dock_resizing(ctx, dock, &frame, hovering_tab);
+    reorder_layers(&mut windows);
 }
 
-fn apply_drag_and_resize(window: &mut UiWindow, focused: &FocusedState, cursor_pos: Vec2) {
-    let size = window.rect.size();
-
-    if focused.is_being_draged {
-        let drag_pos = (cursor_pos + focused.darg_start).round();
-        window.rect.min = drag_pos;
-        window.rect.max = drag_pos + size;
-    }
-
-    let min_size = UiContext::WINDOW_HEADER_HEIGHT + 10.0;
-    if focused.resize_top {
-        window.rect.min.y = cursor_pos.y.min(window.rect.max.y - min_size).round();
-    }
-    if focused.resize_bottom {
-        window.rect.max.y = cursor_pos.y.max(window.rect.min.y + min_size).round();
-    }
-    if focused.resize_left {
-        window.rect.min.x = cursor_pos.x.min(window.rect.max.x - 10.0).round();
-    }
-    if focused.resize_right {
-        window.rect.max.x = cursor_pos.x.max(window.rect.min.x + 10.0).round();
-    }
-}
-
-fn draw_window(
-    window: &mut UiWindow,
-    index: usize,
-    siblings: Option<Siblings>,
-    sibling_rects: Option<Vec<Rect>>,
-    all_windows: &[Mutex<UiWindow>],
-    frame: &FrameInfo,
-) {
-    window.indicies.clear();
-    window.verticies.clear();
-    window.top_indicies.clear();
-    window.top_verticies.clear();
-
+fn draw_window(window: &mut UiWindow, frame: &FrameInfo, docked: bool) {
     let is_focused = window.focused.is_some();
-    let edges = window
-        .focused
-        .as_ref()
-        .map(|f| ResizeEdges::from(f))
-        .unwrap_or_default();
+    let edges = window.focused.as_ref().map(|f| f.edges).unwrap_or_default();
 
     let border_color = |active: bool| {
         if active {
-            UiContext::BLUE
+            UiContext::ACENT
         } else {
-            UiContext::S1
+            UiContext::S2
         }
     };
 
-    let window_ds = DrawSettings {
+    let mut window_ds = DrawSettings {
         on_top: false,
-        color: if window.docked {
-            UiContext::BG_DARK
-        } else {
-            UiContext::BG
-        },
+        color: UiContext::BG,
         rounding: UiContext::WINDOW_ROUNDING,
         round_topleft: false,
         round_topright: false,
-        round_bottomleft: !window.docked,
-        round_bottomright: !window.docked,
+        round_bottomleft: false,
+        round_bottomright: false,
         border: Some(BorderSettings {
-            color_top: border_color(edges.top),
+            color_top: border_color(false),
             color_bottom: border_color(edges.bottom),
             color_left: border_color(edges.left),
             color_right: border_color(edges.right),
@@ -422,30 +437,17 @@ fn draw_window(
         }),
     };
 
-    if window.open {
-        window.draw_box(
-            window.content_rect(),
-            window_ds,
-            frame.viewport_size,
-            frame.full_screen_rect,
-        );
-    }
+    window.draw_box(
+        window.content_rect(),
+        window_ds,
+        frame.viewport_size,
+        frame.full_screen_rect,
+    );
 
-    if let Some(siblings) = siblings
-        && let Some(sibling_rects) = sibling_rects
-    {
-        if siblings.active() as usize == index {
-            draw_header_bar(window, is_focused, window_ds, frame);
-            draw_docked_tabs(window, index, siblings, sibling_rects, all_windows, frame);
-        }
-    } else {
-        draw_header_bar(window, is_focused, window_ds, frame);
-        draw_standalone_header(window, is_focused, edges, frame);
-    }
-
-    if window.open {
-        draw_scrollable_content(window, window.content_rect(), frame);
-    }
+    let b = window_ds.border.as_mut().unwrap();
+    b.color_top = border_color(edges.top);
+    b.color_bottom = border_color(false);
+    draw_header_bar(window, is_focused, window_ds, frame, docked);
 }
 
 fn draw_header_bar(
@@ -453,12 +455,12 @@ fn draw_header_bar(
     is_focused: bool,
     mut window_ds: DrawSettings,
     frame: &FrameInfo,
+    docked: bool,
 ) {
-    window_ds.round_topleft = !window.docked;
-    window_ds.round_topright = !window.docked;
+    window_ds.round_topleft = !docked;
+    window_ds.round_topright = !docked;
     window_ds.round_bottomleft = false;
     window_ds.round_bottomright = false;
-    log::info!("test");
     window_ds.color = if is_focused {
         UiContext::BG
     } else {
@@ -466,159 +468,8 @@ fn draw_header_bar(
     };
     window_ds.border.as_mut().unwrap().color_bottom = UiContext::S1;
     window.draw_box(
-        Rect::from_corners(
-            window.full_rect().min,
-            window.full_rect().min
-                + Vec2::new(window.full_rect().width(), UiContext::WINDOW_HEADER_HEIGHT),
-        ),
+        window.header_rect(),
         window_ds,
-        frame.viewport_size,
-        frame.full_screen_rect,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_docked_tabs(
-    window: &mut UiWindow,
-    index: usize,
-    siblings: Siblings,
-    sibling_rects: Vec<Rect>,
-    windows: &[Mutex<UiWindow>],
-    frame: &FrameInfo,
-) {
-    for (i, s) in siblings.members.iter().copied().enumerate() {
-        let active = s == siblings.active;
-        let rect = sibling_rects[i as usize];
-
-        let rect = Rect::from_corners(
-            rect.min + window.full_rect().min,
-            rect.max + window.full_rect().min,
-        );
-
-        let hoverd = frame.input.cursor_pos.is_some_and(|cp| rect.contains(cp));
-
-        let ds = DrawSettings {
-            border: Some(BorderSettings::uniform(UiContext::S1, 2)),
-            color: if hoverd {
-                UiContext::S2
-            } else if active {
-                UiContext::S1
-            } else {
-                UiContext::BG
-            },
-            rounding: UiContext::ROUNDING,
-            on_top: false,
-            round_bottomleft: false,
-            round_topright: false,
-            ..Default::default()
-        };
-        window.draw_box(rect, ds, frame.viewport_size, frame.full_screen_rect);
-
-        let label = if s as usize == index {
-            window.label.clone()
-        } else {
-            windows[s as usize].lock().unwrap().label.clone()
-        };
-        window.text(
-            rect.min + UiContext::WINDOW_PAD.as_vec2(),
-            UiContext::TEXT,
-            &label,
-            frame.viewport_size,
-            frame.full_screen_rect,
-            false,
-        );
-    }
-}
-fn draw_standalone_header(
-    window: &mut UiWindow,
-    is_focused: bool,
-    edges: ResizeEdges,
-    frame: &FrameInfo,
-) {
-    window.text_direction(
-        window.full_rect().min
-            + if !window.open {
-                Vec2::new(0.0, UiContext::ATLAS_CELL_SIZE.y as f32 + 2.0)
-            } else {
-                Vec2::ZERO
-            },
-        UiContext::TEXT,
-        "▼",
-        frame.viewport_size,
-        frame.full_screen_rect,
-        false,
-        if window.open {
-            TextDirection::Right
-        } else {
-            TextDirection::Up
-        },
-    );
-
-    let arrow_size = Vec2::new(
-        UiContext::text_len("▼"),
-        UiContext::ATLAS_CELL_SIZE.y as f32,
-    );
-
-    let label = window.label.clone();
-    window.text(
-        window.full_rect().min + Vec2::new(UiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
-        UiContext::TEXT,
-        &label,
-        frame.viewport_size,
-        frame.full_screen_rect,
-        false,
-    );
-
-    if let Some(cursor_pos) = frame.input.cursor_pos
-        && Rect::from_center_half_size(
-            window.full_rect().min + Vec2::new(UiContext::ELEMENT_GAP.x as f32 + arrow_size.x, 0.0),
-            arrow_size,
-        )
-        .contains(cursor_pos)
-        && frame.input.left_mouse_pressed
-        && is_focused
-        && !(edges.top || edges.left)
-    {
-        window.open = !window.open;
-    }
-}
-
-fn draw_scrollable_content(window: &mut UiWindow, content_area: Rect, frame: &FrameInfo) {
-    let input = &frame.input;
-
-    let mut hasher = DefaultHasher::new();
-    window.label.hash(&mut hasher);
-    let id = hasher.finish();
-
-    let (_, mut scrollable) = window.scrollables.remove_entry(&id).unwrap_or((
-        id,
-        Scrollable {
-            content_size: content_area.size(),
-            scroll: Vec2::ZERO,
-        },
-    ));
-    let rect = window.full_rect();
-    scrollable.draw(
-        NonZeroU64::new(id).unwrap_or(NonZeroU64::MIN),
-        content_area,
-        window,
-        frame.viewport_size,
-        input.cursor_pos,
-        input.left_mouse_pressed,
-        rect,
-    );
-    window.scrollables.insert(id, scrollable);
-}
-
-fn draw_dock_preview(window: &mut UiWindow, preview: Rect, frame: &FrameInfo) {
-    window.draw_box(
-        preview,
-        DrawSettings {
-            color: UiContext::BLUE_DIM,
-            on_top: true,
-            border: Some(BorderSettings::uniform(UiContext::BLUE, UiContext::BORDER)),
-            ..Default::default()
-        },
         frame.viewport_size,
         frame.full_screen_rect,
     );
@@ -628,11 +479,11 @@ fn handle_dock_resizing(
     ctx: &mut UiContext,
     dock: &mut DockingNode,
     frame: &FrameInfo,
-    click_over_window: bool,
+    click_valid: bool,
 ) {
     let input = &frame.input;
 
-    if !click_over_window
+    if !click_valid
         && let Some(cursor_pos) = input.cursor_pos
         && input.left_mouse_pressed
     {
@@ -667,27 +518,17 @@ fn handle_dock_resizing(
     }
 }
 
-fn reorder_layers(windows: &UiWindows) {
-    let mut order: Vec<usize> = (0..windows.windows.len()).collect();
-    order.sort_by_key(|&i| {
-        windows.windows[i]
-            .lock()
-            .map(|w| {
-                let tier: u8 = if w.docked {
-                    0
-                } else if w.focused.is_some() {
-                    2
-                } else {
-                    1
-                };
-                (tier, w.layer)
-            })
-            .unwrap_or((1, 0))
-    });
-
-    for (layer, index) in order.into_iter().enumerate() {
-        if let Ok(mut window) = windows.windows[index].lock() {
-            window.layer = layer as u32;
-        }
-    }
+fn reorder_layers(windows: &mut UiWindows) {
+    windows
+        .windows
+        .iter_mut()
+        .filter_map(|w| w.as_mut())
+        .sorted_by_key(|w| {
+            let tier: u8 = if w.focused.is_some() { 1 } else { 0 };
+            (tier, w.layer)
+        })
+        .enumerate()
+        .for_each(|(layer, w)| {
+            w.layer = layer as u32;
+        });
 }

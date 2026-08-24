@@ -3,11 +3,11 @@ use glam::Vec2;
 use std::num::NonZeroU64;
 
 use crate::ui::{
-    new_ui::{UiContext, from_pos_size},
-    window::{DrawSettings, UiWindow},
+    new_ui::{Draggable, FocusedState, UiContext, from_pos_size},
+    window::{DrawSettings, Drawable, TabState},
 };
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default, Debug)]
 pub struct Scrollable {
     pub content_size: Vec2,
     pub scroll: Vec2,
@@ -31,11 +31,12 @@ impl Scrollable {
             .clamp(Vec2::ZERO, (self.content_size - size).max(Vec2::ZERO));
     }
 
-    fn draw_bar(
+    fn update_and_draw_bar(
         &mut self,
-        id: NonZeroU64,
+        draging: Draggable,
         area: Rect,
-        window: &mut UiWindow,
+        window: &mut impl Drawable,
+        focused: &mut Option<&mut FocusedState>,
         direction: bool,
         viewport_size: Vec2,
         cursor_pos: Option<Vec2>,
@@ -57,7 +58,7 @@ impl Scrollable {
             Vec2::new(size.x - b * 2.0, UiContext::BAR_THICKNESS).round()
         };
 
-        window.rect(
+        window.draw_rect(
             Rect::from_corners(track_pos, track_pos + track_size),
             None,
             UiContext::S0,
@@ -85,23 +86,19 @@ impl Scrollable {
             Vec2::new(thumb_width.x, UiContext::BAR_THICKNESS)
         };
 
-        let id_scroll = id.saturating_add(1).saturating_add(!direction as u64);
-
-        let dragging = window
-            .focused
+        let dragging = focused
             .as_ref()
-            .map(|f| f.draging == Some(id_scroll))
-            .unwrap_or(false);
+            .is_some_and(|d| d.draging.is_some_and(|d| d == draging));
 
         let hovered = cursor_pos
             .map(|p| Rect::from_corners(thumb_pos, thumb_pos + thumb_size).contains(p))
             .unwrap_or(false);
 
         if left_mouse_pressed && hovered {
-            if let Some(f) = &mut window.focused {
+            if let Some(f) = focused {
                 let grab_offset = cursor_pos.map(|p| p - thumb).unwrap_or(Vec2::ZERO);
-                f.draging = Some(id_scroll);
-                f.darg_start =
+                f.draging = Some(draging);
+                f.drag_start =
                     grab_offset * Vec2::new(!direction as u32 as f32, direction as u32 as f32);
             }
         }
@@ -109,11 +106,7 @@ impl Scrollable {
         if let Some(p) = cursor_pos
             && dragging
         {
-            let grab_offset = window
-                .focused
-                .as_ref()
-                .map(|f| f.darg_start)
-                .unwrap_or(Vec2::ZERO);
+            let grab_offset = focused.as_ref().map(|f| f.drag_start).unwrap_or(Vec2::ZERO);
             let new_thumb = p - track_pos;
             let travel = (track_size - thumb_width).max(Vec2::ONE);
             if direction {
@@ -142,21 +135,23 @@ impl Scrollable {
         );
     }
 
-    pub fn draw(
+    pub fn update_and_draw(
         &mut self,
-        id: NonZeroU64,
-        area: Rect,
-        window: &mut UiWindow,
+        dragging: Draggable,
+        size: Rect,
+        window: &mut impl Drawable,
+        focused: &mut Option<&mut FocusedState>,
         viewport_size: Vec2,
         cursor_pos: Option<Vec2>,
         left_mouse_pressed: bool,
         clip_rect: Rect,
     ) {
-        if self.content_size.y > area.size().y {
-            self.draw_bar(
-                id,
-                area,
+        if self.content_size.y > size.size().y {
+            self.update_and_draw_bar(
+                dragging,
+                size,
                 window,
+                focused,
                 true,
                 viewport_size,
                 cursor_pos,
@@ -164,11 +159,12 @@ impl Scrollable {
                 clip_rect,
             );
         }
-        if self.content_size.x > area.size().x {
-            self.draw_bar(
-                id,
-                area,
+        if self.content_size.x > size.size().x {
+            self.update_and_draw_bar(
+                dragging,
+                size,
                 window,
+                focused,
                 false,
                 viewport_size,
                 cursor_pos,

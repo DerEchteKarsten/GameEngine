@@ -3,6 +3,7 @@ use std::{
     f32::consts::PI,
     hash::{DefaultHasher, Hash, Hasher},
     num::NonZeroU64,
+    sync::Mutex,
 };
 
 use bevy::{
@@ -22,22 +23,65 @@ use crate::{
     bindings::UIVertex,
     ui::{
         builder::UiWindowBuilder,
-        new_ui::{FocusedState, MultiInput, UiContext, from_pos_size},
+        new_ui::{Draggable, FocusedState, MultiInput, UiContext, from_pos_size},
         scrollable::Scrollable,
     },
 };
 
+#[derive(Debug)]
 pub struct UiWindow {
-    pub label: String,
-    pub open: bool,
-    pub docked: bool,
+    pub tabs: Vec<Tab>,
+    pub tab_scroll: Scrollable,
+    pub active_tab: u32,
     pub layer: u32,
-    pub open_headers: HashSet<u64>,
-    pub scroll: Scrollable,
-    pub scrollables: HashMap<u64, Scrollable>,
-    pub focused: Option<FocusedState>,
-    pub dock_rect: Rect,
     pub rect: Rect,
+    pub focused: Option<FocusedState>,
+    pub verticies: Vec<UIVertex>,
+    pub indicies: Vec<u32>,
+}
+
+impl UiWindow {
+    pub fn header_rect(&self) -> Rect {
+        Rect::from_corners(
+            self.rect.min,
+            self.rect.min + Vec2::new(self.rect.width(), UiContext::WINDOW_HEADER_HEIGHT),
+        )
+    }
+    pub fn content_rect(&self) -> Rect {
+        Rect::from_corners(
+            self.rect.min + Vec2::new(0.0, UiContext::WINDOW_HEADER_HEIGHT),
+            self.rect.max,
+        )
+    }
+    pub fn active_tab(&self) -> &Tab {
+        &self.tabs[self.active_tab as usize]
+    }
+
+    pub fn new(tabs: Vec<Tab>, rect: Rect, active_tab: u32) -> Self {
+        Self {
+            tab_scroll: Scrollable::default(),
+            tabs,
+            active_tab,
+            layer: 0,
+            rect,
+            focused: None,
+            verticies: Vec::new(),
+            indicies: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Tab {
+    pub state: Mutex<TabState>,
+    pub label: String,
+}
+
+#[derive(Default, Debug)]
+pub struct TabState {
+    pub open_headers: HashSet<u64>,
+    pub content_scroll: Scrollable,
+    pub scrollables: HashMap<u64, Scrollable>,
     pub verticies: Vec<UIVertex>,
     pub indicies: Vec<u32>,
     pub top_verticies: Vec<UIVertex>,
@@ -143,100 +187,144 @@ pub enum TextDirection {
     Down,
 }
 
-impl UiWindow {
-    pub fn full_rect(&self) -> Rect {
-        if self.docked {
-            self.dock_rect
-        } else if !self.open {
-            Rect::from_corners(
-                self.rect.min,
-                self.rect.min + Vec2::new(self.rect.width(), UiContext::WINDOW_HEADER_HEIGHT),
-            )
-        } else {
-            self.rect
-        }
-    }
-
-    pub fn content_rect(&self) -> Rect {
-        if !self.open {
-            // Not the active tab (when docked) or collapsed (when floating): no content is shown.
-            Rect::EMPTY
-        } else if self.docked {
-            Rect::from_corners(
-                self.dock_rect.min + Vec2::new(0.0, UiContext::WINDOW_HEADER_HEIGHT),
-                self.dock_rect.max,
-            )
-        } else {
-            Rect::from_corners(
-                self.rect.min + Vec2::new(0.0, UiContext::WINDOW_HEADER_HEIGHT),
-                self.rect.max,
-            )
-        }
-    }
-
-    pub fn header_rect(&self) -> Rect {
-        let rect = self.full_rect();
-        Rect::from_corners(
-            rect.min,
-            rect.min + Vec2::new(rect.width(), UiContext::WINDOW_HEADER_HEIGHT),
-        )
-    }
-
-    pub fn header_text_rect(&self) -> Rect {
-        let rect = self.full_rect();
-        Rect::from_corners(
-            rect.min,
-            rect.min
-                + Vec2::new(
-                    UiContext::text_len(&self.label),
-                    UiContext::WINDOW_HEADER_HEIGHT,
-                ),
-        )
-    }
-
-    pub fn new(label: String, rect: Rect, open: bool, docked: bool) -> Self {
-        UiWindow {
-            label,
-            layer: 0,
-            dock_rect: Rect {
-                min: rect.min.round(),
-                max: rect.max.round(),
-            },
-            docked,
-            scroll: Scrollable {
-                content_size: Vec2::ZERO,
-                scroll: Vec2::ZERO,
-            },
-            scrollables: HashMap::new(),
-            open,
-            open_headers: HashSet::new(),
-            focused: None,
-            rect: Rect {
-                min: rect.min.round(),
-                max: rect.max.round(),
-            },
-            verticies: Vec::new(),
-            indicies: Vec::new(),
-            top_indicies: Vec::new(),
-            top_verticies: Vec::new(),
-        }
-    }
-
-    pub fn draw_box(
+impl TabState {
+    pub fn build<'w, 's, R>(
         &mut self,
-        rect: Rect,
-        ds: DrawSettings,
-        viewport_size: Vec2,
-        clip_rect: Rect,
-    ) -> (usize, usize) {
+        parent_window: &UiWindow,
+        mut focused_state: Option<&'s mut FocusedState>,
+        label: &str,
+        buttons: Res<'w, ButtonInput<MouseButton>>,
+        ctx: Res<'w, UiContext>,
+        window: &Window,
+        touch: Res<'w, Touches>,
+        scroll: Res<'w, AccumulatedMouseScroll>,
+        keys: &mut MessageReader<'w, 's, KeyboardInput>,
+        shift: bool,
+        ctrl: bool,
+        f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>) -> R,
+    ) -> Option<R> {
+        let mut id = DefaultHasher::new();
+        label.hash(&mut id);
+        let id = id.finish();
+        let viewport_size = window.physical_size().as_vec2();
+
+        let r = UiContext::WINDOW_ROUNDING as f32;
+        let b = UiContext::BORDER as f32;
+        let rmb = r.max(b);
+
+        let header_h =
+            (UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
+        let focused = parent_window.focused.is_some();
+        let input = MultiInput::new(&window, &buttons, &touch);
+
+        let content_area = Rect {
+            min: parent_window.rect.min + Vec2::new(0.0, header_h),
+            max: parent_window.rect.max,
+        };
+
+        let cursor = (content_area.min + rmb + UiContext::WINDOW_PAD.as_vec2()
+            - self.content_scroll.scroll)
+            .round();
+
+        let bar_size = UiContext::BAR_THICKNESS
+            * Vec2::new(
+                (self.content_scroll.content_size.y > content_area.size().y) as u32 as f32,
+                (self.content_scroll.content_size.x > content_area.size().x) as u32 as f32,
+            );
+        let clip_rect = from_pos_size(
+            content_area.min + b,
+            content_area.size() - b * 2.0 - bar_size,
+        );
+        let max_width = (content_area.size().max(self.content_scroll.content_size)).x
+            - UiContext::WINDOW_PAD.x as f32
+            - rmb
+            - bar_size.x;
+
+        let mut builder = UiWindowBuilder {
+            max_width,
+            window_id: id,
+            scroll_delta: scroll.delta,
+            content_max: cursor,
+            focuse_next: false,
+            line_height: 0.0,
+            ctx,
+            clip_rect,
+            window: self,
+            viewport_size,
+            cursor,
+            cursor_origin: cursor,
+            prev_element_hoverd: true,
+            prev_element: content_area,
+            input,
+            direction: false,
+            scroll_consumed: false,
+            prev_cursor: cursor,
+            keys,
+            ctrl,
+            shift,
+            hovered_smth: false,
+            focused: &mut focused_state,
+        };
+
+        let r = f(&mut builder);
+        let content_max = builder.content_max;
+        let scroll_consumed = builder.scroll_consumed;
+
+        let content_size = content_max + UiContext::WINDOW_PAD.as_vec2() + rmb - cursor;
+
+        self.content_scroll.content_size = content_size;
+        if !scroll_consumed && focused {
+            self.content_scroll
+                .scroll(scroll.delta, content_area.size());
+        }
+        let mut content_scroll = self.content_scroll;
+        content_scroll.update_and_draw(
+            Draggable::TabScrollHandle,
+            content_area,
+            self,
+            &mut focused_state,
+            viewport_size,
+            input.cursor_pos,
+            input.left_mouse_pressed,
+            parent_window.rect,
+        );
+        self.content_scroll = content_scroll;
+        Some(r)
+    }
+}
+
+impl Drawable for TabState {
+    fn vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>) {
+        (&mut self.verticies, &mut self.indicies)
+    }
+
+    fn on_top_vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>) {
+        (&mut self.top_verticies, &mut self.top_indicies)
+    }
+}
+
+impl Drawable for UiWindow {
+    fn vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>) {
+        (&mut self.verticies, &mut self.indicies)
+    }
+
+    fn on_top_vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>) {
+        (&mut self.verticies, &mut self.indicies)
+    }
+}
+
+pub trait Drawable {
+    fn vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>);
+    fn on_top_vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>);
+
+    fn draw_box(&mut self, rect: Rect, ds: DrawSettings, viewport_size: Vec2, clip_rect: Rect) {
         let size = rect.size();
         let pos = rect.min;
         let b = ds.border.map(|b| b.size).unwrap_or(0) as f32;
         let r = ds.rounding as f32;
         let rmb = r.max(b) as f32;
 
-        let start_idx = self.verticies.len();
-        self.rect(
+        self.draw_rect(
             rect.inflate(-rmb),
             None,
             ds.color,
@@ -254,7 +342,7 @@ impl UiWindow {
         ];
 
         if rmb != 0.0 {
-            self.rect(
+            self.draw_rect(
                 from_pos_size(
                     pos + Vec2::new(rmb * ds.round_topleft as u32 as f32, 0.0),
                     Vec2::new(
@@ -269,7 +357,7 @@ impl UiWindow {
                 clip_rect,
                 ds.on_top,
             );
-            self.rect(
+            self.draw_rect(
                 from_pos_size(
                     pos + Vec2::new(rmb * ds.round_bottomleft as u32 as f32, size.y - rmb),
                     Vec2::new(
@@ -286,7 +374,7 @@ impl UiWindow {
                 clip_rect,
                 ds.on_top,
             );
-            self.rect(
+            self.draw_rect(
                 from_pos_size(
                     pos + Vec2::new(0.0, rmb),
                     Vec2::new(rmb, size.y - rmb * 2.0),
@@ -297,7 +385,7 @@ impl UiWindow {
                 clip_rect,
                 ds.on_top,
             );
-            self.rect(
+            self.draw_rect(
                 from_pos_size(
                     pos + Vec2::new(size.x - rmb, rmb),
                     Vec2::new(rmb, size.y - rmb * 2.0),
@@ -340,31 +428,38 @@ impl UiWindow {
                 } else {
                     ds.color
                 };
-                self.round_corner(
+                let (verticies, indicies) = if ds.on_top {
+                    self.on_top_vecs()
+                } else {
+                    self.vecs()
+                };
+                Self::draw_round_corner(
+                    verticies,
+                    indicies,
                     center,
                     r,
                     start_angle,
                     outer_color,
                     viewport_size,
                     clip_rect,
-                    ds.on_top,
                 );
                 if r > b {
-                    self.round_corner(
+                    Self::draw_round_corner(
+                        verticies,
+                        indicies,
                         center,
                         r - b,
                         start_angle,
                         ds.color,
                         viewport_size,
                         clip_rect,
-                        ds.on_top,
                     );
                 }
             }
         }
 
         if let Some(border) = border {
-            self.rect(
+            self.draw_rect(
                 from_pos_size(
                     pos + Vec2::new(rmb * ds.round_topleft as u32 as f32, 0.0),
                     Vec2::new(
@@ -379,7 +474,7 @@ impl UiWindow {
                 clip_rect,
                 ds.on_top,
             );
-            self.rect(
+            self.draw_rect(
                 from_pos_size(
                     pos + Vec2::new(rmb * ds.round_bottomleft as u32 as f32, size.y - b),
                     Vec2::new(
@@ -396,7 +491,7 @@ impl UiWindow {
                 clip_rect,
                 ds.on_top,
             );
-            self.rect(
+            self.draw_rect(
                 from_pos_size(
                     pos + Vec2::new(0.0, rmb * ds.round_topleft as u32 as f32),
                     Vec2::new(
@@ -411,7 +506,7 @@ impl UiWindow {
                 clip_rect,
                 ds.on_top,
             );
-            self.rect(
+            self.draw_rect(
                 from_pos_size(
                     pos + Vec2::new(size.x - b, rmb * ds.round_topright as u32 as f32),
                     Vec2::new(
@@ -428,124 +523,9 @@ impl UiWindow {
                 ds.on_top,
             );
         }
-        let end_idx = self.verticies.len();
-
-        (start_idx, end_idx)
     }
 
-    pub fn build<'w, 's, R>(
-        &mut self,
-        buttons: Res<'w, ButtonInput<MouseButton>>,
-        ctx: Res<'w, UiContext>,
-        window: &Window,
-        touch: Res<'w, Touches>,
-        scroll: Res<'w, AccumulatedMouseScroll>,
-        keys: &mut MessageReader<'w, 's, KeyboardInput>,
-        shift: bool,
-        ctrl: bool,
-        f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>) -> R,
-    ) -> Option<R> {
-        let mut id = DefaultHasher::new();
-        self.label.hash(&mut id);
-        let id = id.finish();
-        let viewport_size = window.physical_size().as_vec2();
-
-        let r = UiContext::WINDOW_ROUNDING as f32;
-        let b = UiContext::BORDER as f32;
-        let rmb = r.max(b);
-
-        let header_h =
-            (UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
-        let focused = self.focused.is_some();
-        let input = MultiInput::new(&window, &buttons, &touch);
-
-        let content_area = Rect {
-            min: self.full_rect().min + Vec2::new(0.0, header_h),
-            max: self.full_rect().max,
-        };
-
-        let (_, mut scrollable) = self.scrollables.remove_entry(&id).unwrap_or((
-            id,
-            Scrollable {
-                content_size: content_area.size(),
-                scroll: Vec2::ZERO,
-            },
-        ));
-        let cursor =
-            (content_area.min + rmb + UiContext::WINDOW_PAD.as_vec2() - scrollable.scroll).round();
-
-        if !self.open {
-            return None;
-        }
-        let bar_size = UiContext::BAR_THICKNESS
-            * Vec2::new(
-                (scrollable.content_size.y > content_area.size().y) as u32 as f32,
-                (scrollable.content_size.x > content_area.size().x) as u32 as f32,
-            );
-        let clip_rect = from_pos_size(
-            content_area.min + b,
-            content_area.size() - b * 2.0 - bar_size,
-        );
-        let max_width = (content_area.size().max(scrollable.content_size)).x
-            - UiContext::WINDOW_PAD.x as f32
-            - rmb
-            - bar_size.x;
-
-        let mut builder = UiWindowBuilder {
-            max_width,
-            window_id: id,
-            scroll_delta: scroll.delta,
-            content_max: cursor,
-            focuse_next: false,
-            line_height: 0.0,
-            ctx,
-            clip_rect,
-            window: self,
-            viewport_size,
-            cursor,
-            cursor_origin: cursor,
-            prev_element_hoverd: true,
-            prev_element: content_area,
-            input,
-            direction: false,
-            scroll_consumed: false,
-            prev_cursor: cursor,
-            keys,
-            ctrl,
-            shift,
-            hovered_smth: false,
-        };
-
-        let r = f(&mut builder);
-        let content_max = builder.content_max;
-        let scroll_consumed = builder.scroll_consumed;
-
-        if !builder.hovered_smth && input.left_mouse_pressed {
-            if let Some(f) = &mut self.focused {
-                f.focused = None;
-            }
-        }
-
-        let content_size = content_max + UiContext::WINDOW_PAD.as_vec2() + rmb - cursor;
-
-        scrollable.content_size = content_size;
-        if !scroll_consumed && focused && self.open {
-            scrollable.scroll(scroll.delta, content_area.size());
-        }
-        scrollable.draw(
-            NonZeroU64::new(id).unwrap(),
-            content_area,
-            self,
-            viewport_size,
-            input.cursor_pos,
-            input.left_mouse_pressed,
-            self.full_rect(),
-        );
-        self.scrollables.insert(id, scrollable);
-        Some(r)
-    }
-
-    pub fn text(
+    fn draw_text(
         &mut self,
         pos: Vec2,
         color: Vec4,
@@ -566,7 +546,7 @@ impl UiWindow {
             let position = UiContext::char_to_atlas_pos(char);
             let uv = position.as_vec2() / UiContext::ATLAS_SIZE.as_vec2();
             let rect = Rect::from_corners(tpos, tpos + UiContext::ATLAS_CELL_SIZE.as_vec2());
-            self.rect(
+            self.draw_rect(
                 rect,
                 Some((uv, UiContext::UV_SIZE)),
                 color,
@@ -581,30 +561,19 @@ impl UiWindow {
         pen
     }
 
-    pub fn text_direction(
+    fn draw_text_direction(
         &mut self,
         pos: Vec2,
         color: Vec4,
         text: &str,
         viewport_size: Vec2,
         clip_rect: Rect,
-        on_top: bool,
         direction: TextDirection,
     ) -> Vec2 {
+        let (verticies, indicies) = self.vecs();
         let clip_min = clip_rect.min;
         let clip_max = clip_rect.max;
         let half_vp = viewport_size / 2.0;
-
-        let verticies = if on_top {
-            &mut self.top_verticies
-        } else {
-            &mut self.verticies
-        };
-        let indicies = if on_top {
-            &mut self.top_indicies
-        } else {
-            &mut self.indicies
-        };
 
         let advance_dir: Vec2 = match direction {
             TextDirection::Right => Vec2::new(1.0, 0.0),
@@ -793,7 +762,8 @@ impl UiWindow {
 
         pen
     }
-    pub fn rect(
+
+    fn draw_rect(
         &mut self,
         rect: Rect,
         uv: Option<(Vec2, Vec2)>,
@@ -802,6 +772,12 @@ impl UiWindow {
         clip_rect: Rect,
         on_top: bool,
     ) {
+        let (verticies, indicies) = if on_top {
+            self.on_top_vecs()
+        } else {
+            self.vecs()
+        };
+
         let clipped_rect = clip_rect.intersect(rect);
         if clipped_rect.is_empty() {
             return;
@@ -814,18 +790,6 @@ impl UiWindow {
             (clipped_uv_min, clipped_uv_max)
         } else {
             (Vec2::splat(0.0), Vec2::splat(0.0))
-        };
-
-        let verticies = if on_top {
-            &mut self.top_verticies
-        } else {
-            &mut self.verticies
-        };
-
-        let indicies = if on_top {
-            &mut self.top_indicies
-        } else {
-            &mut self.indicies
         };
 
         let vertex_id = verticies.len() as u32;
@@ -863,15 +827,15 @@ impl UiWindow {
         ]);
     }
 
-    fn round_corner(
-        &mut self,
+    fn draw_round_corner(
+        verticies: &mut Vec<UIVertex>,
+        indicies: &mut Vec<u32>,
         center: Vec2,
         rounding: f32,
         start_angle: f32,
         color: Vec4,
         view_port_size: Vec2,
         clip_rect: Rect,
-        on_top: bool,
     ) {
         let segments = rounding.ceil() as u32;
         let half_vp = view_port_size / 2.0;
@@ -880,18 +844,6 @@ impl UiWindow {
 
         let clamp_to_clip = |p: Vec2| p.clamp(clip_min, clip_max);
         let to_ndc = |p: Vec2| (p / half_vp) - Vec2::splat(1.0);
-
-        let verticies = if on_top {
-            &mut self.top_verticies
-        } else {
-            &mut self.verticies
-        };
-
-        let indicies = if on_top {
-            &mut self.top_indicies
-        } else {
-            &mut self.indicies
-        };
 
         let center_vertex = verticies.len() as u32;
         let mut prev_vertex = 0u32;

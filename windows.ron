@@ -1,93 +1,51 @@
 (
     docking_nodes: Node(
-        split: Horizontal,
-        extend: 0.23074001,
-        left: Leaf(
-            siblings: (
-                members: [
-                    1,
-                    2,
-                ],
-                active: 1,
-            ),
-            root: false,
-        ),
-        right: Node(
-            split: Vertical,
-            extend: 0.513702,
+        split: Vertical,
+        extend: 0.54939353,
+        left: Node(
+            split: Horizontal,
+            extend: 0.5,
             left: Leaf(
-                siblings: (
-                    members: [],
-                    active: 0,
-                ),
-                root: true,
+                window: 1,
             ),
-            right: Node(
-                split: Horizontal,
-                extend: 0.5,
-                left: Leaf(
-                    siblings: (
-                        members: [
-                            0,
-                        ],
-                        active: 0,
-                    ),
-                    root: false,
-                ),
-                right: Leaf(
-                    siblings: (
-                        members: [
-                            3,
-                        ],
-                        active: 0,
-                    ),
-                    root: false,
-                ),
+            right: Leaf(
+                window: 4294967295,
             ),
+        ),
+        right: Leaf(
+            window: 0,
         ),
     ),
     windows: [
         (
-            label: "Float Input Edge Cases",
-            size: (
-                min: (665.0, 867.0),
-                max: (1772.0, 1688.0),
-            ),
-            open: true,
-            docked: true,
-        ),
-        (
-            label: "Color Picker Edge Cases",
-            size: (
-                min: (0.0, 0.0),
-                max: (665.0, 1688.0),
-            ),
-            open: false,
-            docked: true,
-        ),
-        (
-            label: "Checkbox Edge Cases",
-            size: (
-                min: (0.0, 0.0),
-                max: (665.0, 1688.0),
-            ),
-            open: true,
-            docked: true,
-        ),
-        (
-            label: "Kitchen Sink",
-            size: (
-                min: (1772.0, 867.0),
+            rect: (
+                min: (0.0, 927.3763),
                 max: (2880.0, 1688.0),
             ),
-            open: true,
-            docked: true,
+            tabs: [
+                (
+                    label: "Kitchen Sink",
+                ),
+                (
+                    label: "Float Input Edge Cases",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (0.0, 0.0),
+                max: (1440.0, 927.3763),
+            ),
+            tabs: [
+                (
+                    label: "Color Picker Edge Cases",
+                ),
+                (
+                    label: "Checkbox Edge Cases",
+                ),
+            ],
+            active_tab: 1,
         ),
     ],
-    window_labels: {
-        "Kitchen Sink": 3,
-        "Checkbox Edge Cases": 2,
-        "Color Picker Edge Cases": 1,
-        "Float Input Edge Cases": 0,
-    },
 )

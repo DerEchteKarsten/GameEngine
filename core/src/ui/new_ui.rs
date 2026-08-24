@@ -35,8 +35,9 @@ use crate::{
     },
     ui::{
         builder::TextCursor,
-        dock::{DockingNode, Siblings, Split},
-        window::UiWindow,
+        dock::DockingNode,
+        update_windows::ResizeEdges,
+        window::{self, Tab, TabState, UiWindow},
     },
 };
 
@@ -67,40 +68,41 @@ pub fn from_pos_size(pos: Vec2, size: Vec2) -> Rect {
     Rect::from_corners(pos, pos + size)
 }
 
-#[derive(Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Draggable {
+    ActiveTab,
+    Window,
+    WindowScrollHandle,
+    TabScrollHandle,
+    Element(NonZeroU64),
+    ScrollHandle,
+}
+
+#[derive(Clone, Debug)]
 pub struct FocusedState {
-    pub is_being_draged: bool,
-    pub draging: Option<NonZeroU64>,
+    pub draging: Option<Draggable>,
     pub focused: Option<NonZeroU64>,
     pub cursor: TextCursor,
     pub selected: Range<usize>,
     pub offset: f32,
-    pub darg_start: Vec2,
+    pub drag_start: Vec2,
     pub drag_press_pos: Vec2,
     pub format_string: String,
-
-    pub resize_top: bool,
-    pub resize_bottom: bool,
-    pub resize_left: bool,
-    pub resize_right: bool,
+    pub edges: ResizeEdges,
 }
 
 impl Default for FocusedState {
     fn default() -> Self {
         Self {
-            is_being_draged: false,
             draging: None,
             focused: None,
             cursor: TextCursor { byte_pos: 0 },
             selected: (0..0).into(),
             offset: 0.0,
-            darg_start: Vec2::ZERO,
+            drag_start: Vec2::ZERO,
             drag_press_pos: Vec2::ZERO,
             format_string: String::new(),
-            resize_top: false,
-            resize_bottom: false,
-            resize_left: false,
-            resize_right: false,
+            edges: ResizeEdges::default(),
         }
     }
 }
@@ -116,16 +118,50 @@ pub struct UiContext {
 #[derive(Resource)]
 pub struct UiWindows {
     pub add_windows: Mutex<SmallVec<[String; 4]>>,
-    pub window_labels: HashMap<String, u32>,
-    pub windows: Vec<Mutex<UiWindow>>,
+    pub windows: Vec<Option<UiWindow>>,
+    pub free_slots: Vec<usize>,
 }
 
 impl UiWindows {
-    pub fn by_layer(&self) -> std::vec::IntoIter<(usize, &std::sync::Mutex<UiWindow>)> {
+    pub fn by_layer_mut(&mut self) -> impl DoubleEndedIterator<Item = (usize, &mut UiWindow)> {
+        self.windows
+            .iter_mut()
+            .enumerate()
+            .filter_map(|w| w.1.as_mut().map(|o| (w.0, o)))
+            .sorted_by(|a, b| a.1.layer.cmp(&b.1.layer))
+    }
+    pub fn by_layer(&self) -> impl DoubleEndedIterator<Item = (usize, &UiWindow)> {
         self.windows
             .iter()
             .enumerate()
-            .sorted_by(|a, b| a.1.lock().unwrap().layer.cmp(&b.1.lock().unwrap().layer))
+            .filter_map(|w| w.1.as_ref().map(|o| (w.0, o)))
+            .sorted_by(|a, b| a.1.layer.cmp(&b.1.layer))
+    }
+    pub fn remove(&mut self, index: usize) -> UiWindow {
+        let window = self.windows[index].take().unwrap();
+        self.free_slots.push(index);
+        window
+    }
+
+    pub fn append(&mut self, window: UiWindow) {
+        if let Some(index) = self.free_slots.pop() {
+            self.windows[index] = Some(window);
+        } else {
+            self.windows.push(Some(window));
+        }
+    }
+
+    pub fn log(&self) {
+        for (i, window) in self.windows.iter().enumerate() {
+            if let Some(w) = window {
+                log::info!(
+                    "{i}: {:#?}",
+                    w.tabs.iter().map(|t| &t.label).collect::<Vec<_>>()
+                );
+            } else {
+                log::info!("{i}: Empty");
+            }
+        }
     }
 }
 
@@ -141,27 +177,24 @@ pub struct NUiResources {
 }
 
 impl UiContext {
-    pub const BG: Vec4 = Vec4::new(0.155, 0.155, 0.155, 1.0);
-    pub const BG_DARK: Vec4 = Vec4::new(0.130, 0.130, 0.130, 1.0);
-    pub const S0: Vec4 = Vec4::new(0.220, 0.220, 0.220, 1.0);
-    pub const S1: Vec4 = Vec4::new(0.260, 0.260, 0.260, 1.0);
-    pub const S2: Vec4 = Vec4::new(0.300, 0.300, 0.300, 1.0);
-    pub const GRAB: Vec4 = Vec4::new(0.370, 0.370, 0.370, 1.0);
-    pub const GRAB_HOT: Vec4 = Vec4::new(0.490, 0.490, 0.490, 1.0);
-    pub const TEXT: Vec4 = Vec4::new(0.880, 0.880, 0.880, 1.0);
-    pub const TEXT_DIM: Vec4 = Vec4::new(0.550, 0.550, 0.550, 1.0);
-
-    pub const BLUE: Vec4 = Vec4::new(0.118, 0.565, 0.831, 1.0);
-    pub const BLUE_DIM: Vec4 = Vec4::new(0.118, 0.565, 0.831, 0.6);
-
-    pub const TRACE: Vec4 = Vec4::new(0.380, 0.380, 0.380, 1.0);
-    pub const DEBUG: Vec4 = Vec4::new(0.400, 0.560, 0.700, 1.0);
-    pub const INFO: Vec4 = Vec4::new(0.820, 0.820, 0.820, 1.0);
-    pub const WARN: Vec4 = Vec4::new(0.980, 0.760, 0.110, 1.0);
-    pub const ERROR: Vec4 = Vec4::new(0.950, 0.180, 0.180, 1.0);
-    pub const BLUE_REALY_DIM: Vec4 = Vec4::new(0.118, 0.565, 0.831, 0.35);
-
-    pub const DRAG_THRESHHOLD: f32 = 20.0;
+    pub const BG: Vec4 = Vec4::new(0.196, 0.188, 0.184, 1.0); // dark0_soft #32302f (editor bg)
+    pub const BG_DARK: Vec4 = Vec4::new(0.157, 0.157, 0.157, 1.0); // dark0 #282828 (recessed)
+    pub const S0: Vec4 = Vec4::new(0.235, 0.220, 0.212, 1.0); // dark1 #3c3836 (sidebar)
+    pub const S1: Vec4 = Vec4::new(0.275, 0.253, 0.241, 1.0); // dark1→dark2
+    pub const S2: Vec4 = Vec4::new(0.314, 0.286, 0.271, 1.0); // dark2 #504945 (tab bar)
+    pub const GRAB: Vec4 = Vec4::new(0.400, 0.361, 0.329, 1.0); // dark3 #665c54 (scrollbar thumb)
+    pub const GRAB_HOT: Vec4 = Vec4::new(0.486, 0.435, 0.392, 1.0); // dark4 #7c6f64 (hover)
+    pub const TEXT: Vec4 = Vec4::new(0.922, 0.859, 0.698, 1.0); // fg #ebdbb2 (cream)
+    pub const TEXT_DIM: Vec4 = Vec4::new(0.573, 0.514, 0.455, 1.0); // gray #928374
+    pub const ACENT: Vec4 = Vec4::new(0.118, 0.565, 0.831, 1.0);
+    pub const ACENT_DIM: Vec4 = Vec4::new(0.118, 0.565, 0.831, 0.6);
+    pub const TRACE: Vec4 = Vec4::new(0.420, 0.380, 0.340, 1.0); // dim warm gray
+    pub const DEBUG: Vec4 = Vec4::new(0.514, 0.647, 0.596, 1.0); // blue #83a598
+    pub const INFO: Vec4 = Vec4::new(0.820, 0.760, 0.620, 1.0); // dimmed fg
+    pub const WARN: Vec4 = Vec4::new(0.980, 0.741, 0.184, 1.0); // yellow #fabd2f
+    pub const ERROR: Vec4 = Vec4::new(0.984, 0.286, 0.204, 1.0); // red #fb4934
+    pub const ACENT_REALY_DIM: Vec4 = Vec4::new(0.118, 0.565, 0.831, 0.35);
+    pub const DRAG_THRESHHOLD: f32 = 50.0;
     pub const FONT_SCALE: u32 = 6;
     pub const ATLAS_CELL_SIZE: UVec2 = UVec2::new(14, 30);
     pub const CHARACTER_ADVANCE_WIDTH: u32 = 0;
@@ -171,17 +204,18 @@ impl UiContext {
     );
     pub const UV_SIZE: Vec2 = Vec2::splat(1.0 / 256.0);
     pub const LINE_SPACING: u32 = 1;
-
-    pub const ELEMENT_GAP: UVec2 = UVec2::new(4, 2);
+    pub const ELEMENT_GAP: UVec2 = UVec2::new(8, 4);
     pub const WINDOW_ROUNDING: u32 = 4;
     pub const ROUNDING: u32 = 2;
     pub const BORDER: u32 = 1;
     pub const CHILD_PAD: UVec2 = UVec2::new(2, 1);
-    pub const INDENT: UVec2 = UVec2::new(40, 0);
+    pub const INDENT: UVec2 = UVec2::new(20, 0);
+    pub const TAB_PAD: UVec2 = UVec2::new(6, 2);
+    pub const TAB_GAP: UVec2 = UVec2::new(4, 2);
     pub const WINDOW_PAD: UVec2 = UVec2::new(3, 2);
     pub const WINDOW_HEADER_HEIGHT: f32 =
         (UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
-
+    pub const RESIZE_THRESHOLD: f32 = 15.0f32;
     pub const BAR_THICKNESS: f32 = 6.0f32;
     pub const MIN_THUMB: f32 = 20.0f32;
 
@@ -202,28 +236,32 @@ impl UiContext {
 
         let SaveState {
             docking_nodes,
-            window_labels,
             windows,
         } = ron::from_str(&fs::read_to_string("windows.ron").unwrap_or("".to_owned())).unwrap_or(
             SaveState {
-                docking_nodes: DockingNode::Leaf {
-                    siblings: Siblings {
-                        members: SmallVec::new(),
-                        active: 0,
-                    },
-                    root: true,
-                },
+                docking_nodes: DockingNode::Leaf { window: u32::MAX },
                 windows: Vec::new(),
-                window_labels: HashMap::new(),
             },
         );
         let windows = UiWindows {
             add_windows: Mutex::new(SmallVec::new()),
             windows: windows
-                .into_iter()
-                .map(|w| Mutex::new(UiWindow::new(w.label, w.size, w.open, w.docked)))
+                .iter()
+                .map(|w| {
+                    Some(UiWindow::new(
+                        w.tabs
+                            .iter()
+                            .map(|t| Tab {
+                                label: t.label.clone(),
+                                state: Mutex::new(TabState::default()),
+                            })
+                            .collect(),
+                        w.rect.clone(),
+                        w.active_tab,
+                    ))
+                })
                 .collect(),
-            window_labels,
+            free_slots: Vec::new(),
         };
 
         Ok((
@@ -335,28 +373,34 @@ pub fn create_ui_resources(
 }
 
 pub fn nextract_ui(mut res: If<ResMut<NUiResources>>, windows: Extract<Res<UiWindows>>) {
-    for window in windows
-        .windows
-        .iter()
-        .sorted_by_key(|a| a.lock().unwrap().layer)
-    {
-        let window = window.lock().unwrap();
+    for (_, window) in windows.by_layer() {
+        let tab = window.active_tab();
+        let Ok(tab_state) = tab.state.lock() else {
+            continue;
+        };
+
         let vertex_offset = res.pending_verticies.len();
         res.pending_indicies
             .extend(window.indicies.iter().map(|e| *e + vertex_offset as u32));
         res.pending_verticies.extend(window.verticies.iter());
+
+        let vertex_offset = res.pending_verticies.len();
+        res.pending_indicies
+            .extend(tab_state.indicies.iter().map(|e| *e + vertex_offset as u32));
+        res.pending_verticies.extend(tab_state.verticies.iter());
+
         let vertex_offset = res.pending_verticies.len();
         res.pending_indicies.extend(
-            window
+            tab_state
                 .top_indicies
                 .iter()
                 .map(|e| *e + vertex_offset as u32),
         );
-        res.pending_verticies.extend(window.top_verticies.iter());
+        res.pending_verticies.extend(tab_state.top_verticies.iter());
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct MultiInput {
     pub left_mouse_pressed: bool,
     pub left_mouse_pressing: bool,
@@ -391,21 +435,31 @@ impl MultiInput {
         }
         this
     }
+
+    pub fn clicked(&self, rect: Rect) -> bool {
+        self.left_mouse_pressed && self.hovered(rect)
+    }
+    pub fn hovered(&self, rect: Rect) -> bool {
+        self.cursor_pos.is_some_and(|cp| rect.contains(cp))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 struct SaveWindow {
+    rect: Rect,
+    tabs: Vec<SaveTab>,
+    active_tab: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveTab {
     label: String,
-    size: Rect,
-    open: bool,
-    docked: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 struct SaveState {
     docking_nodes: DockingNode,
     windows: Vec<SaveWindow>,
-    window_labels: HashMap<String, u32>,
 }
 
 pub fn save_windows(
@@ -417,20 +471,31 @@ pub fn save_windows(
         return;
     }
 
+    let mut remap = HashMap::new();
+    let mut new_idx = 0;
+    for (i, w) in windows.windows.iter().enumerate() {
+        if w.is_some() {
+            remap.insert(i as u32, new_idx as u32);
+            new_idx += 1;
+        }
+    }
+
     let save_state = SaveState {
-        docking_nodes: docking_nodes.clone(),
-        window_labels: windows.window_labels.clone(),
+        docking_nodes: docking_nodes.clone().remap(&remap),
         windows: windows
             .windows
             .iter()
-            .map(|w| {
-                let window = w.lock().unwrap();
-                SaveWindow {
-                    label: window.label.clone(),
-                    docked: window.docked,
-                    open: window.open,
-                    size: window.full_rect(),
-                }
+            .filter_map(|w| w.as_ref())
+            .map(|w| SaveWindow {
+                tabs: w
+                    .tabs
+                    .iter()
+                    .map(|t| SaveTab {
+                        label: t.label.clone(),
+                    })
+                    .collect::<Vec<_>>(),
+                rect: w.rect,
+                active_tab: w.active_tab,
             })
             .collect::<Vec<_>>(),
     };
