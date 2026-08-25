@@ -38,7 +38,7 @@ use glam::UVec2;
 use glam::UVec4;
 use glam::Vec3;
 use glam::Vec4;
-use imgui::TreeNodeFlags;
+use glam::Vec4Swizzles;
 use itertools::Itertools;
 use itertools::traits::IteratorIndex;
 use lava::command_buffer::Filter;
@@ -102,6 +102,7 @@ use crate::bindings::TraversalVariables;
 use crate::bindings::UIVertex;
 use crate::editor::gizzmos::GizzmoResources;
 use crate::editor::viewport::ViewPort;
+use crate::id;
 use crate::render::ExtractSchedule;
 use crate::render::MainWorld;
 use crate::render::Render;
@@ -112,8 +113,8 @@ use crate::render::extract_param::Extract;
 use crate::render::world::InstanceManager;
 use crate::render::world::MAX_INSTANCES;
 use crate::render::world::UploadQueue;
-use crate::ui::UiBuilder;
-use crate::ui::{UiResources, new_ui::NUiResources};
+use crate::ui::UiResources;
+use crate::ui::builder::UiBuilder;
 use crate::{render::FRAMES_IN_FLIGHT, scene::camera::Camera};
 use tracing::info;
 
@@ -322,34 +323,47 @@ impl Default for RenderSettings {
 }
 
 pub(crate) fn settings_ui(
-    mut ui: ResMut<UiBuilder>,
+    mut ui: UiBuilder,
     res: Res<RenderValues>,
     mut settings: ResMut<RenderSettings>,
     cam: Single<(&Camera, &Transform)>,
 ) {
-    let Some(ui) = ui.ui() else {
-        return;
-    };
-    ui.window("Render Settings##render_settings").build(|| {
+    ui.build("Render Settings", |ui| {
         ui.text(format!("Num Meshlets: {}", res.meshlet_count));
         ui.text(format!("Num Instances: {}", res.instance_count));
-        if ui.small_button("Freez Cam") {
+        if ui.button("Freez Cam") {
             settings.freez_proj = Some(cam.0.proj);
             settings.freez_view = Some(cam.0.view);
             settings.freez_pos = Some(cam.1.translation.extend(0.0))
         }
-        if ui.small_button("Unfreeze Cam") {
+        if ui.button("Unfreeze Cam") {
             settings.freez_proj = None;
             settings.freez_view = None;
             settings.freez_pos = None;
         }
 
-        ui.checkbox("Draw Scene Blas Nodes", &mut settings.draw_scene_blas_nodes);
-        ui.checkbox("Draw Scene Leaf Nodes", &mut settings.draw_scene_leaf_nodes);
-        ui.checkbox("Draw Scene Nodes", &mut settings.draw_scene_nodes);
+        ui.horizontal();
+        ui.text("Draw Scene Blas Nodes");
+        settings.draw_scene_blas_nodes = ui.checkbox(settings.draw_scene_blas_nodes);
+        ui.vertical();
 
-        ui.color_picker3("Outline Color", &mut settings.outline_color);
-        ui.slider("Outline Thickness", 0.0, 6.0, &mut settings.outline_radius);
+        ui.horizontal();
+        ui.text("Draw Scene Leaf Nodes");
+        settings.draw_scene_leaf_nodes = ui.checkbox(settings.draw_scene_leaf_nodes);
+        ui.vertical();
+
+        ui.horizontal();
+        ui.text("Draw Scene Nodes");
+        settings.draw_scene_nodes = ui.checkbox(settings.draw_scene_nodes);
+        ui.vertical();
+
+        ui.text("Outline Color");
+        settings.outline_color = ui
+            .color_picker(id!(), settings.outline_color.extend(1.0))
+            .xyz();
+
+        ui.text("Outline Thickness");
+        settings.outline_radius = ui.slider(id!(), 0.0, 6.0, 300.0, settings.outline_radius);
     });
 }
 
@@ -361,7 +375,6 @@ pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<R
 pub(super) fn render(
     mut camera: ResMut<RenderCamera>,
     instances: Res<InstanceManager>,
-    ui_resources: Res<UiResources>,
     queues: Res<Queues>,
     gizzmos: Option<Res<GizzmoResources>>,
     mut resources: Local<Option<RenderResources>>,
@@ -373,7 +386,7 @@ pub(super) fn render(
     viewport: Res<ViewPort>,
     mut values: Option<ResMut<RenderValues>>,
     setting: Res<RenderSettings>,
-    nui_resources: Res<NUiResources>,
+    ui_resources: Res<UiResources>,
 ) {
     let frame_in_flight = frame.frame_in_flight();
     let resources = resources.get_or_insert_with(|| RenderResources {
@@ -406,13 +419,13 @@ pub(super) fn render(
                             out: swapchain.image().as_storage(),
                             inverse_proj: camera.camera.proj_inv(),
                             inverse_view: camera.camera.view_inv(),
-                            view_port_size: viewport.scissor_size,
-                            view_port_offset: viewport.view_pos,
+                            view_port_size: viewport.rect.size().as_uvec2(),
+                            view_port_offset: viewport.rect.min.as_ivec2(),
                             swpachain_size: swapchain.size,
                         })
                         .dispatch(
-                            viewport.scissor_size.x.div_ceil(8),
-                            viewport.scissor_size.y.div_ceil(8),
+                            (viewport.visible_rect.width() as u32).div_ceil(8),
+                            (viewport.visible_rect.height() as u32).div_ceil(8),
                             1,
                         );
 
@@ -474,7 +487,7 @@ pub(super) fn render(
                                 proj: cull_proj,
                                 canidate_meshlets: resources.candidate_meshlets.range(..),
                                 clip_from_world,
-                                window_height: viewport.view_size.y as f32,
+                                window_height: viewport.rect.height(),
                                 instance_transforms: instances
                                     .transforms
                                     .range(MAX_INSTANCES * frame_in_flight..),
@@ -506,12 +519,12 @@ pub(super) fn render(
                                 },
                                 swapchain.size,
                                 &[Scissor {
-                                    extent: viewport.scissor_size,
-                                    offset: viewport.scissor_pos.as_ivec2(),
+                                    extent: viewport.visible_rect.size().as_uvec2(),
+                                    offset: viewport.visible_rect.min.as_ivec2(),
                                 }],
                                 Viewport {
-                                    extent: viewport.view_size,
-                                    offset: viewport.view_pos,
+                                    extent: viewport.rect.size().as_uvec2(),
+                                    offset: viewport.rect.min.as_ivec2(),
                                 },
                             );
 
@@ -545,12 +558,12 @@ pub(super) fn render(
                                     },
                                     swapchain.size,
                                     &[Scissor {
-                                        extent: viewport.scissor_size,
-                                        offset: viewport.scissor_pos.as_ivec2(),
+                                        extent: viewport.visible_rect.size().as_uvec2(),
+                                        offset: viewport.visible_rect.min.as_ivec2(),
                                     }],
                                     Viewport {
-                                        extent: viewport.view_size,
-                                        offset: viewport.view_pos,
+                                        extent: viewport.rect.size().as_uvec2(),
+                                        offset: viewport.rect.min.as_ivec2(),
                                     },
                                 );
 
@@ -558,16 +571,16 @@ pub(super) fn render(
                                 .bind(DrawOutlineBindings {
                                     depth: resources.depth_attachment.view().as_sampled(),
                                     out: swapchain.image().as_storage(),
-                                    view_port_size: viewport.scissor_size,
-                                    view_port_offset: viewport.view_pos,
+                                    view_port_size: viewport.visible_rect.size().as_uvec2(),
+                                    view_port_offset: viewport.visible_rect.min.as_ivec2(),
                                     swpachain_size: swapchain.size,
                                     outline_color_and_radius: setting
                                         .outline_color
                                         .extend(setting.outline_radius),
                                 })
                                 .dispatch(
-                                    viewport.scissor_size.x.div_ceil(8),
-                                    viewport.scissor_size.y.div_ceil(8),
+                                    (viewport.visible_rect.width() as u32).div_ceil(8),
+                                    (viewport.visible_rect.height() as u32).div_ceil(8),
                                     1,
                                 );
                         }
@@ -576,48 +589,10 @@ pub(super) fn render(
                         }
                     }
 
-                    if let Some(font_atlas) = &ui_resources.font_atlas {
-                        for list in &ui_resources.draw_lists[frame.frame_in_flight()] {
-                            cmd.raster::<RasterUi>()
-                                .bind(RasterUiBindings {
-                                    font_atlas: font_atlas.as_sampled(),
-                                    verticies: ui_resources.verticies[frame.frame_in_flight()]
-                                        .range(list.start_vertex as usize..),
-                                })
-                                .backface_culling(false)
-                                .color_attachment(swapchain.image(), None)
-                                .draw_with_dynstates(
-                                    RasterVertexDispatch::DrawIndexed {
-                                        index_buffer: ui_resources.indicies
-                                            [frame.frame_in_flight()]
-                                        .range(
-                                            list.start_index as usize
-                                                ..(list.start_index as usize + list.count as usize),
-                                        ),
-                                        instance_count: 1,
-                                    },
-                                    swapchain.size,
-                                    &[list.clip_rect],
-                                    Viewport {
-                                        extent: swapchain.size,
-                                        offset: IVec2::ZERO,
-                                    },
-                                );
-                        }
-                        // cmd.blit_image(
-                        //     font_atlas.whole(),
-                        //     swapchain.image().region(UVec2::new(
-                        //         font_atlas.extent.width,
-                        //         font_atlas.extent.height,
-                        //     )),
-                        //     Filter::Nearest,
-                        // );
-                    }
-
                     cmd.raster::<RasterUi>()
                         .bind(RasterUiBindings {
-                            font_atlas: nui_resources.font_atlas.as_sampled(),
-                            verticies: nui_resources.verticies[frame.frame_in_flight()].range(..),
+                            font_atlas: ui_resources.font_atlas.as_sampled(),
+                            verticies: ui_resources.verticies[frame.frame_in_flight()].range(..),
                         })
                         .backface_culling(false)
                         .color_attachment(swapchain.image(), None)
@@ -625,8 +600,8 @@ pub(super) fn render(
                             swapchain.size,
                             RasterVertexDispatch::DrawIndexed {
                                 instance_count: 1,
-                                index_buffer: nui_resources.indicies[frame.frame_in_flight()]
-                                    .range(..nui_resources.num_indicies),
+                                index_buffer: ui_resources.indicies[frame.frame_in_flight()]
+                                    .range(..ui_resources.num_indicies),
                             },
                         );
                     // cmd.blit_image(

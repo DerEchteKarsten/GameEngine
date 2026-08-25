@@ -3,6 +3,7 @@
 #![feature(const_default)]
 #![feature(lock_value_accessors)]
 #![feature(integer_casts)]
+
 use std::{
     any::type_name,
     mem::offset_of,
@@ -50,7 +51,7 @@ use crate::{
     physics::PhysicsPlugin,
     render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi, world::InstanceFlags},
     scene::{Instance, ScenePlugin, SpawnScene, camera::Camera},
-    ui::{OldUiContext, UiBuilder, UiPlugin, UiResources},
+    ui::{UiPlugin, UiResources, builder::UiBuilder},
 };
 
 pub mod assets;
@@ -98,7 +99,7 @@ pub fn CorePlugin(app: &mut App) {
         PipelinedRenderingPlugin::default(),
         UiPlugin,
         PhysicsPlugin,
-        // EditorPlugin::default(),
+        EditorPlugin::default(),
         bevy::log::LogPlugin::default(),
         ScenePlugin,
     ))

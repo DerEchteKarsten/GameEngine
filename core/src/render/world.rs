@@ -22,6 +22,7 @@ use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::{Commands, If, Local, Query, Res, ResMut, Single, SystemState};
 use bevy::ecs::world::EntityMut;
 use bevy::log;
+use bevy::math::Rect;
 use bevy::reflect::{
     PartialReflect, Reflect, StructInfo, TupleStructInfo, TypePath, Typed, UnnamedField,
 };
@@ -71,7 +72,6 @@ use crate::render::{
     ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderStartup, RenderSystems,
 };
 use crate::scene::Instance;
-use crate::ui::OldUiContext;
 
 #[derive(Resource)]
 pub struct InstanceManager {
@@ -503,10 +503,8 @@ fn extract_view_port(
     window: Extract<Single<&Window>>,
 ) {
     cmd.insert_resource(view_port.as_deref().cloned().unwrap_or(ViewPort {
-        view_pos: IVec2::ZERO,
-        view_size: window.physical_size(),
-        scissor_size: window.physical_size(),
-        scissor_pos: UVec2::ZERO,
+        rect: Rect::from_corners(Vec2::ZERO, window.physical_size().as_vec2()),
+        visible_rect: Rect::from_corners(Vec2::ZERO, window.physical_size().as_vec2()),
         focused: true,
     }));
 }

@@ -5,10 +5,7 @@ use glam::{Vec2, Vec2Swizzles};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use crate::ui::{
-    new_ui::{UiContext, from_pos_size},
-    window::TabState,
-};
+use crate::ui::{UiContext, from_pos_size, window::TabState};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Split {

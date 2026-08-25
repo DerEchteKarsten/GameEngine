@@ -7,7 +7,6 @@ use crate::{
         world::{InstanceManager, UploadQueue, WorldPlugin, init_world},
     },
     scene::camera::Camera,
-    ui::UiResources,
 };
 use async_std::channel::{Receiver, Sender};
 use bevy::{

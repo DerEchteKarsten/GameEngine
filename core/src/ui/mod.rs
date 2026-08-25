@@ -1,306 +1,392 @@
 use bevy::{
-    app::{App, Last, PostUpdate, PreUpdate, Update},
-    ecs::{
-        message::MessageReader,
-        query::With,
-        resource::Resource,
-        schedule::IntoScheduleConfigs,
-        system::{Commands, NonSendMut, Res, ResMut, Single},
-        world::Mut,
-    },
-    input::{
-        ButtonState, InputSystems,
-        keyboard::{KeyCode, KeyboardInput},
-        mouse::{MouseButton, MouseButtonInput, MouseWheel},
-        touch::{TouchInput, TouchPhase},
-    },
-    tasks::block_on,
-    time::Time,
-    window::{CursorMoved, PrimaryWindow, Window, WindowEvent},
+    app::{App, PostUpdate, PreUpdate, Update},
+    ecs::schedule::IntoScheduleConfigs,
+    input::InputSystems,
 };
-use bytemuck::Zeroable;
-use fontdue::FontSettings;
-use futures::channel::oneshot;
-use glam::{FloatExt, IVec2, Mat4, Quat, U16Vec2, UVec2, UVec4, Vec2, Vec4};
-use gltf::json::extensions::mesh;
-use imgui::{ConfigFlags, DrawCmd, FontConfig, FontSource, Io, StyleColor};
-use lava::{
-    bindless::BindlessHandle,
-    buffer::{Buffer, slice::BufferSlice},
-    command_buffer::CommandBuffer,
-    state::Ctx,
-};
-use lava::{
-    command_buffer::Scissor,
-    image::{Image, format::R8Unorm, slice::AsImage, usage::Sampled},
-    state::raw_vulkan::{self, Offset2D},
-    vkobjects,
-};
-
-use std::{
-    collections::HashMap,
-    fs,
-    ops::{Deref, DerefMut},
-    path::PathBuf,
-    ptr::NonNull,
-    random::{self, random},
-    sync::{Arc, Mutex},
-    time::Instant,
-};
-use tracing::info;
-use tracing_log::log::{self, error};
 
 use crate::{
-    bindings::{self, UIVertex},
+    editor::viewport::ViewPort,
     render::{
-        self, ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderApp, RenderStartup,
-        RenderSystems,
-        extract_param::Extract,
-        render::{FrameCount, Swapchain},
-        world::UploadQueue,
+        ExtractSchedule, Render, RenderApp,
+        RenderSystems::{self},
     },
-    ui::{
-        new_ui::{
-            FocusedState, NUiResources, UiContext, create_ui_resources, nextract_ui,
-            nwrite_ui_data, save_windows,
-        },
-        test::add_tests,
-        update_windows::{draw_windows, update_windows},
-    },
+    ui::update_windows::{draw_windows, update_windows},
 };
 
 pub mod builder;
 pub mod dock;
-pub mod new_ui;
 pub mod scrollable;
-pub mod test;
 pub mod update_windows;
 pub mod window;
 
-#[derive(Resource)]
-pub struct OldUiContext {
-    pub(crate) ctx: imgui::Context,
+// impl UiBuilder {
+//     pub const BG: [f32; 4] = [0.155, 0.155, 0.155, 1.0]; // #272727 – slightly darker bg
+//     pub const BG_DARK: [f32; 4] = [0.130, 0.130, 0.130, 1.0]; // #212121
+//     pub const S0: [f32; 4] = [0.220, 0.220, 0.220, 1.0]; // #383838 – buttons/frames, bigger jump from bg
+//     pub const S1: [f32; 4] = [0.260, 0.260, 0.260, 1.0]; // #424242 – hovered
+//     pub const S2: [f32; 4] = [0.300, 0.300, 0.300, 1.0]; // #3c3c50 – active
+//     pub const GRAB: [f32; 4] = [0.370, 0.370, 0.370, 1.0]; // #5e5e5e
+//     pub const GRAB_HOT: [f32; 4] = [0.490, 0.490, 0.490, 1.0]; // #7d7d7d
+//     pub const TEXT: [f32; 4] = [0.880, 0.880, 0.880, 1.0]; // #e0e0e0
+//     pub const TEXT_DIM: [f32; 4] = [0.550, 0.550, 0.550, 1.0]; // #8c8c8c
+
+//     pub const BLUE: [f32; 4] = [0.118, 0.565, 0.831, 1.0]; // #1e90d4 – UE blue
+//     pub const BLUE_DIM: [f32; 4] = [0.118, 0.565, 0.831, 0.6]; // UE blue dimmed
+//     pub const BLUE_REALY_DIM: [f32; 4] = [0.118, 0.565, 0.831, 0.35];
+
+//     pub const TRACE: [f32; 4] = [0.380, 0.380, 0.380, 1.0]; // trace
+//     pub const DEBUG: [f32; 4] = [0.400, 0.560, 0.700, 1.0]; // debug
+//     pub const INFO: [f32; 4] = [0.820, 0.820, 0.820, 1.0]; // info
+//     pub const WARN: [f32; 4] = [0.980, 0.760, 0.110, 1.0]; // warn
+//     pub const ERROR: [f32; 4] = [0.950, 0.180, 0.180, 1.0]; // error
+// }
+use bevy::{
+    input::{ButtonInput, touch::Touches},
+    log,
+    window::Window,
+};
+use fontdue::*;
+use std::{
+    collections::HashMap,
+    fs,
+    num::NonZeroU64,
+    range::Range,
+    sync::{Mutex, atomic::AtomicU32},
+    vec::IntoIter,
+};
+
+use anyhow::Result;
+use bevy::{
+    app::AppExit,
+    ecs::{
+        message::MessageReader,
+        resource::Resource,
+        system::{Commands, If, Res, ResMut},
+    },
+    input::mouse::MouseButton,
+    math::Rect,
+};
+use futures::executor::block_on;
+use glam::{UVec2, Vec2, Vec4};
+use itertools::Itertools;
+use lava::{
+    buffer::Buffer,
+    image::{Image, format, usage},
+};
+use ron::ser::PrettyConfig;
+use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
+
+use crate::{
+    bindings::UIVertex,
+    render::{
+        FRAMES_IN_FLIGHT, MainWorld, extract_param::Extract, render::FrameCount, world::UploadQueue,
+    },
+    ui::{
+        builder::TextCursor,
+        dock::DockingNode,
+        update_windows::ResizeEdges,
+        window::{Tab, TabState, UiWindow},
+    },
+};
+
+pub const fn hash_location(file: &str, line: u32, col: u32) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    let bytes = file.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x100000003b4c61);
+        i += 1;
+    }
+    hash ^= line as u64;
+    hash = hash.wrapping_mul(0x100000003b4c61);
+    hash ^= col as u64;
+    hash = hash.wrapping_mul(0x100000003b4c61);
+    hash
 }
 
-impl OldUiContext {
-    pub fn want_capture_mouse(&self) -> bool {
-        self.ctx.io().want_capture_mouse
-    }
-    pub fn want_capture_keyboard(&self) -> bool {
-        self.ctx.io().want_capture_keyboard
-    }
-    pub fn want_text_input(&self) -> bool {
-        self.ctx.io().want_text_input
-    }
-    pub fn want_set_mouse_pos(&self) -> bool {
-        self.ctx.io().want_set_mouse_pos
-    }
-}
-
-unsafe impl Send for OldUiContext {}
-unsafe impl Sync for OldUiContext {}
-
-#[derive(Resource)]
-pub struct UiBuilder {
-    ui: *mut imgui::Ui,
-}
-
-unsafe impl Send for UiBuilder {}
-unsafe impl Sync for UiBuilder {}
-
-impl UiBuilder {
-    pub fn ui(&mut self) -> Option<&mut imgui::Ui> {
-        unsafe { self.ui.as_mut() }
-    }
-}
-
-fn handle_key(io: &mut Io, key: &KeyCode, pressed: bool) {
-    let igkey = match key {
-        KeyCode::KeyA => imgui::Key::A,
-        KeyCode::KeyB => imgui::Key::B,
-        KeyCode::KeyC => imgui::Key::C,
-        KeyCode::KeyD => imgui::Key::D,
-        KeyCode::KeyE => imgui::Key::E,
-        KeyCode::KeyF => imgui::Key::F,
-        KeyCode::KeyG => imgui::Key::G,
-        KeyCode::KeyH => imgui::Key::H,
-        KeyCode::KeyI => imgui::Key::I,
-        KeyCode::KeyJ => imgui::Key::J,
-        KeyCode::KeyK => imgui::Key::K,
-        KeyCode::KeyL => imgui::Key::L,
-        KeyCode::KeyM => imgui::Key::M,
-        KeyCode::KeyN => imgui::Key::N,
-        KeyCode::KeyO => imgui::Key::O,
-        KeyCode::KeyP => imgui::Key::P,
-        KeyCode::KeyQ => imgui::Key::Q,
-        KeyCode::KeyR => imgui::Key::R,
-        KeyCode::KeyS => imgui::Key::S,
-        KeyCode::KeyT => imgui::Key::T,
-        KeyCode::KeyU => imgui::Key::U,
-        KeyCode::KeyV => imgui::Key::V,
-        KeyCode::KeyW => imgui::Key::W,
-        KeyCode::KeyX => imgui::Key::X,
-        KeyCode::KeyY => imgui::Key::Y,
-        KeyCode::KeyZ => imgui::Key::Z,
-        KeyCode::Digit1 => imgui::Key::Keypad1,
-        KeyCode::Digit2 => imgui::Key::Keypad2,
-        KeyCode::Digit3 => imgui::Key::Keypad3,
-        KeyCode::Digit4 => imgui::Key::Keypad4,
-        KeyCode::Digit5 => imgui::Key::Keypad5,
-        KeyCode::Digit6 => imgui::Key::Keypad6,
-        KeyCode::Digit7 => imgui::Key::Keypad7,
-        KeyCode::Digit8 => imgui::Key::Keypad8,
-        KeyCode::Digit9 => imgui::Key::Keypad9,
-        KeyCode::Digit0 => imgui::Key::Keypad0,
-        KeyCode::Enter => imgui::Key::Enter, // TODO: Should this be treated as alias?
-        KeyCode::Escape => imgui::Key::Escape,
-        KeyCode::Backspace => imgui::Key::Backspace,
-        KeyCode::Tab => imgui::Key::Tab,
-        KeyCode::Space => imgui::Key::Space,
-        KeyCode::Minus => imgui::Key::Minus,
-        KeyCode::Equal => imgui::Key::Equal,
-        KeyCode::BracketLeft => imgui::Key::LeftBracket,
-        KeyCode::BracketRight => imgui::Key::RightBracket,
-        KeyCode::Backslash => imgui::Key::Backslash,
-        KeyCode::Semicolon => imgui::Key::Semicolon,
-        KeyCode::Comma => imgui::Key::Comma,
-        KeyCode::Period => imgui::Key::Period,
-        KeyCode::Slash => imgui::Key::Slash,
-        KeyCode::CapsLock => imgui::Key::CapsLock,
-        KeyCode::F1 => imgui::Key::F1,
-        KeyCode::F2 => imgui::Key::F2,
-        KeyCode::F3 => imgui::Key::F3,
-        KeyCode::F4 => imgui::Key::F4,
-        KeyCode::F5 => imgui::Key::F5,
-        KeyCode::F6 => imgui::Key::F6,
-        KeyCode::F7 => imgui::Key::F7,
-        KeyCode::F8 => imgui::Key::F8,
-        KeyCode::F9 => imgui::Key::F9,
-        KeyCode::F10 => imgui::Key::F10,
-        KeyCode::F11 => imgui::Key::F11,
-        KeyCode::F12 => imgui::Key::F12,
-        KeyCode::PrintScreen => imgui::Key::PrintScreen,
-        KeyCode::ScrollLock => imgui::Key::ScrollLock,
-        KeyCode::Pause => imgui::Key::Pause,
-        KeyCode::Insert => imgui::Key::Insert,
-        KeyCode::Home => imgui::Key::Home,
-        KeyCode::PageUp => imgui::Key::PageUp,
-        KeyCode::Delete => imgui::Key::Delete,
-        KeyCode::End => imgui::Key::End,
-        KeyCode::PageDown => imgui::Key::PageDown,
-        KeyCode::ArrowRight => imgui::Key::RightArrow,
-        KeyCode::ArrowLeft => imgui::Key::LeftArrow,
-        KeyCode::ArrowDown => imgui::Key::DownArrow,
-        KeyCode::ArrowUp => imgui::Key::UpArrow,
-        KeyCode::NumpadDivide => imgui::Key::KeypadDivide,
-        KeyCode::NumpadMultiply => imgui::Key::KeypadMultiply,
-        KeyCode::Minus => imgui::Key::KeypadSubtract,
-        KeyCode::NumpadAdd => imgui::Key::KeypadAdd,
-        KeyCode::NumpadEnter => imgui::Key::KeypadEnter,
-        KeyCode::Numpad1 => imgui::Key::Keypad1,
-        KeyCode::Numpad2 => imgui::Key::Keypad2,
-        KeyCode::Numpad3 => imgui::Key::Keypad3,
-        KeyCode::Numpad4 => imgui::Key::Keypad4,
-        KeyCode::Numpad5 => imgui::Key::Keypad5,
-        KeyCode::Numpad6 => imgui::Key::Keypad6,
-        KeyCode::Numpad7 => imgui::Key::Keypad7,
-        KeyCode::Numpad8 => imgui::Key::Keypad8,
-        KeyCode::Numpad9 => imgui::Key::Keypad9,
-        KeyCode::Numpad0 => imgui::Key::Keypad0,
-        KeyCode::NumpadDecimal => imgui::Key::KeypadDecimal,
-        KeyCode::ContextMenu => imgui::Key::Menu,
-        KeyCode::NumpadEqual => imgui::Key::KeypadEqual,
-        KeyCode::ControlLeft => imgui::Key::LeftCtrl,
-        KeyCode::ShiftLeft => imgui::Key::LeftShift,
-        KeyCode::AltLeft => imgui::Key::LeftAlt,
-        KeyCode::ControlRight => imgui::Key::RightCtrl,
-        KeyCode::ShiftRight => imgui::Key::RightShift,
-        KeyCode::AltRight => imgui::Key::RightAlt,
-        KeyCode::SuperRight => imgui::Key::RightSuper,
-        KeyCode::SuperLeft => imgui::Key::LeftSuper,
-        _ => {
-            error!("Unknown Key");
-            // Ignore unknown keys
-            return;
-        }
+#[macro_export]
+macro_rules! id {
+    () => {
+        $crate::ui::hash_location(file!(), line!(), column!())
     };
-    io.add_key_event(igkey, pressed);
 }
 
-fn read_input(
-    mut events: MessageReader<WindowEvent>,
-    mut ctx: ResMut<OldUiContext>,
-    window: Single<&Window, With<PrimaryWindow>>,
-    time: Res<Time>,
-) {
-    let size = window.physical_size().as_vec2();
-    let io = ctx.ctx.io_mut();
-    io.update_delta_time(time.delta());
+pub fn from_pos_size(pos: Vec2, size: Vec2) -> Rect {
+    Rect::from_corners(pos, pos + size)
+}
 
-    for event in events.read() {
-        match event {
-            WindowEvent::KeyboardInput(KeyboardInput {
-                key_code,
-                logical_key,
-                repeat,
-                state,
-                text,
-                ..
-            }) => {
-                if let Some(char) = text
-                    && *state == ButtonState::Pressed
-                {
-                    let char = char.as_bytes()[0].into();
-                    io.add_input_character(char);
-                }
-                handle_key(io, key_code, *state == ButtonState::Pressed)
-            }
-            WindowEvent::CursorMoved(CursorMoved {
-                position, delta, ..
-            }) => io.add_mouse_pos_event([position.x, position.y]),
-            WindowEvent::TouchInput(TouchInput {
-                position, phase, ..
-            }) => {
-                io.add_mouse_pos_event([position.x, position.y]);
-                match *phase {
-                    TouchPhase::Canceled => {
-                        io.add_mouse_button_event(imgui::MouseButton::Left, false);
-                    }
-                    TouchPhase::Started => {
-                        io.add_mouse_button_event(imgui::MouseButton::Left, true);
-                    }
-                    TouchPhase::Ended => {
-                        io.add_mouse_button_event(imgui::MouseButton::Left, false);
-                    }
-                    TouchPhase::Moved => {
-                        // io.add_mouse_button_event(imgui::MouseButton::Left, true);
-                    }
-                }
-            }
-            WindowEvent::MouseButtonInput(MouseButtonInput { button, state, .. }) => io
-                .add_mouse_button_event(
-                    match button {
-                        MouseButton::Forward => imgui::MouseButton::Extra1,
-                        MouseButton::Back => imgui::MouseButton::Extra2,
-                        MouseButton::Left => imgui::MouseButton::Left,
-                        MouseButton::Right => imgui::MouseButton::Right,
-                        MouseButton::Middle => imgui::MouseButton::Middle,
-                        _ => imgui::MouseButton::Extra1,
-                    },
-                    *state == ButtonState::Pressed,
-                ),
-            WindowEvent::MouseWheel(MouseWheel { unit, x, y, .. }) => {
-                io.add_mouse_wheel_event([*x, *y]);
-            }
-            _ => {}
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Draggable {
+    ActiveTab,
+    Window,
+    WindowScrollHandle,
+    TabScrollHandle,
+    Element(NonZeroU64),
+    DragAndDrop(NonZeroU64),
+    ScrollHandle,
+}
+
+#[derive(Clone, Debug)]
+pub struct FocusedState {
+    pub draging: Option<Draggable>,
+    pub focused: Option<NonZeroU64>,
+    pub cursor: TextCursor,
+    pub selected: Range<usize>,
+    pub offset: f32,
+    pub drag_start: Vec2,
+    pub drag_press_pos: Vec2,
+    pub format_string: String,
+    pub edges: ResizeEdges,
+}
+
+impl Default for FocusedState {
+    fn default() -> Self {
+        Self {
+            draging: None,
+            focused: None,
+            cursor: TextCursor { byte_pos: 0 },
+            selected: (0..0).into(),
+            offset: 0.0,
+            drag_start: Vec2::ZERO,
+            drag_press_pos: Vec2::ZERO,
+            format_string: String::new(),
+            edges: ResizeEdges::default(),
         }
     }
-    io.font_global_scale = 1.0;
-    io.display_size = size.to_array();
-    io.display_framebuffer_scale = [window.scale_factor(); 2];
 }
 
-fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
+#[derive(Resource)]
+pub struct UiContext {
+    pub font: Option<fontdue::Font>,
+    pub resize_path: u64,
+    pub resize_depth: u32,
+    pub drag_start: Vec2,
+}
+
+#[derive(Resource)]
+pub struct UiWindows {
+    pub add_windows: Mutex<SmallVec<[String; 4]>>,
+    pub windows: Vec<Option<UiWindow>>,
+    pub free_slots: Vec<usize>,
+}
+
+impl UiWindows {
+    pub fn by_layer_mut(&mut self) -> impl DoubleEndedIterator<Item = (usize, &mut UiWindow)> {
+        self.windows
+            .iter_mut()
+            .enumerate()
+            .filter_map(|w| w.1.as_mut().map(|o| (w.0, o)))
+            .sorted_by(|a, b| a.1.layer.cmp(&b.1.layer))
+    }
+    pub fn by_layer(&self) -> impl DoubleEndedIterator<Item = (usize, &UiWindow)> {
+        self.windows
+            .iter()
+            .enumerate()
+            .filter_map(|w| w.1.as_ref().map(|o| (w.0, o)))
+            .sorted_by(|a, b| a.1.layer.cmp(&b.1.layer))
+    }
+    pub fn remove(&mut self, index: usize) -> UiWindow {
+        let window = self.windows[index].take().unwrap();
+        self.free_slots.push(index);
+        window
+    }
+
+    pub fn append(&mut self, window: UiWindow) {
+        if let Some(index) = self.free_slots.pop() {
+            self.windows[index] = Some(window);
+        } else {
+            self.windows.push(Some(window));
+        }
+    }
+
+    pub fn log(&self) {
+        for (i, window) in self.windows.iter().enumerate() {
+            if let Some(w) = window {
+                log::info!(
+                    "{i}: {:#?}",
+                    w.tabs.iter().map(|t| &t.label).collect::<Vec<_>>()
+                );
+            } else {
+                log::info!("{i}: Empty");
+            }
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct UiResources {
+    pub font_atlas: Image<format::R8Unorm, usage::Sampled>,
+    pub verticies: [Buffer<UIVertex>; FRAMES_IN_FLIGHT],
+    pub indicies: [Buffer<u32>; FRAMES_IN_FLIGHT],
+    pub num_verticies: usize,
+    pub num_indicies: usize,
+    pub pending_verticies: Vec<UIVertex>,
+    pub pending_indicies: Vec<u32>,
+}
+
+impl UiContext {
+    pub const BG: Vec4 = Vec4::new(0.196, 0.188, 0.184, 1.0); // dark0_soft #32302f (editor bg)
+    pub const BG_DARK: Vec4 = Vec4::new(0.157, 0.157, 0.157, 1.0); // dark0 #282828 (recessed)
+    pub const S0: Vec4 = Vec4::new(0.235, 0.220, 0.212, 1.0); // dark1 #3c3836 (sidebar)
+    pub const S1: Vec4 = Vec4::new(0.275, 0.253, 0.241, 1.0); // dark1→dark2
+    pub const S2: Vec4 = Vec4::new(0.314, 0.286, 0.271, 1.0); // dark2 #504945 (tab bar)
+    pub const GRAB: Vec4 = Vec4::new(0.400, 0.361, 0.329, 1.0); // dark3 #665c54 (scrollbar thumb)
+    pub const GRAB_HOT: Vec4 = Vec4::new(0.486, 0.435, 0.392, 1.0); // dark4 #7c6f64 (hover)
+    pub const TEXT: Vec4 = Vec4::new(0.922, 0.859, 0.698, 1.0); // fg #ebdbb2 (cream)
+    pub const TEXT_DIM: Vec4 = Vec4::new(0.573, 0.514, 0.455, 1.0); // gray #928374
+    pub const ACENT: Vec4 = Vec4::new(0.118, 0.565, 0.831, 1.0);
+    pub const ACENT_DIM: Vec4 = Vec4::new(0.118, 0.565, 0.831, 0.6);
+    pub const TRACE: Vec4 = Vec4::new(0.420, 0.380, 0.340, 1.0); // dim warm gray
+    pub const DEBUG: Vec4 = Vec4::new(0.514, 0.647, 0.596, 1.0); // blue #83a598
+    pub const INFO: Vec4 = Vec4::new(0.820, 0.760, 0.620, 1.0); // dimmed fg
+    pub const WARN: Vec4 = Vec4::new(0.980, 0.741, 0.184, 1.0); // yellow #fabd2f
+    pub const ERROR: Vec4 = Vec4::new(0.984, 0.286, 0.204, 1.0); // red #fb4934
+    pub const ACENT_REALY_DIM: Vec4 = Vec4::new(0.118, 0.565, 0.831, 0.35);
+    pub const DRAG_THRESHHOLD: f32 = 50.0;
+    pub const FONT_SCALE: u32 = 6;
+    pub const ATLAS_CELL_SIZE: UVec2 = UVec2::new(14, 30);
+    pub const CHARACTER_ADVANCE_WIDTH: u32 = 0;
+    pub const ATLAS_SIZE: UVec2 = UVec2::new(
+        Self::ATLAS_CELL_SIZE.x * 256u32,
+        Self::ATLAS_CELL_SIZE.y * 256u32,
+    );
+    pub const UV_SIZE: Vec2 = Vec2::splat(1.0 / 256.0);
+    pub const LINE_SPACING: u32 = 1;
+    pub const ELEMENT_GAP: UVec2 = UVec2::new(8, 4);
+    pub const WINDOW_ROUNDING: u32 = 4;
+    pub const ROUNDING: u32 = 2;
+    pub const BORDER: u32 = 1;
+    pub const CHILD_PAD: UVec2 = UVec2::new(2, 1);
+    pub const INDENT: UVec2 = UVec2::new(20, 0);
+    pub const TAB_PAD: UVec2 = UVec2::new(6, 2);
+    pub const TAB_GAP: UVec2 = UVec2::new(4, 2);
+    pub const WINDOW_PAD: UVec2 = UVec2::new(3, 2);
+    pub const WINDOW_HEADER_HEIGHT: f32 =
+        (UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
+    pub const RESIZE_THRESHOLD: f32 = 15.0f32;
+    pub const BAR_THICKNESS: f32 = 6.0f32;
+    pub const MIN_THUMB: f32 = 20.0f32;
+
+    pub(crate) fn char_to_atlas_pos(c: char) -> UVec2 {
+        let idx = c as u32;
+        if idx > u16::MAX as u32 {
+            return UVec2::ZERO;
+        }
+        let idx = idx as u16;
+        let lower = idx & 0b1111_1111u16;
+        let higher = (idx >> 8) & 0b1111_1111u16;
+        UVec2::new(lower as u32, higher as u32) * Self::ATLAS_CELL_SIZE
+    }
+
+    pub(crate) fn new() -> Result<(Self, UiWindows, DockingNode)> {
+        let bytes = fs::read("/home/karsten/code/GameEngine/editor_font.ttf")?;
+        let font = Font::from_bytes(bytes, FontSettings::default()).unwrap();
+
+        let SaveState {
+            docking_nodes,
+            windows,
+        } = ron::from_str(&fs::read_to_string("windows.ron").unwrap_or("".to_owned())).unwrap_or(
+            SaveState {
+                docking_nodes: DockingNode::Leaf { window: u32::MAX },
+                windows: Vec::new(),
+            },
+        );
+        let windows = UiWindows {
+            add_windows: Mutex::new(SmallVec::new()),
+            windows: windows
+                .iter()
+                .map(|w| {
+                    Some(UiWindow::new(
+                        w.tabs
+                            .iter()
+                            .map(|t| Tab {
+                                label: t.label.clone(),
+                                state: Mutex::new(TabState::default()),
+                            })
+                            .collect(),
+                        w.rect.clone(),
+                        w.active_tab,
+                    ))
+                })
+                .collect(),
+            free_slots: Vec::new(),
+        };
+
+        Ok((
+            Self {
+                font: Some(font),
+                resize_path: u64::MAX,
+                resize_depth: 0,
+                drag_start: Vec2::ZERO,
+            },
+            windows,
+            docking_nodes,
+        ))
+    }
+
+    pub(crate) fn build_ui_resources(&mut self) -> Result<UiResources> {
+        let font = self.font.take().unwrap();
+        let pixels = (Self::FONT_SCALE * 4) as f32;
+        let font_metrics = font.horizontal_line_metrics(pixels).unwrap();
+        log::info!("{:#?}, {:#?}", font_metrics, UiContext::ATLAS_CELL_SIZE);
+
+        let mut atlas_data = vec![0u8; (Self::ATLAS_SIZE.x * Self::ATLAS_SIZE.y) as usize];
+        for (c, _) in font.chars().iter() {
+            let (metrics, data) = font.rasterize(*c, pixels);
+            let pos = Self::char_to_atlas_pos(*c);
+            for x in 0..metrics.width {
+                for y in 0..metrics.height {
+                    let atlas_y = (pos.y as i32 + font_metrics.ascent as i32
+                        - metrics.height as i32
+                        + y as i32
+                        - metrics.ymin)
+                        .saturating_cast::<usize>();
+                    let atlas_x =
+                        (pos.x as i32 + (x as i32 + metrics.xmin)).saturating_cast::<usize>();
+
+                    atlas_data[atlas_y * UiContext::ATLAS_SIZE.x as usize + atlas_x] =
+                        data[y * metrics.width + x];
+                }
+            }
+        }
+        atlas_data[0] = 255;
+        let font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y).unwrap();
+        let future = UploadQueue::push_image(atlas_data, font_atlas);
+        let font_atlas = block_on(future)?;
+
+        Ok(UiResources {
+            font_atlas,
+            indicies: [Buffer::new(16 * 1024, true)?, Buffer::new(16 * 1024, true)?],
+            verticies: [Buffer::new(16 * 1024, true)?, Buffer::new(16 * 1024, true)?],
+            pending_indicies: Vec::with_capacity(16 * 1024),
+            pending_verticies: Vec::with_capacity(16 * 1024),
+            num_indicies: 0,
+            num_verticies: 0,
+        })
+    }
+
+    pub fn text_size(str: &str) -> Vec2 {
+        let mut size = Vec2::new(0.0, 0.0);
+        for line in str.lines() {
+            size.x = size.x.max(
+                (UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32)
+                    * line.len() as f32,
+            );
+            size.y += UiContext::ATLAS_CELL_SIZE.y as f32;
+        }
+
+        size
+    }
+
+    pub fn text_len(str: &str) -> f32 {
+        str.len() as f32
+            * (UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32)
+    }
+}
+
+pub fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
     if resources.indicies[frame.frame_in_flight()].len() < resources.pending_indicies.len() {
         resources.indicies[frame.frame_in_flight()] =
             Buffer::new(resources.pending_indicies.len().next_power_of_two(), true).unwrap();
@@ -316,257 +402,185 @@ fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>) {
     resources.indicies[frame.frame_in_flight()]
         .range(..)
         .copy_from(&resources.pending_indicies);
-    resources.draw_lists[frame.frame_in_flight()].clear();
-    let elements = resources.pending_draw_lists.drain(..).collect::<Vec<_>>();
-    resources.draw_lists[frame.frame_in_flight()].extend(elements);
+
+    resources.num_indicies = resources.pending_indicies.len();
+    resources.num_verticies = resources.pending_verticies.len();
+
     resources.pending_verticies.clear();
     resources.pending_indicies.clear();
 }
 
-fn extract_ui(mut world: ResMut<MainWorld>, mut resources: ResMut<UiResources>) {
-    world.resource_scope(|world, mut builder: Mut<UiBuilder>| {
-        let mut ctx = world.get_resource_mut::<OldUiContext>().unwrap();
-        if builder.ui().is_none() {
-            info!("building font atlas");
-            let atlas = ctx.ctx.fonts().build_alpha8_texture();
-            let image = Image::new(atlas.width, atlas.height).unwrap();
-            let mut data = Vec::with_capacity(atlas.data.len());
-            data.extend_from_slice(atlas.data);
-            let image = block_on(UploadQueue::push_image(data, image)).unwrap();
+pub fn create_ui_resources(
+    mut cmd: Commands,
+    res: Option<Res<UiResources>>,
+    mut world: ResMut<MainWorld>,
+) {
+    if res.is_some() {
+        return;
+    }
+    let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
+    cmd.insert_resource(ctx.build_ui_resources().unwrap());
+}
 
-            resources.font_atlas = Some(image);
-            ctx.ctx.style_mut().colors[StyleColor::WindowBg as usize] = [0.0; 4];
-            builder.ui = ctx.ctx.new_frame() as *mut _;
-            builder.ui().unwrap().dockspace_over_main_viewport();
-            return;
+pub fn extract_ui(mut res: If<ResMut<UiResources>>, windows: Extract<Res<UiWindows>>) {
+    for (_, window) in windows.by_layer() {
+        let tab = window.active_tab();
+        let Ok(tab_state) = tab.state.lock() else {
+            continue;
+        };
+
+        let vertex_offset = res.pending_verticies.len();
+        res.pending_indicies
+            .extend(window.indicies.iter().map(|e| *e + vertex_offset as u32));
+        res.pending_verticies.extend(window.verticies.iter());
+
+        let vertex_offset = res.pending_verticies.len();
+        res.pending_indicies
+            .extend(tab_state.indicies.iter().map(|e| *e + vertex_offset as u32));
+        res.pending_verticies.extend(tab_state.verticies.iter());
+
+        let vertex_offset = res.pending_verticies.len();
+        res.pending_indicies.extend(
+            tab_state
+                .top_indicies
+                .iter()
+                .map(|e| *e + vertex_offset as u32),
+        );
+        res.pending_verticies.extend(tab_state.top_verticies.iter());
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MultiInput {
+    pub primary_pressed: bool,
+    pub primary_pressing: bool,
+    pub primary_released: bool,
+    pub cursor_pos: Option<Vec2>,
+}
+
+impl MultiInput {
+    pub fn new(
+        desktop_window: &Window,
+        buttons: &ButtonInput<MouseButton>,
+        touch: &Touches,
+    ) -> Self {
+        let mut this = Self {
+            primary_pressed: buttons.just_pressed(MouseButton::Left),
+            primary_pressing: buttons.pressed(MouseButton::Left),
+            primary_released: buttons.just_released(MouseButton::Left),
+            cursor_pos: desktop_window.physical_cursor_position(),
+        };
+
+        if let Some(touch) = touch.iter().next() {
+            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor() as f32);
+            this.primary_pressing = true;
         }
-        let draw_data = ctx.ctx.render();
+        if let Some(touch) = touch.iter_just_pressed().next() {
+            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor() as f32);
+            this.primary_pressed = true;
+        }
+        if let Some(touch) = touch.iter_just_released().next() {
+            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor() as f32);
+            this.primary_released = true;
+        }
+        this
+    }
 
-        let transform = Vec2::from(draw_data.display_pos);
-        let scale = Vec2::from(draw_data.display_size);
-        if draw_data.draw_lists_count() != 0 {
-            for list in draw_data.draw_lists() {
-                let vertex_offset = resources.pending_verticies.len() as u32;
-                let index_offset = resources.pending_indicies.len() as u32;
-                let indicies = list.idx_buffer().iter().map(|i| *i as u32);
-                let verticies = list.vtx_buffer().iter().map(|v| UIVertex {
-                    color: Vec4::new(
-                        v.col[0] as f32 / 255.0,
-                        v.col[1] as f32 / 255.0,
-                        v.col[2] as f32 / 255.0,
-                        v.col[3] as f32 / 255.0,
-                    ),
-                    pos: ((Vec2::new(v.pos[0], v.pos[1]) / scale + transform) * 2.0
-                        - Vec2::splat(1.0)),
-                    uv: Vec2::new(v.uv[0], v.uv[1]),
-                });
-                resources.pending_indicies.extend(indicies);
-                resources.pending_verticies.extend(verticies);
-                for cmd in list.commands() {
-                    if let DrawCmd::Elements { count, cmd_params } = cmd {
-                        resources.pending_draw_lists.push(DrawList {
-                            clip_rect: Scissor {
-                                offset: IVec2::new(
-                                    cmd_params.clip_rect[0] as i32,
-                                    cmd_params.clip_rect[1] as i32,
-                                ),
-                                extent: UVec2::new(
-                                    (cmd_params.clip_rect[2] as u32)
-                                        .saturating_sub(cmd_params.clip_rect[0] as u32),
-                                    (cmd_params.clip_rect[3] as u32)
-                                        .saturating_sub(cmd_params.clip_rect[1] as u32),
-                                ),
-                            },
-                            start_index: cmd_params.idx_offset as u32 + index_offset,
-                            start_vertex: cmd_params.vtx_offset as u32 + vertex_offset,
-                            count: count as u32,
-                        });
-                    }
-                }
+    pub fn to_viewport(self, view_port: &ViewPort) -> Self {
+        let cursor_pos = self.cursor_pos.and_then(|cp| {
+            let new_cp = cp - view_port.rect.min;
+            if view_port.rect.contains(cp) {
+                Some(new_cp)
+            } else {
+                None
             }
+        });
+        Self { cursor_pos, ..self }
+    }
+
+    pub fn clicked(&self, rect: Rect) -> bool {
+        self.primary_pressed && self.hovered(rect)
+    }
+    pub fn hovered(&self, rect: Rect) -> bool {
+        self.cursor_pos.is_some_and(|cp| rect.contains(cp))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveWindow {
+    rect: Rect,
+    tabs: Vec<SaveTab>,
+    active_tab: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveTab {
+    label: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveState {
+    docking_nodes: DockingNode,
+    windows: Vec<SaveWindow>,
+}
+
+pub fn save_windows(
+    events: MessageReader<AppExit>,
+    windows: Res<UiWindows>,
+    docking_nodes: Res<DockingNode>,
+) {
+    if events.is_empty() {
+        return;
+    }
+
+    let mut remap = HashMap::new();
+    let mut new_idx = 0;
+    for (i, w) in windows.windows.iter().enumerate() {
+        if w.is_some() {
+            remap.insert(i as u32, new_idx as u32);
+            new_idx += 1;
         }
-        ctx.ctx.style_mut().colors[StyleColor::WindowBg as usize] = [0.0; 4];
-        builder.ui = ctx.ctx.new_frame() as *mut _;
-        builder.ui().unwrap().dockspace_over_main_viewport();
-    })
-}
+    }
 
-fn init(mut commands: Commands) {
-    commands.insert_resource(UiResources {
-        verticies: [
-            Buffer::new(10000, true).unwrap(),
-            Buffer::new(10000, true).unwrap(),
-        ],
-        indicies: [
-            Buffer::new(10000, true).unwrap(),
-            Buffer::new(10000, true).unwrap(),
-        ],
-        font_atlas: None,
-        pending_indicies: Vec::new(),
-        pending_verticies: Vec::new(),
-        draw_lists: [Vec::new(), Vec::new()],
-        pending_draw_lists: Vec::new(),
-    });
-}
+    let save_state = SaveState {
+        docking_nodes: docking_nodes.clone().remap(&remap),
+        windows: windows
+            .windows
+            .iter()
+            .filter_map(|w| w.as_ref())
+            .map(|w| SaveWindow {
+                tabs: w
+                    .tabs
+                    .iter()
+                    .map(|t| SaveTab {
+                        label: t.label.clone(),
+                    })
+                    .collect::<Vec<_>>(),
+                rect: w.rect,
+                active_tab: w.active_tab,
+            })
+            .collect::<Vec<_>>(),
+    };
 
-#[derive(Copy, Clone)]
-pub struct DrawList {
-    pub count: u32,
-    pub start_vertex: u32,
-    pub start_index: u32,
-    pub clip_rect: Scissor,
-}
-
-#[derive(Resource)]
-pub struct UiResources {
-    pub draw_lists: [Vec<DrawList>; FRAMES_IN_FLIGHT],
-    pub pending_draw_lists: Vec<DrawList>,
-    pub verticies: [Buffer<UIVertex>; FRAMES_IN_FLIGHT],
-    pub pending_verticies: Vec<UIVertex>,
-    pub indicies: [Buffer<u32>; FRAMES_IN_FLIGHT],
-    pub pending_indicies: Vec<u32>,
-    pub font_atlas: Option<Image<R8Unorm, Sampled>>,
-}
-
-impl UiBuilder {
-    pub const BG: [f32; 4] = [0.155, 0.155, 0.155, 1.0]; // #272727 – slightly darker bg
-    pub const BG_DARK: [f32; 4] = [0.130, 0.130, 0.130, 1.0]; // #212121
-    pub const S0: [f32; 4] = [0.220, 0.220, 0.220, 1.0]; // #383838 – buttons/frames, bigger jump from bg
-    pub const S1: [f32; 4] = [0.260, 0.260, 0.260, 1.0]; // #424242 – hovered
-    pub const S2: [f32; 4] = [0.300, 0.300, 0.300, 1.0]; // #3c3c50 – active
-    pub const GRAB: [f32; 4] = [0.370, 0.370, 0.370, 1.0]; // #5e5e5e
-    pub const GRAB_HOT: [f32; 4] = [0.490, 0.490, 0.490, 1.0]; // #7d7d7d
-    pub const TEXT: [f32; 4] = [0.880, 0.880, 0.880, 1.0]; // #e0e0e0
-    pub const TEXT_DIM: [f32; 4] = [0.550, 0.550, 0.550, 1.0]; // #8c8c8c
-
-    pub const BLUE: [f32; 4] = [0.118, 0.565, 0.831, 1.0]; // #1e90d4 – UE blue
-    pub const BLUE_DIM: [f32; 4] = [0.118, 0.565, 0.831, 0.6]; // UE blue dimmed
-    pub const BLUE_REALY_DIM: [f32; 4] = [0.118, 0.565, 0.831, 0.35];
-
-    pub const TRACE: [f32; 4] = [0.380, 0.380, 0.380, 1.0]; // trace
-    pub const DEBUG: [f32; 4] = [0.400, 0.560, 0.700, 1.0]; // debug
-    pub const INFO: [f32; 4] = [0.820, 0.820, 0.820, 1.0]; // info
-    pub const WARN: [f32; 4] = [0.980, 0.760, 0.110, 1.0]; // warn
-    pub const ERROR: [f32; 4] = [0.950, 0.180, 0.180, 1.0]; // error
+    let config = PrettyConfig::new();
+    std::fs::write(
+        "windows.ron",
+        ron::ser::to_string_pretty(&save_state, config).unwrap(),
+    )
+    .unwrap();
 }
 
 #[allow(non_snake_case)]
 pub fn UiPlugin(app: &mut App) {
     let sub_app = app.get_sub_app_mut(RenderApp).unwrap();
     sub_app
-        .add_systems(RenderStartup, init)
-        .add_systems(
-            Render,
-            (nwrite_ui_data, write_ui_data).in_set(RenderSystems::PreRender),
-        )
-        .add_systems(
-            ExtractSchedule,
-            (extract_ui, nextract_ui, create_ui_resources),
-        );
+        .add_systems(Render, write_ui_data.in_set(RenderSystems::PreRender))
+        .add_systems(ExtractSchedule, (extract_ui, create_ui_resources));
     let (ctx, windows, dock) = UiContext::new().unwrap();
-    app.add_systems(PreUpdate, read_input.after(InputSystems))
-        .insert_resource({
-            let mut ctx = imgui::Context::create();
-            ctx.io_mut().config_flags |= ConfigFlags::DOCKING_ENABLE;
-            ctx.fonts().add_font(&[FontSource::TtfData {
-                data: &fs::read("/home/karsten/code/GameEngine/editor_font.ttf").unwrap(),
-                size_pixels: 18.0,
-                config: Some(FontConfig::default()),
-            }]);
-
-            let style = ctx.style_mut();
-            let colors = &mut style.colors;
-
-            colors[StyleColor::WindowBg as usize] = UiBuilder::BG;
-            colors[StyleColor::ChildBg as usize] = UiBuilder::BG;
-            colors[StyleColor::PopupBg as usize] = UiBuilder::S0;
-            colors[StyleColor::Border as usize] = UiBuilder::S1;
-            colors[StyleColor::BorderShadow as usize] = [0.0, 0.0, 0.0, 0.0];
-            colors[StyleColor::FrameBg as usize] = UiBuilder::S0;
-            colors[StyleColor::FrameBgHovered as usize] = UiBuilder::S1;
-            colors[StyleColor::FrameBgActive as usize] = UiBuilder::S2;
-            colors[StyleColor::TitleBg as usize] = UiBuilder::BG_DARK;
-            colors[StyleColor::TitleBgActive as usize] = UiBuilder::BG;
-            colors[StyleColor::TitleBgCollapsed as usize] = UiBuilder::BG_DARK;
-            colors[StyleColor::MenuBarBg as usize] = UiBuilder::BG_DARK;
-            colors[StyleColor::ScrollbarBg as usize] = UiBuilder::BG;
-            colors[StyleColor::ScrollbarGrab as usize] = UiBuilder::GRAB;
-            colors[StyleColor::ScrollbarGrabHovered as usize] = UiBuilder::GRAB_HOT;
-            colors[StyleColor::ScrollbarGrabActive as usize] = UiBuilder::TEXT_DIM;
-            colors[StyleColor::CheckMark as usize] = UiBuilder::BLUE;
-            colors[StyleColor::SliderGrab as usize] = UiBuilder::BLUE_DIM;
-            colors[StyleColor::SliderGrabActive as usize] = UiBuilder::BLUE; // brighter blue
-            colors[StyleColor::Button as usize] = UiBuilder::S0;
-            colors[StyleColor::ButtonHovered as usize] = UiBuilder::S1;
-            colors[StyleColor::ButtonActive as usize] = UiBuilder::S2;
-            colors[StyleColor::Header as usize] = UiBuilder::S0;
-            colors[StyleColor::HeaderHovered as usize] = UiBuilder::S1;
-            colors[StyleColor::HeaderActive as usize] = UiBuilder::S2;
-            colors[StyleColor::Separator as usize] = UiBuilder::S1;
-            colors[StyleColor::SeparatorHovered as usize] = UiBuilder::BLUE_DIM;
-            colors[StyleColor::SeparatorActive as usize] = UiBuilder::BLUE;
-            colors[StyleColor::ResizeGrip as usize] = UiBuilder::S2;
-            colors[StyleColor::ResizeGripHovered as usize] = UiBuilder::BLUE_DIM;
-            colors[StyleColor::ResizeGripActive as usize] = UiBuilder::BLUE;
-            colors[StyleColor::Tab as usize] = UiBuilder::BG_DARK;
-            colors[StyleColor::TabHovered as usize] = UiBuilder::BLUE;
-            colors[StyleColor::TabActive as usize] = UiBuilder::BLUE_DIM;
-            colors[StyleColor::TabUnfocused as usize] = UiBuilder::BG_DARK;
-            colors[StyleColor::TabUnfocusedActive as usize] = UiBuilder::S0;
-            colors[StyleColor::DockingPreview as usize] = UiBuilder::BLUE_DIM;
-            colors[StyleColor::DockingEmptyBg as usize] = UiBuilder::BG_DARK;
-            colors[StyleColor::PlotLines as usize] = UiBuilder::BLUE_DIM;
-            colors[StyleColor::PlotLinesHovered as usize] = UiBuilder::BLUE;
-            colors[StyleColor::PlotHistogram as usize] = UiBuilder::BLUE_DIM;
-            colors[StyleColor::PlotHistogramHovered as usize] = UiBuilder::BLUE;
-            colors[StyleColor::TableHeaderBg as usize] = UiBuilder::BG_DARK;
-            colors[StyleColor::TableBorderStrong as usize] = UiBuilder::S1;
-            colors[StyleColor::TableBorderLight as usize] = UiBuilder::S0;
-            colors[StyleColor::TableRowBg as usize] = [0.0, 0.0, 0.0, 0.0];
-            colors[StyleColor::TableRowBgAlt as usize] = [1.0, 1.0, 1.0, 0.04];
-            colors[StyleColor::TextSelectedBg as usize] = UiBuilder::BLUE_REALY_DIM; // UiBuilder::BLUE selection
-            colors[StyleColor::DragDropTarget as usize] = UiBuilder::BLUE;
-            colors[StyleColor::NavHighlight as usize] = UiBuilder::BLUE;
-            colors[StyleColor::NavWindowingHighlight as usize] = [1.0, 1.0, 1.0, 0.7];
-            colors[StyleColor::NavWindowingDimBg as usize] = [0.0, 0.0, 0.0, 0.2];
-            colors[StyleColor::ModalWindowDimBg as usize] = [0.0, 0.0, 0.0, 0.45];
-            colors[StyleColor::Text as usize] = UiBuilder::TEXT;
-            colors[StyleColor::TextDisabled as usize] = UiBuilder::TEXT_DIM;
-
-            // Rounded corners
-            style.window_rounding = 3.0;
-            style.child_rounding = 1.0;
-            style.frame_rounding = 1.0;
-            style.popup_rounding = 1.0;
-            style.scrollbar_rounding = 1.0;
-            style.grab_rounding = 1.0;
-            style.tab_rounding = 1.0;
-
-            // Padding and spacing
-            style.window_padding = [8.0, 8.0];
-            style.frame_padding = [5.0, 3.0];
-            style.item_spacing = [8.0, 4.0];
-            style.item_inner_spacing = [4.0, 4.0];
-            style.indent_spacing = 21.0;
-            style.scrollbar_size = 14.0;
-            style.grab_min_size = 10.0;
-
-            // Borders
-            style.window_border_size = 1.0;
-            style.child_border_size = 1.0;
-            style.popup_border_size = 1.0;
-            style.frame_border_size = 1.0;
-            style.tab_border_size = 0.0;
-            OldUiContext { ctx }
-        })
-        .insert_resource(UiBuilder {
-            ui: std::ptr::null_mut(),
-        })
-        .add_systems(PreUpdate, update_windows.after(InputSystems))
+    app.add_systems(PreUpdate, update_windows.after(InputSystems))
         .add_systems(Update, draw_windows)
         .insert_resource(ctx)
         .insert_resource(windows)
         .insert_resource(dock)
         .add_systems(PostUpdate, save_windows);
-    add_tests(app);
 }

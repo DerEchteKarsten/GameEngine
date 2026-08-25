@@ -1,6 +1,6 @@
 use crate::ui::{
+    Draggable,
     dock::DockingNode,
-    new_ui::Draggable,
     window::{Drawable, Tab, TabState, UiWindow},
 };
 use bevy::{
@@ -20,11 +20,11 @@ use smallvec::SmallVec;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     num::NonZeroU64,
-    sync::Mutex,
+    sync::{Mutex, atomic::AtomicU32},
 };
 
 use crate::ui::{
-    new_ui::{FocusedState, MultiInput, UiContext, UiWindows, from_pos_size},
+    FocusedState, MultiInput, UiContext, UiWindows, from_pos_size,
     scrollable::Scrollable,
     window::{BorderSettings, DrawSettings, TextDirection},
 };
@@ -147,7 +147,7 @@ pub fn draw_windows(
             &mut focused.as_mut(),
             viewport_size,
             frame.input.cursor_pos,
-            frame.input.left_mouse_pressed,
+            frame.input.primary_pressed,
             header_rect,
         );
         if focused.is_some() {
@@ -194,7 +194,9 @@ pub fn update_windows(
     };
 
     let mut found_new_focused = false;
-    let mut hovering_tab = false;
+    let mut hovering_any_tab = false;
+    let mut dragging = false;
+    let mut resizing = false;
     let mut spawn_window = None;
     let mut drag_released = None;
     let mut preview_rect = None;
@@ -214,7 +216,7 @@ pub fn update_windows(
             .input
             .hovered(window.rect.inflate(UiContext::RESIZE_THRESHOLD));
 
-        if frame.input.left_mouse_pressed {
+        if frame.input.primary_pressed {
             if !found_new_focused && hoverd {
                 found_new_focused = true;
                 if window.focused.is_none() {
@@ -226,14 +228,16 @@ pub fn update_windows(
         }
 
         if let Some(focused) = window.focused.as_mut()
-            && frame.input.left_mouse_pressed
+            && frame.input.primary_pressed
             && !docked
         {
             focused
                 .edges
                 .hoverd(window.rect, &frame.input, UiContext::RESIZE_THRESHOLD);
+            resizing = focused.edges.any();
         }
 
+        let mut hovering_tab = false;
         let mut detatch_tab = None;
         let mut cursor = window.rect.min;
         for (j, tab) in window.tabs.iter().enumerate() {
@@ -255,10 +259,11 @@ pub fn update_windows(
             let hovering = frame.input.hovered(tab_rect);
 
             if hovering {
+                hovering_any_tab = true;
                 hovering_tab = true;
             }
             if let Some(focused) = window.focused.as_mut() {
-                if hovering && frame.input.left_mouse_pressed {
+                if hovering && frame.input.primary_pressed {
                     window.active_tab = j as u32;
                     if let Some(cursor_pos) = frame.input.cursor_pos
                         && !focused.edges.any()
@@ -308,7 +313,7 @@ pub fn update_windows(
 
         let header_rect = window.header_rect();
         if let Some(focused) = &mut window.focused {
-            if frame.input.left_mouse_pressed {
+            if frame.input.primary_pressed {
                 if frame.input.hovered(header_rect) && !hovering_tab && !focused.edges.any() {
                     focused.draging = Some(Draggable::Window);
                     let cp = frame.input.cursor_pos.unwrap();
@@ -317,7 +322,7 @@ pub fn update_windows(
                 }
             }
 
-            if frame.input.left_mouse_released {
+            if frame.input.primary_released {
                 if focused.draging == Some(Draggable::Window) && !docked {
                     drag_released = Some(i);
                 }
@@ -359,6 +364,8 @@ pub fn update_windows(
                     window.rect.max.x = cursor_pos.x.max(window.rect.min.x + 10.0).round();
                 }
             }
+
+            dragging = focused.draging.is_some();
         }
     }
 
@@ -404,8 +411,13 @@ pub fn update_windows(
         windows.append(spawn_window);
     }
 
-    handle_dock_resizing(ctx, dock, &frame, hovering_tab);
-    reorder_layers(&mut windows);
+    handle_dock_resizing(
+        ctx,
+        dock,
+        &frame,
+        !hovering_any_tab && !dragging && !resizing,
+    );
+    reorder_layers(&mut windows, dock);
 }
 
 fn draw_window(window: &mut UiWindow, frame: &FrameInfo, docked: bool) {
@@ -483,9 +495,9 @@ fn handle_dock_resizing(
 ) {
     let input = &frame.input;
 
-    if !click_valid
+    if click_valid
         && let Some(cursor_pos) = input.cursor_pos
-        && input.left_mouse_pressed
+        && input.primary_pressed
     {
         let (path, depth, drag_start, _axis) =
             dock.find_resize(cursor_pos, frame.full_screen_rect, 0, 0);
@@ -499,7 +511,7 @@ fn handle_dock_resizing(
     let is_resizing = ctx.resize_path != u64::MAX;
 
     if is_resizing
-        && input.left_mouse_pressing
+        && input.primary_pressing
         && let Some(cursor_pos) = input.cursor_pos
     {
         let delta = cursor_pos - ctx.drag_start;
@@ -512,23 +524,30 @@ fn handle_dock_resizing(
         );
     }
 
-    if input.left_mouse_released {
+    if input.primary_released {
         ctx.resize_path = u64::MAX;
         ctx.resize_depth = 0;
     }
 }
 
-fn reorder_layers(windows: &mut UiWindows) {
+fn reorder_layers(windows: &mut UiWindows, dock: &mut DockingNode) {
     windows
         .windows
         .iter_mut()
-        .filter_map(|w| w.as_mut())
+        .enumerate()
+        .filter_map(|w| w.1.as_mut().map(|o| (w.0, o)))
         .sorted_by_key(|w| {
-            let tier: u8 = if w.focused.is_some() { 1 } else { 0 };
-            (tier, w.layer)
+            let tier: u8 = if dock.contains(w.0 as u32) {
+                0
+            } else if w.1.focused.is_some() {
+                2
+            } else {
+                1
+            };
+            (tier, w.1.layer)
         })
         .enumerate()
         .for_each(|(layer, w)| {
-            w.layer = layer as u32;
+            w.1.layer = layer as u32;
         });
 }

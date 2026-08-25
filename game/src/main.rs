@@ -12,7 +12,7 @@ use core::{
         SpawnScene,
         camera::{Camera, CameraBundle},
     },
-    ui::{OldUiContext, UiBuilder},
+    ui::builder::UiBuilder,
 };
 use std::{
     f32::consts::PI,

@@ -9,7 +9,10 @@ use crate::{
     physics::bvh::Raycast,
     render::world::InstanceFlags,
     scene::{Instance, camera::Camera},
-    ui::{UiBuilder, OldUiContext},
+    ui::{
+        MultiInput,
+        builder::{UiBuilder, UiWindowBuilder},
+    },
 };
 use bevy::{
     asset::{AssetId, Assets, Handle, StrongHandle},
@@ -41,10 +44,6 @@ use bevy::{
     window::Window,
 };
 use glam::{Affine3A, Mat3A, Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
-use imgui::{
-    TreeNodeFlags, Ui, WindowFocusedFlags,
-    drag_drop::{DragDropPayload, DragDropPayloadPod},
-};
 
 #[derive(Component, Reflect)]
 #[component(storage = "SparseSet")]
@@ -52,7 +51,7 @@ use imgui::{
 pub struct Selected;
 
 pub(crate) fn hierarchy_ui(
-    mut ui: ResMut<UiBuilder>,
+    mut ui: UiBuilder,
     mut cmd: Commands,
     mut instances: Query<(
         Entity,
@@ -62,57 +61,36 @@ pub(crate) fn hierarchy_ui(
         Option<&ChildOf>,
         Option<&Instance>,
     )>,
-    viewport: ViewPortProxy,
-    keys: Res<ButtonInput<KeyCode>>,
     selected: Query<Entity, With<Selected>>,
+    keys: Res<ButtonInput<KeyCode>>,
 ) {
-    let Some(ui) = ui.ui() else { return };
+    ui.build("Hierarchy", |ui| {
+        if ui.button("insert") {
+            cmd.spawn(Transform::default());
+        }
 
-    ui.window("Hierarchy##hierarchy")
-        .size([250.0, 400.0], imgui::Condition::FirstUseEver)
-        .build(|| {
-            ui.child_window("dnd_target").build(|| {
-                if ui.button("insert") {
-                    cmd.spawn(Transform::default());
-                }
-                ui.separator();
+        let mut roots: Vec<Entity> = instances
+            .iter()
+            .filter(|(_, _, _, _, parent, _)| parent.is_none())
+            .map(|(e, _, _, _, _, _)| e)
+            .collect();
 
-                let mut roots: Vec<Entity> = instances
-                    .iter()
-                    .filter(|(_, _, _, _, parent, _)| parent.is_none())
-                    .map(|(e, _, _, _, _, _)| e)
-                    .collect();
+        roots.sort();
 
-                roots.sort();
-
-                for root in roots {
-                    draw_entity_node(&mut cmd, ui, root, &mut instances, &selected);
-                }
-            });
-            if let Some(target) = ui.drag_drop_target() {
-                if let Some(payload) =
-                    target.accept_payload::<u64, _>("ENTITY_DND", imgui::DragDropFlags::empty())
-                {
-                    if let Ok(bits) = payload {
-                        let dragged = Entity::from_bits(bits.data);
-                        cmd.entity(dragged).remove_parent_in_place();
-                    }
-                }
+        for root in roots {
+            draw_entity_node(&mut cmd, ui, root, &mut instances, &selected);
+        }
+        if keys.just_pressed(KeyCode::Delete) && ui.focused.is_some() {
+            for e in selected {
+                cmd.entity(e).despawn();
             }
-            if keys.just_pressed(KeyCode::Delete)
-                && (ui.is_window_focused_with_flags(WindowFocusedFlags::ROOT_AND_CHILD_WINDOWS)
-                    || viewport.focused())
-            {
-                for e in selected {
-                    cmd.entity(e).despawn();
-                }
-            }
-        });
+        }
+    });
 }
 
 fn draw_entity_node(
     cmd: &mut Commands,
-    ui: &Ui,
+    ui: &mut UiWindowBuilder,
     this_entity: Entity,
     instances: &mut Query<(
         Entity,
@@ -128,7 +106,6 @@ fn draw_entity_node(
         return;
     };
 
-    let has_children = children.map(|c| !c.is_empty()).unwrap_or(false);
     let label = if let Some(name) = name {
         name.to_string()
     } else if let Some(inst) = instance {
@@ -139,63 +116,33 @@ fn draw_entity_node(
     } else {
         format!("Entity {}", this_entity.index())
     };
-
-    let mut flags_tree = TreeNodeFlags::OPEN_ON_ARROW
-        | TreeNodeFlags::SPAN_AVAIL_WIDTH
-        | TreeNodeFlags::FRAME_PADDING;
-
-    if is_selected {
-        flags_tree |= TreeNodeFlags::SELECTED;
+    ui.disabled(!is_selected);
+    if children.is_some() {
+        ui.collapsable(label, |ui| {
+            let Ok((_, _, _, children, _, _)) = instances.get(this_entity) else {
+                return;
+            };
+            let mut children = children
+                .as_ref()
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            children.sort();
+            for child in children {
+                draw_entity_node(cmd, ui, child, instances, selected);
+            }
+        });
+    } else {
+        ui.text(label);
     }
-    if !has_children {
-        flags_tree |= TreeNodeFlags::LEAF;
-    }
+    ui.disabled(true);
 
-    let node = ui
-        .tree_node_config(format!("{}##{:?}", label, this_entity))
-        .flags(flags_tree)
-        .push();
-
-    if ui.is_item_hovered()
-        && ui.is_mouse_released(imgui::MouseButton::Left)
-        && !ui.is_item_toggled_open()
-        && !ui.is_mouse_dragging(imgui::MouseButton::Left)
-    {
+    if ui.prev_element_hoverd && ui.input.primary_pressed {
         for e in selected {
             cmd.entity(e).remove::<Selected>();
         }
         cmd.entity(this_entity).insert(Selected);
-    }
-
-    if let Some(_drag) = ui
-        .drag_drop_source_config("ENTITY_DND")
-        .flags(imgui::DragDropFlags::SOURCE_ALLOW_NULL_ID)
-        .begin_payload(this_entity.to_bits())
-    {
-        ui.text(format!("{:?}", label));
-    }
-
-    if let Some(target) = ui.drag_drop_target() {
-        if let Some(payload) =
-            target.accept_payload::<u64, _>("ENTITY_DND", imgui::DragDropFlags::empty())
-        {
-            if let Ok(bits) = payload {
-                let dragged = Entity::from_bits(bits.data);
-                if dragged != this_entity {
-                    cmd.entity(dragged).set_parent_in_place(this_entity);
-                }
-            }
-        }
-    }
-
-    if let Some(_node) = node
-        && let Some(children) = children.as_ref()
-    {
-        let mut children = children.iter().copied().collect::<Vec<_>>();
-        children.sort();
-        for child in children {
-            draw_entity_node(cmd, ui, child, instances, selected);
-        }
     }
 }
 
@@ -206,7 +153,6 @@ pub struct DragState {
     start_pos: Vec3,
     start_t: f32,
     scale: f32,
-    touchid: Option<u64>,
 }
 
 pub(crate) fn picking(
@@ -216,6 +162,7 @@ pub(crate) fn picking(
     mouse: Res<ButtonInput<MouseButton>>,
     touches: Res<Touches>,
     viewport: ViewPortProxy,
+    window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform)>,
     assets: Res<Assets<GpuMesh>>,
     mut picked: Query<
@@ -225,34 +172,19 @@ pub(crate) fn picking(
     all_picked: Query<Entity, With<Selected>>,
     mut local: Local<Option<DragState>>,
 ) {
-    let mut click_pos = None;
-    let mut touch_id = None;
-    if let Some(touch) = touches.iter_just_pressed().next() {
-        click_pos = viewport.to_viewport_pos(touch.position());
-        touch_id = Some(touch.id());
-    } else if mouse.just_pressed(MouseButton::Left) {
-        click_pos = viewport.cursor_position();
-        touch_id = None;
+    let mut input = MultiInput::new(&window, &mouse, &touches);
+
+    if let Some(viewport) = &viewport.view_port {
+        input = input.to_viewport(viewport);
     }
 
-    if let Some(l) = local.as_ref()
-        && let Some(touch) = l.touchid
-        && touches.just_released(touch)
-    {
-        *local = None;
-    } else if mouse.just_released(MouseButton::Left) {
+    if input.primary_released {
         *local = None;
     }
 
     if let Some((entity, global_transform, instance, mut transform)) = picked.iter_mut().next() {
         if let Some(drag) = local.as_ref() {
-            if let Some(pos) = if let Some(touch) = drag.touchid {
-                touches
-                    .get_pressed(touch)
-                    .and_then(|e| viewport.to_viewport_pos(e.position()))
-            } else {
-                viewport.cursor_position()
-            } {
+            if let Some(pos) = input.cursor_pos {
                 let t = drag.start_t
                     - camera.0.closest_t_on_axis(
                         camera.1,
@@ -280,6 +212,10 @@ pub(crate) fn picking(
             return;
         }
 
+        if !input.primary_pressed {
+            return;
+        }
+
         let directions = [
             (global_transform.right(), transform.right()),
             (global_transform.up(), transform.up()),
@@ -295,7 +231,7 @@ pub(crate) fn picking(
                     end: center + (*local_dir / scale_factor),
                     width: 1.0 / scale_factor,
                 },
-                click_pos,
+                input.cursor_pos,
                 global_transform.to_matrix(),
             ) && local.is_none()
             {
@@ -306,7 +242,7 @@ pub(crate) fn picking(
                     scale,
                     start_t: camera.0.closest_t_on_axis(
                         camera.1,
-                        click_pos.unwrap(),
+                        input.cursor_pos.unwrap(),
                         viewport.size(),
                         world_space_axis_origin,
                         *global_dir,
@@ -315,21 +251,24 @@ pub(crate) fn picking(
                     start_pos: transform.translation,
                     world_space_axis: *global_dir,
                     local_space_axis: *local_dir,
-                    touchid: touch_id,
                 });
             }
         }
     }
-    if !viewport.focused() || local.is_some() {
+    if !viewport.focused() || local.is_some() || !input.primary_pressed {
         return;
     }
-    let Some(click_pos) = click_pos else { return };
+    let Some(cursor_pos) = input.cursor_pos else {
+        return;
+    };
 
     for e in &all_picked {
         cmd.entity(e).remove::<Selected>();
     }
 
-    let view_dir = camera.0.ray_direction(camera.1, click_pos, viewport.size());
+    let view_dir = camera
+        .0
+        .ray_direction(camera.1, cursor_pos, viewport.size());
     let ray = RayCast3d::new(
         camera.1.translation(),
         Dir3A::new(view_dir.to_vec3a()).unwrap_or(Dir3A::Z),

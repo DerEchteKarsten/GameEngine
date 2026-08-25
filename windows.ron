@@ -1,33 +1,66 @@
 (
     docking_nodes: Node(
-        split: Vertical,
-        extend: 0.54939353,
+        split: Horizontal,
+        extend: 0.1587886,
         left: Node(
-            split: Horizontal,
+            split: Vertical,
             extend: 0.5,
             left: Leaf(
-                window: 1,
+                window: 2,
             ),
             right: Leaf(
-                window: 4294967295,
+                window: 4,
             ),
         ),
-        right: Leaf(
-            window: 0,
+        right: Node(
+            split: Horizontal,
+            extend: 0.6221619,
+            left: Node(
+                split: Vertical,
+                extend: 0.7720282,
+                left: Leaf(
+                    window: 4294967295,
+                ),
+                right: Leaf(
+                    window: 0,
+                ),
+            ),
+            right: Node(
+                split: Vertical,
+                extend: 0.17099872,
+                left: Leaf(
+                    window: 1,
+                ),
+                right: Leaf(
+                    window: 3,
+                ),
+            ),
         ),
     ),
     windows: [
         (
             rect: (
-                min: (0.0, 927.3763),
-                max: (2880.0, 1688.0),
+                min: (457.3112, 1303.1836),
+                max: (1964.616, 1688.0),
             ),
             tabs: [
                 (
-                    label: "Kitchen Sink",
+                    label: "Asset Browser",
                 ),
                 (
-                    label: "Float Input Edge Cases",
+                    label: "Console",
+                ),
+            ],
+            active_tab: 1,
+        ),
+        (
+            rect: (
+                min: (1964.6158, 0.0),
+                max: (2880.0, 288.64575),
+            ),
+            tabs: [
+                (
+                    label: "Frame Histogram",
                 ),
             ],
             active_tab: 0,
@@ -35,17 +68,38 @@
         (
             rect: (
                 min: (0.0, 0.0),
-                max: (1440.0, 927.3763),
+                max: (457.31128, 844.0),
             ),
             tabs: [
                 (
-                    label: "Color Picker Edge Cases",
-                ),
-                (
-                    label: "Checkbox Edge Cases",
+                    label: "Hierarchy",
                 ),
             ],
-            active_tab: 1,
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (1964.6158, 288.64584),
+                max: (2880.0, 1688.0),
+            ),
+            tabs: [
+                (
+                    label: "Selected",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (0.0, 844.0),
+                max: (457.31128, 1688.0),
+            ),
+            tabs: [
+                (
+                    label: "Render Settings",
+                ),
+            ],
+            active_tab: 0,
         ),
     ],
 )

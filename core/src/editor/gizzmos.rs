@@ -14,7 +14,7 @@ use crate::{
         render::{FrameCount, RenderCamera, Swapchain},
     },
     scene::camera::Camera,
-    ui::UiBuilder,
+    ui::builder::UiBuilder,
 };
 use bevy::{
     ecs::{
@@ -374,12 +374,12 @@ impl GizzmoResources {
                     },
                     swapchain.size,
                     &[Scissor {
-                        extent: viewport.scissor_size,
-                        offset: viewport.scissor_pos.as_ivec2(),
+                        extent: viewport.visible_rect.size().as_uvec2(),
+                        offset: viewport.visible_rect.min.as_ivec2(),
                     }],
                     Viewport {
-                        extent: viewport.view_size,
-                        offset: viewport.view_pos,
+                        extent: viewport.rect.size().as_uvec2(),
+                        offset: viewport.rect.min.as_ivec2(),
                     },
                 );
         }
@@ -400,12 +400,12 @@ impl GizzmoResources {
                     },
                     swapchain.size,
                     &[Scissor {
-                        extent: viewport.scissor_size,
-                        offset: viewport.scissor_pos.as_ivec2(),
+                        extent: viewport.visible_rect.size().as_uvec2(),
+                        offset: viewport.visible_rect.min.as_ivec2(),
                     }],
                     Viewport {
-                        extent: viewport.view_size,
-                        offset: viewport.view_pos,
+                        extent: viewport.rect.size().as_uvec2(),
+                        offset: viewport.rect.min.as_ivec2(),
                     },
                 );
         }
@@ -426,12 +426,12 @@ impl GizzmoResources {
                     },
                     swapchain.size,
                     &[Scissor {
-                        extent: viewport.scissor_size,
-                        offset: viewport.scissor_pos.as_ivec2(),
+                        extent: viewport.visible_rect.size().as_uvec2(),
+                        offset: viewport.visible_rect.min.as_ivec2(),
                     }],
                     Viewport {
-                        extent: viewport.view_size,
-                        offset: viewport.view_pos,
+                        extent: viewport.rect.size().as_uvec2(),
+                        offset: viewport.rect.min.as_ivec2(),
                     },
                 );
         }

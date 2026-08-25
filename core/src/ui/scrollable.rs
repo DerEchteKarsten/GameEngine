@@ -3,7 +3,7 @@ use glam::Vec2;
 use std::num::NonZeroU64;
 
 use crate::ui::{
-    new_ui::{Draggable, FocusedState, UiContext, from_pos_size},
+    Draggable, FocusedState, UiContext, from_pos_size,
     window::{DrawSettings, Drawable, TabState},
 };
 

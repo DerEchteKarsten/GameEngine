@@ -8,6 +8,7 @@
 //   (tracy allocator, tracing subscriber, panic hook, etc.)
 
 use std::fmt::Debug;
+use std::process::id;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -17,13 +18,15 @@ use bevy::app::{
 use bevy::ecs::prelude::*;
 use bevy::ecs::schedule::{InternedScheduleLabel, ScheduleLabel};
 use bevy::log;
-use imgui::{ComboBoxFlags, SliderFlags};
+use glam::Vec4;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 
+use crate::id;
 use crate::render::{ExtractSchedule, Render, RenderStartup};
-use crate::ui::UiBuilder;
+use crate::ui::UiContext;
+use crate::ui::builder::{UiBuilder, UiWindowBuilder};
 
 #[cfg(feature = "trace_tracy_memory")]
 #[global_allocator]
@@ -100,7 +103,6 @@ pub struct ConsoleLog {
 /// UI state for the console window.
 #[derive(Resource)]
 pub struct ConsoleUiState {
-    pub open: bool,
     pub filter_text: String,
     pub auto_scroll: bool,
     pub clear_requested: bool,
@@ -113,7 +115,6 @@ pub struct ConsoleUiState {
 impl Default for ConsoleUiState {
     fn default() -> Self {
         Self {
-            open: true,
             filter_text: String::new(),
             auto_scroll: true,
             clear_requested: false,
@@ -291,118 +292,73 @@ fn flush_pending_logs(
 fn render_console_window(
     log: Res<ConsoleLog>,
     mut ui_state: ResMut<ConsoleUiState>,
-    mut ui_builder: ResMut<UiBuilder>,
+    mut ui_builder: UiBuilder,
 ) {
-    let Some(ui) = ui_builder.ui() else {
-        return;
-    };
-
-    if !ui_state.open {
-        return;
-    }
-
     let level_names = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
-    let level_colors: [[f32; 4]; 5] = [
-        UiBuilder::TRACE,
-        UiBuilder::DEBUG,
-        UiBuilder::INFO,
-        UiBuilder::WARN,
-        UiBuilder::ERROR,
+    let level_colors: [Vec4; 5] = [
+        UiContext::TRACE,
+        UiContext::DEBUG,
+        UiContext::INFO,
+        UiContext::WARN,
+        UiContext::ERROR,
     ];
-    ui.window("Console##console").build(|| {
-        // ── Toolbar ──────────────────────────────────────────────────────────
-
-        // --- Level filter ---
+    ui_builder.build("Console", |ui| {
+        ui.horizontal();
         ui.text("Level:");
-        ui.same_line();
-        // -1.0 means "fill to end of available width" — but we need room for the rest,
-        // so we calculate: push a fraction of the remaining space.
-        // We have 4 stretchy widgets. Leave label widths as fixed, stretch the inputs.
-        let available = ui.content_region_avail()[0];
-        // Approximate fixed costs: "Level:" "Schedule:" "Clear" "Auto-scroll" "Clear log" + separators
-        let fixed_cost = 420.0; // tune this to taste
-        let n_stretchy = 3.0; // level slider, schedule combo, text filter
-        let stretch_w = ((available - fixed_cost) / n_stretchy).max(40.0);
 
-        ui.set_next_item_width(stretch_w);
-        let mut min_level = ui_state.min_level as i32;
-        if ui
-            .slider_config("##level", 0, 4)
-            .display_format(level_names[ui_state.min_level as usize])
-            .build(&mut min_level)
-        {
-            ui_state.min_level = min_level as u8;
-        }
+        ui_state.min_level = ui.dropdown(id!(), ui_state.min_level as usize, &level_names) as u8;
 
-        ui.same_line();
         ui.text("Filter:");
+        ui.text_input(id!(), &mut ui_state.filter_text, 300.0);
 
-        // --- Text filter ---
-        ui.same_line();
-        ui.set_next_item_width(stretch_w);
-        ui.input_text("##filter", &mut ui_state.filter_text).build();
-
-        ui.same_line();
         if ui.button("Clear") {
             ui_state.filter_text.clear();
         }
-        ui.same_line();
-        ui.checkbox("Auto-scroll", &mut ui_state.auto_scroll);
-        ui.same_line();
+        ui.text("Auto-scroll");
+        ui_state.auto_scroll = ui.checkbox(ui_state.auto_scroll);
         if ui.button("Clear log") {
             ui_state.clear_requested = true;
         }
 
-        ui.separator();
+        ui.vertical();
 
-        // ── Log entries ───────────────────────────────────────────────────────
-        let scroll_region_height = ui.content_region_avail()[1] - 4.0;
-        ui.child_window("##scroll")
-            .size([0.0, scroll_region_height])
-            .horizontal_scrollbar(true)
-            .build(|| {
-                let filter_lc = ui_state.filter_text.to_lowercase();
+        // ui.separator();
 
-                for entry in &log.entries {
-                    // Level filter
-                    let entry_level_idx = match entry.level {
-                        tracing::Level::TRACE => 0u8,
-                        tracing::Level::DEBUG => 1,
-                        tracing::Level::INFO => 2,
-                        tracing::Level::WARN => 3,
-                        tracing::Level::ERROR => 4,
-                    };
-                    if entry_level_idx < ui_state.min_level {
+        let mut rect = ui.clip_rect;
+        rect.min.y = ui.cursor.y;
+        let size = rect.size()
+            - (UiContext::WINDOW_PAD.as_vec2() + UiContext::ROUNDING.max(UiContext::BORDER) as f32)
+                * 2.0;
+        ui.container(id!(), size, |ui| {
+            let filter_lc = ui_state.filter_text.to_lowercase();
+            for entry in log.entries.iter().rev() {
+                let entry_level_idx = match entry.level {
+                    tracing::Level::TRACE => 0u8,
+                    tracing::Level::DEBUG => 1,
+                    tracing::Level::INFO => 2,
+                    tracing::Level::WARN => 3,
+                    tracing::Level::ERROR => 4,
+                };
+                if entry_level_idx < ui_state.min_level {
+                    continue;
+                }
+
+                if !filter_lc.is_empty() {
+                    let haystack = format!("{} {}", entry.target, entry.message,).to_lowercase();
+                    if !haystack.contains(&filter_lc) {
                         continue;
                     }
-
-                    // Text filter
-                    if !filter_lc.is_empty() {
-                        let haystack =
-                            format!("{} {}", entry.target, entry.message,).to_lowercase();
-                        if !haystack.contains(&filter_lc) {
-                            continue;
-                        }
-                    }
-
-                    let color = level_colors[entry_level_idx as usize];
-                    let _col = ui.push_style_color(imgui::StyleColor::Text, color);
-
-                    // [frame] [LEVEL] [Schedule] target: message
-                    ui.text(&format!(
-                        "[{:>6}] [{:<5}] {}: {}",
-                        entry.frame,
-                        level_names[entry_level_idx as usize],
-                        entry.target,
-                        entry.message,
-                    ));
                 }
 
-                // Auto-scroll to bottom
-                if ui_state.auto_scroll && ui.scroll_y() >= ui.scroll_max_y() - 4.0 {
-                    ui.set_scroll_here_y_with_ratio(1.0);
-                }
-            });
+                let color = level_colors[entry_level_idx as usize];
+                // let _col = ui.push_style_color(imgui::StyleColor::Text, color);
+
+                ui.text(&format!(
+                    "[{:>6}] [{:<5}] {}: {}",
+                    entry.frame, level_names[entry_level_idx as usize], entry.target, entry.message,
+                ));
+            }
+        });
     });
 }
 #[cfg(feature = "trace")]

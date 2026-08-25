@@ -5,11 +5,12 @@ use bevy::{
         entity::Entity,
         resource::Resource,
         schedule::IntoScheduleConfigs,
-        system::{Res, ResMut},
+        system::{Local, Res, ResMut},
     },
+    math::Rect,
     time::Time,
 };
-use glam::{IVec2, UVec2};
+use glam::{IVec2, UVec2, Vec2};
 use lava::buffer::Buffer;
 use tracing::Level;
 
@@ -30,7 +31,7 @@ use crate::{
         ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderApp, RenderStartup, RenderSystems,
         extract_param::Extract, render::RenderDebugUi, world::MAX_INSTANCES,
     },
-    ui::{OldUiContext, UiBuilder},
+    ui::builder::UiBuilder,
 };
 
 pub mod asset_browser;
@@ -60,38 +61,41 @@ impl Default for EditorPlugin {
 #[derive(Resource)]
 struct UiState {
     delta_time_histogram: [f32; 300],
+    cursor: usize,
 }
 
 impl Default for UiState {
     fn default() -> Self {
         Self {
             delta_time_histogram: [0.0; 300],
+            cursor: 0,
         }
     }
 }
 
-fn frame_histogram(mut ui: ResMut<UiBuilder>, mut state: ResMut<UiState>, time: Res<Time>) {
-    state.delta_time_histogram.rotate_left(1);
-    state.delta_time_histogram[299] = time.delta_secs() * 1000.0;
-    let average = state
-        .delta_time_histogram
-        .iter()
-        .cloned()
-        .reduce(|acc, e| acc + e)
-        .unwrap_or(0.0)
-        / state.delta_time_histogram.len() as f32;
-    if let Some(ui) = ui.ui() {
-        if let Some(window) = ui
-            .window("Entity 5 adhiasodhasdklagsdgasldgalsdglaksdasdlEntity 5 adhiasodhasdklagsdgasldgalsdglaksdasdlEntity 5 adhiasodhasdklagsdgasldgalsdglaksdasdl##frame_stats")
-            .size([100.0, 300.0], imgui::Condition::FirstUseEver)
-            .begin()
-        {
-            ui.plot_histogram(format!("{:?}", average), &state.delta_time_histogram)
-                .scale_max(32.0)
-                .scale_min(0.0)
-                .build()
-        }
-    }
+fn frame_histogram(mut ui: UiBuilder, mut state: Local<UiState>, time: Res<Time>) {
+    let cursor = state.cursor;
+    state.delta_time_histogram[cursor] = time.delta_secs() * 1000.0;
+    state.cursor = (state.cursor + 1) % state.delta_time_histogram.len();
+    let average =
+        state.delta_time_histogram.iter().sum::<f32>() / state.delta_time_histogram.len() as f32;
+    ui.build("Frame Histogram", |ui| {
+        ui.text(format!(
+            "Average: {:.3}ms / {:.3}fps",
+            average,
+            (1.0 / average) * 1000.0
+        ));
+        let len = state.delta_time_histogram.len();
+        let (before, after) = state.delta_time_histogram.split_at(state.cursor);
+        ui.histogram(
+            ui.clip_rect.width() - 20.0,
+            50.0,
+            32.0,
+            0.0,
+            after.iter().chain(before.iter()),
+            len,
+        )
+    });
 }
 
 macro_rules! register_editor_views {
@@ -107,8 +111,8 @@ impl Plugin for EditorPlugin {
         })
         .add_plugins((
             ConsolePlugin {
-                also_log_to_stderr: true,
-                level: Level::TRACE,
+                also_log_to_stderr: false,
+                level: Level::DEBUG,
                 ..Default::default()
             },
             RenderDebugUi,
@@ -116,10 +120,8 @@ impl Plugin for EditorPlugin {
         .insert_resource(self.camera_settings)
         .init_resource::<UiState>()
         .insert_resource(ViewPort {
-            view_size: INITIAL_WINDOW_SIZE.as_uvec2(),
-            scissor_size: INITIAL_WINDOW_SIZE.as_uvec2(),
-            view_pos: IVec2::ZERO,
-            scissor_pos: UVec2::ZERO,
+            rect: Rect::from_corners(Vec2::ZERO, INITIAL_WINDOW_SIZE),
+            visible_rect: Rect::from_corners(Vec2::ZERO, INITIAL_WINDOW_SIZE),
             focused: true,
         })
         .insert_resource(AssetDND(None))

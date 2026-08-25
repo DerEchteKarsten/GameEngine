@@ -22,8 +22,7 @@ use glam::{Vec2, Vec4};
 use crate::{
     bindings::UIVertex,
     ui::{
-        builder::UiWindowBuilder,
-        new_ui::{Draggable, FocusedState, MultiInput, UiContext, from_pos_size},
+        Draggable, FocusedState, MultiInput, UiContext, builder::UiWindowBuilder, from_pos_size,
         scrollable::Scrollable,
     },
 };
@@ -193,20 +192,19 @@ impl TabState {
         parent_window: &UiWindow,
         mut focused_state: Option<&'s mut FocusedState>,
         label: &str,
-        buttons: Res<'w, ButtonInput<MouseButton>>,
         ctx: Res<'w, UiContext>,
+        input: MultiInput,
         window: &Window,
-        touch: Res<'w, Touches>,
         scroll: Res<'w, AccumulatedMouseScroll>,
         keys: &mut MessageReader<'w, 's, KeyboardInput>,
         shift: bool,
         ctrl: bool,
+        hovered: bool,
         f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>) -> R,
     ) -> Option<R> {
         let mut id = DefaultHasher::new();
         label.hash(&mut id);
         let id = id.finish();
-        let viewport_size = window.physical_size().as_vec2();
 
         let r = UiContext::WINDOW_ROUNDING as f32;
         let b = UiContext::BORDER as f32;
@@ -215,7 +213,6 @@ impl TabState {
         let header_h =
             (UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
         let focused = parent_window.focused.is_some();
-        let input = MultiInput::new(&window, &buttons, &touch);
 
         let content_area = Rect {
             min: parent_window.rect.min + Vec2::new(0.0, header_h),
@@ -240,14 +237,15 @@ impl TabState {
             - rmb
             - bar_size.x;
 
+        let viewport_size = window.physical_size().as_vec2();
         let mut builder = UiWindowBuilder {
             max_width,
             window_id: id,
+            hovered,
             scroll_delta: scroll.delta,
             content_max: cursor,
             focuse_next: false,
             line_height: 0.0,
-            ctx,
             clip_rect,
             window: self,
             viewport_size,
@@ -263,6 +261,7 @@ impl TabState {
             ctrl,
             shift,
             hovered_smth: false,
+            disabled: false,
             focused: &mut focused_state,
         };
 
@@ -285,7 +284,7 @@ impl TabState {
             &mut focused_state,
             viewport_size,
             input.cursor_pos,
-            input.left_mouse_pressed,
+            input.primary_pressed,
             parent_window.rect,
         );
         self.content_scroll = content_scroll;
