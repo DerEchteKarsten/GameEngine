@@ -1,4 +1,4 @@
-use bevy::app::{App, PreUpdate, Update};
+use bevy::app::{App, PreUpdate};
 
 use crate::physics::bvh::{SceneBvh, update_bvh};
 

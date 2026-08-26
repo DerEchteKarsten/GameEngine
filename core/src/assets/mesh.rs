@@ -9,35 +9,29 @@ use bevy::{
     reflect::TypePath,
     tasks::{AsyncComputeTaskPool, ParallelSlice},
 };
-use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut, try_cast_vec};
-use core::slice;
-use futures::{AsyncReadExt, AsyncWriteExt, future::JoinAll};
-use glam::{Mat4, Vec2, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
+use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
+use futures::{AsyncReadExt, AsyncWriteExt};
+use glam::{Mat4, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
 use itertools::Itertools;
 use lava::{
-    buffer::{Buffer, slice::BufferSlice},
+    buffer::Buffer,
     state::Ctx,
 };
 use meshopt::{
-    SimplifyOptions, VertexDataAdapter, VertexStream, build_meshlets, generate_position_remap,
-    generate_vertex_remap_multi, simplify_with_attributes_and_locks,
+    SimplifyOptions, VertexDataAdapter, build_meshlets, generate_position_remap, simplify_with_attributes_and_locks,
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
-use std::{alloc::Layout, collections::HashMap, ops::Range};
-use std::{mem::ManuallyDrop, sync::Arc};
+use std::{collections::HashMap, ops::Range};
+use std::mem::ManuallyDrop;
 use tracing::debug_span;
-use tracing_log::log;
 
 use crate::{
     assets::{material::Material, read_slice, read_slice_to_buffer, read_u64, write_slice},
     bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex},
-    physics::{
-        self,
-        bvh::{
+    physics::bvh::{
             ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
         },
-    },
     render::world::UploadQueue,
 };
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
@@ -283,7 +277,7 @@ impl AssetLoader for MeshLoader {
             let len = read_u64(reader).await? as usize;
 
             let buffer = Buffer::new(len, false).unwrap();
-            let mut slice = buffer.range(..);
+            let slice = buffer.range(..);
             let address = buffer.address;
 
             let mut data = if Ctx::features().rebar {
@@ -300,7 +294,7 @@ impl AssetLoader for MeshLoader {
                 .await?;
             unsafe { data.set_len(data.capacity()) };
 
-            let bvh_node_count = (header.meshlet_offset as usize / size_of::<BvhNode>());
+            let bvh_node_count = header.meshlet_offset as usize / size_of::<BvhNode>();
             for i in 0..bvh_node_count {
                 let node: &mut BvhNode = bytemuck::from_bytes_mut(
                     &mut data[i * size_of::<BvhNode>()..(i + 1) * size_of::<BvhNode>()],
@@ -588,7 +582,7 @@ impl MeshletMesh {
             bvh.add_lod(first_group, &all_groups);
         }
 
-        let (bvh, aabb, depth) = bvh.build(&mut meshlets, all_groups, &mut cull_data);
+        let (bvh, aabb, _depth) = bvh.build(&mut meshlets, all_groups, &mut cull_data);
 
         let mut leafs = indices
             .iter()

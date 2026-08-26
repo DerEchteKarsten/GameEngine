@@ -1,49 +1,44 @@
-use std::{ops::DerefMut, sync::Arc};
 
 use crate::{
-    assets::mesh::{GpuMesh, Scene},
+    assets::mesh::GpuMesh,
     editor::{
-        gizzmos::{ArrowGizzmo, DrawGizzmos, SphereGizzmo},
+        dragndrop::EntityDragAndDropProvider,
+        gizzmos::{ArrowGizzmo, DrawGizzmos},
         viewport::ViewPortProxy,
     },
     physics::bvh::Raycast,
-    render::world::InstanceFlags,
     scene::{Instance, camera::Camera},
     ui::{
-        MultiInput,
+        MultiInput, UiContext,
         builder::{UiBuilder, UiWindowBuilder},
     },
 };
 use bevy::{
-    asset::{AssetId, Assets, Handle, StrongHandle},
+    asset::Assets,
     ecs::{
-        archetype::Archetypes,
-        component::{Component, ComponentId},
-        entity::{Entities, Entity},
+        component::Component,
+        entity::Entity,
         hierarchy::{ChildOf, Children},
         name::Name,
         query::{Has, With},
-        reflect::{AppTypeRegistry, ReflectComponent},
-        resource::Resource,
-        system::{Commands, Local, Query, Res, ResMut, Single},
-        world::{EntityRef, Mut, World},
+        reflect::ReflectComponent,
+        system::{Commands, Local, Query, Res, Single},
     },
     input::{
         ButtonInput,
-        keyboard::{KeyCode, KeyboardInput},
-        mouse::{AccumulatedMouseMotion, MouseButton},
+        keyboard::KeyCode,
+        mouse::MouseButton,
         touch::Touches,
     },
-    log,
     math::{Dir3A, bounding::RayCast3d},
-    reflect::{PartialReflect, Reflect, ReflectMut, TypeRegistry},
+    reflect::Reflect,
     transform::{
         commands::BuildChildrenTransformExt,
         components::{GlobalTransform, Transform},
     },
     window::Window,
 };
-use glam::{Affine3A, Mat3A, Mat4, Quat, Vec2, Vec3, Vec3Swizzles, Vec4};
+use glam::{Vec2, Vec3};
 
 #[derive(Component, Reflect)]
 #[component(storage = "SparseSet")]
@@ -63,28 +58,54 @@ pub(crate) fn hierarchy_ui(
     )>,
     selected: Query<Entity, With<Selected>>,
     keys: Res<ButtonInput<KeyCode>>,
+    dragndrop: Res<EntityDragAndDropProvider>,
 ) {
     ui.build("Hierarchy", |ui| {
         if ui.button("insert") {
             cmd.spawn(Transform::default());
         }
 
-        let mut roots: Vec<Entity> = instances
-            .iter()
-            .filter(|(_, _, _, _, parent, _)| parent.is_none())
-            .map(|(e, _, _, _, _, _)| e)
-            .collect();
+        ui.droppable(
+            &mut cmd,
+            || dragndrop.drop_valid(),
+            |ui, cmd| {
+                let mut roots: Vec<Entity> = instances
+                    .iter()
+                    .filter(|(_, _, _, _, parent, _)| parent.is_none())
+                    .map(|(e, _, _, _, _, _)| e)
+                    .collect();
 
-        roots.sort();
+                roots.sort();
 
-        for root in roots {
-            draw_entity_node(&mut cmd, ui, root, &mut instances, &selected);
-        }
-        if keys.just_pressed(KeyCode::Delete) && ui.focused.is_some() {
-            for e in selected {
-                cmd.entity(e).despawn();
-            }
-        }
+                let mut content_max = ui.content_max;
+                for root in roots {
+                    draw_entity_node(
+                        cmd,
+                        ui,
+                        root,
+                        &mut instances,
+                        &selected,
+                        &dragndrop,
+                        &mut content_max,
+                    );
+                }
+                ui.content_max = ui.content_max.max(content_max);
+                if keys.just_pressed(KeyCode::Delete) && ui.ctx.focused.is_some() {
+                    for e in selected {
+                        cmd.entity(e).despawn();
+                    }
+                }
+                ui.content_max = ui
+                    .content_max
+                    .max(ui.clip_rect.size() - UiContext::WINDOW_PAD.as_vec2());
+            },
+            |cmd| {
+                let entity = dragndrop.drop();
+                if let Some(entity) = entity {
+                    cmd.entity(entity).remove_parent_in_place();
+                }
+            },
+        );
     });
 }
 
@@ -101,6 +122,8 @@ fn draw_entity_node(
         Option<&Instance>,
     )>,
     selected: &Query<Entity, With<Selected>>,
+    dragndrop: &EntityDragAndDropProvider,
+    content_max: &mut Vec2,
 ) {
     let Ok((_, is_selected, name, children, _, instance)) = instances.get(this_entity) else {
         return;
@@ -116,29 +139,65 @@ fn draw_entity_node(
     } else {
         format!("Entity {}", this_entity.index())
     };
+    let has_children = children.is_some();
+
     ui.disabled(!is_selected);
-    if children.is_some() {
-        ui.collapsable(label, |ui| {
-            let Ok((_, _, _, children, _, _)) = instances.get(this_entity) else {
-                return;
-            };
-            let mut children = children
-                .as_ref()
-                .unwrap()
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            children.sort();
-            for child in children {
-                draw_entity_node(cmd, ui, child, instances, selected);
-            }
-        });
-    } else {
-        ui.text(label);
-    }
+    ui.draggable(
+        this_entity,
+        |ui, state| {
+            ui.droppable(
+                cmd,
+                || dragndrop.drop_valid(),
+                |ui, cmd| {
+                    ui.content_max = if has_children {
+                        ui.collapsable(&label, |ui| {
+                            let size = ui.content_max;
+                            let Ok((_, _, _, children, _, _)) = instances.get(this_entity) else {
+                                return size;
+                            };
+                            let mut children = children
+                                .as_ref()
+                                .unwrap()
+                                .iter()
+                                .copied()
+                                .collect::<Vec<_>>();
+                            children.sort();
+                            for child in children {
+                                draw_entity_node(
+                                    cmd,
+                                    ui,
+                                    child,
+                                    instances,
+                                    selected,
+                                    dragndrop,
+                                    content_max,
+                                );
+                            }
+                            *content_max = content_max.max(ui.content_max);
+                            size
+                        })
+                        .unwrap_or(ui.content_max)
+                    } else {
+                        ui.text(&label);
+                        ui.content_max
+                    };
+                },
+                |cmd| {
+                    if let Some(entity) = dragndrop.drop()
+                        && entity != this_entity
+                    {
+                        cmd.entity(entity).set_parent_in_place(this_entity);
+                    }
+                },
+            );
+
+            dragndrop.drag(state, this_entity);
+        },
+        |ui| ui.text(&label),
+    );
     ui.disabled(true);
 
-    if ui.prev_element_hoverd && ui.input.primary_pressed {
+    if ui.prev_element_hoverd && ui.ctx.input.primary_pressed {
         for e in selected {
             cmd.entity(e).remove::<Selected>();
         }
@@ -182,7 +241,7 @@ pub(crate) fn picking(
         *local = None;
     }
 
-    if let Some((entity, global_transform, instance, mut transform)) = picked.iter_mut().next() {
+    if let Some((_entity, global_transform, instance, mut transform)) = picked.iter_mut().next() {
         if let Some(drag) = local.as_ref() {
             if let Some(pos) = input.cursor_pos {
                 let t = drag.start_t

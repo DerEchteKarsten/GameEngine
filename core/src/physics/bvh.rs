@@ -1,19 +1,17 @@
-use std::{process::Child, slice::Iter};
 
 use bevy::{
     ecs::system::{SystemParam, lifetimeless::Read},
     math::{
         VectorSpace,
-        bounding::{Aabb3d, BoundingVolume, IntersectsVolume, RayCast3d},
+        bounding::{Aabb3d, BoundingVolume, RayCast3d},
     },
     prelude::*,
 };
 use bytemuck::{Pod, Zeroable, bytes_of};
 use itertools::Itertools;
-use tracing_log::log;
 
 use crate::{
-    assets::{material::Material, mesh::GpuMesh, mesh::Scene},
+    assets::mesh::GpuMesh,
     editor::gizzmos::{BoxGizzmo, DrawGizzmos},
     render::render::RenderSettings,
     scene::Instance,
@@ -110,10 +108,10 @@ impl NodeBuilder {
         self.child_offset += 1;
         self
     }
-    fn push_leaf_child(mut self, data: HasLeaf, aabb: Aabb3d) -> Self {
+    fn push_leaf_child(self, data: HasLeaf, aabb: Aabb3d) -> Self {
         self.push_child(Some(ChildData::HasLeaf(data)), ChildType::HasLeaf, aabb)
     }
-    fn push_blas_child(mut self, data: HasBlas, aabb: Aabb3d) -> Self {
+    fn push_blas_child(self, data: HasBlas, aabb: Aabb3d) -> Self {
         self.push_child(Some(ChildData::HasBlas(data)), ChildType::HasBlas, aabb)
     }
     fn push_node_child(self, data: HasNode, aabb: Aabb3d) -> Self {
@@ -211,7 +209,7 @@ impl<'a> Iterator for &mut ChildIter<'a> {
     type Item = (ChildData, Aabb3d);
     fn next(&mut self) -> Option<Self::Item> {
         if self.child >= 8 {
-            let offset = self.view.offset + self.data_offset;
+            let _offset = self.view.offset + self.data_offset;
             return None;
         }
         let stype = self.view.get_type(self.child);

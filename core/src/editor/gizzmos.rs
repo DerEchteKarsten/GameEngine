@@ -5,28 +5,21 @@ use crate::{
         DrawAabbs, DrawAabbsBindings, DrawArrows, DrawArrowsBindings, DrawSpheres,
         DrawSpheresBindings, Gizzmo,
     },
-    editor::{
-        selected::ReflectEditorView,
-        viewport::{ViewPort, ViewPortProxy},
-    },
+    editor::viewport::{ViewPort, ViewPortProxy},
     render::{
         FRAMES_IN_FLIGHT, MainWorld,
         render::{FrameCount, RenderCamera, Swapchain},
     },
     scene::camera::Camera,
-    ui::builder::UiBuilder,
 };
 use bevy::{
     ecs::{
-        component::Component,
         resource::Resource,
         system::{
-            Commands, Local, Query, Res, ResMut, Single, SystemParam, SystemState,
-            lifetimeless::{Read, Write},
+            Commands, Local, Res, ResMut, Single, SystemParam, SystemState,
+            lifetimeless::Read,
         },
     },
-    input::mouse::AccumulatedMouseMotion,
-    reflect::{PartialReflect, ReflectMut, TypeInfo, TypeRegistry},
     transform::components::GlobalTransform,
 };
 use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4};

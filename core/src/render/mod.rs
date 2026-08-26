@@ -1,17 +1,12 @@
-use crate::{
-    render::{
+use crate::render::{
         render::{
-            CommandPools, RenderDebugUi, RenderPassesPlugin, Swapchain, SynchronizationResources,
-            aquire_swapchain_image, init_render, render, resize_swapchain, wait_frames_in_flight,
+            RenderPassesPlugin, resize_swapchain,
         },
-        world::{InstanceManager, UploadQueue, WorldPlugin, init_world},
-    },
-    scene::camera::Camera,
-};
+        world::WorldPlugin,
+    };
 use async_std::channel::{Receiver, Sender};
 use bevy::{
     app::{App, AppExit, AppLabel, Plugin, PreStartup, SubApp},
-    asset::AssetServer,
     ecs::{
         change_detection::Mut,
         query::With,
@@ -20,31 +15,15 @@ use bevy::{
             IntoScheduleConfigs, MainThreadExecutor, Schedule, ScheduleBuildSettings,
             ScheduleLabel, Schedules, SystemSet,
         },
-        system::{Commands, Local, Query, Res, ResMut, Single},
+        system::Single,
         world::World,
     },
     log,
     tasks::ComputeTaskPool,
-    time::Time,
     utils::default,
     window::{PrimaryWindow, RawHandleWrapperHolder},
 };
-use glam::Vec4;
-use lava::{
-    buffer::Buffer,
-    command_buffer::RasterVertexDispatch,
-    image::{
-        Image,
-        format::{D32Sfloat, R32G32B32A32Sfloat},
-        slice::{AsImage, ImageSlice},
-        usage::{ColorAttachmentSampled, DepthAttachmentSampled},
-    },
-    state::Ctx,
-    vkobjects::{
-        self,
-        queue::{Binary, CommandBufferMemory, CommandPool, Semaphore, Timeline},
-    },
-};
+use lava::image::slice::AsImage;
 use std::ops::{Deref, DerefMut};
 
 pub mod extract_param;

@@ -3,22 +3,21 @@ use std::f32::consts::PI;
 use bevy::{
     ecs::{
         component::Component,
-        message::MessageReader,
         query::With,
         resource::Resource,
-        system::{Local, Query, Res, ResMut, Single},
+        system::{Local, Query, Res, Single},
     },
     input::{
-        ButtonInput, ButtonState,
+        ButtonInput,
         keyboard::KeyCode,
-        mouse::{AccumulatedMouseMotion, MouseButton, MouseButtonInput},
+        mouse::{AccumulatedMouseMotion, MouseButton},
     },
-    reflect::{self, Reflect},
+    reflect::Reflect,
     time::Time,
-    transform::components::{GlobalTransform, Transform},
-    window::{CursorGrabMode, CursorOptions, Window},
+    transform::components::Transform,
+    window::{CursorGrabMode, CursorOptions},
 };
-use glam::{Mat4, Quat, Vec3};
+use glam::{Quat, Vec3};
 
 use crate::{editor::viewport::ViewPortProxy, scene::camera::Camera};
 
@@ -35,9 +34,9 @@ use bevy::ecs::reflect::ReflectComponent;
 pub struct EditorCamera;
 
 pub fn update_camera(
-    mut settings: Res<CameraSettings>,
+    settings: Res<CameraSettings>,
     mouse_motion: Res<AccumulatedMouseMotion>,
-    mut mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     vp: ViewPortProxy,
     mut camera: Query<(&mut Camera, &mut Transform), With<EditorCamera>>,
@@ -46,7 +45,7 @@ pub fn update_camera(
     mut cursor: Single<&mut CursorOptions>,
 ) {
     let delta_time = time.delta_secs();
-    let Ok((mut camera, mut transform)) = camera.single_mut() else {
+    let Ok((_camera, mut transform)) = camera.single_mut() else {
         return;
     };
 

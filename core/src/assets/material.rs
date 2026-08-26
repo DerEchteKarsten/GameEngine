@@ -1,5 +1,4 @@
 use bytemuck::{Pod, Zeroable};
-use lava::bindless::BindlessHandle;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]

@@ -4,30 +4,19 @@
 #![feature(lock_value_accessors)]
 #![feature(integer_casts)]
 
-use std::{
-    any::type_name,
-    mem::offset_of,
-    ops::{Deref, DerefMut},
-    time::{Duration, Instant},
-};
 
 #[cfg(feature = "bevy_window")]
 use bevy::a11y::AccessibilityPlugin;
 use bevy::{
     a11y::AccessibilityPlugin,
-    app::{App, AppLabel, PanicHandlerPlugin, TaskPoolPlugin},
+    app::{App, PanicHandlerPlugin, TaskPoolPlugin},
     asset::{AssetMode, AssetPlugin},
-    diagnostic::{DiagnosticsPlugin, FrameCountPlugin},
-    ecs::{
-        schedule::{ScheduleBuildSettings, ScheduleLabel},
-        system::NonSendMarker,
-    },
+    diagnostic::DiagnosticsPlugin,
     input::InputPlugin,
-    log::{Level, LogPlugin},
     time::TimePlugin,
     transform::TransformPlugin,
-    window::{PrimaryWindow, Window, WindowPlugin, WindowResized, WindowResolution},
-    winit::{WinitPlugin, WinitWindows},
+    window::{PrimaryWindow, Window, WindowPlugin, WindowResolution},
+    winit::WinitPlugin,
 };
 use bevy::{
     app::Startup,
@@ -36,11 +25,9 @@ use bevy::{
         query::With,
         system::{Commands, Single},
     },
-    window::{CursorIcon, RawHandleWrapperHolder, SystemCursorIcon, WindowTheme},
+    window::{CursorIcon, SystemCursorIcon},
 };
-use bytemuck::{Pod, Zeroable};
-use glam::{Vec2, Vec4};
-use lava::{command_buffer::RasterVertexDispatch, state::Ctx};
+use glam::Vec2;
 
 mod bindings;
 pub mod physics;
@@ -49,9 +36,9 @@ use crate::{
     assets::MeshAssets,
     editor::EditorPlugin,
     physics::PhysicsPlugin,
-    render::{PipelinedRenderingPlugin, RenderPlugin, render::RenderDebugUi, world::InstanceFlags},
-    scene::{Instance, ScenePlugin, SpawnScene, camera::Camera},
-    ui::{UiPlugin, UiResources, builder::UiBuilder},
+    render::{PipelinedRenderingPlugin, RenderPlugin},
+    scene::ScenePlugin,
+    ui::UiPlugin,
 };
 
 pub mod assets;

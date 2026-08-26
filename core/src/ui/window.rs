@@ -2,17 +2,14 @@ use std::{
     collections::{HashMap, HashSet},
     f32::consts::PI,
     hash::{DefaultHasher, Hash, Hasher},
-    num::NonZeroU64,
     sync::Mutex,
 };
 
 use bevy::{
     ecs::{message::MessageReader, system::Res},
     input::{
-        ButtonInput,
         keyboard::KeyboardInput,
-        mouse::{AccumulatedMouseScroll, MouseButton},
-        touch::Touches,
+        mouse::AccumulatedMouseScroll,
     },
     math::Rect,
     window::Window,
@@ -22,7 +19,9 @@ use glam::{Vec2, Vec4};
 use crate::{
     bindings::UIVertex,
     ui::{
-        Draggable, FocusedState, MultiInput, UiContext, builder::UiWindowBuilder, from_pos_size,
+        Draggable, FocusedState, MultiInput, UiContext,
+        builder::{UiWindowBuilder, UiWindowContext},
+        from_pos_size,
         scrollable::Scrollable,
     },
 };
@@ -192,7 +191,6 @@ impl TabState {
         parent_window: &UiWindow,
         mut focused_state: Option<&'s mut FocusedState>,
         label: &str,
-        ctx: Res<'w, UiContext>,
         input: MultiInput,
         window: &Window,
         scroll: Res<'w, AccumulatedMouseScroll>,
@@ -238,31 +236,34 @@ impl TabState {
             - bar_size.x;
 
         let viewport_size = window.physical_size().as_vec2();
-        let mut builder = UiWindowBuilder {
-            max_width,
-            window_id: id,
-            hovered,
-            scroll_delta: scroll.delta,
-            content_max: cursor,
-            focuse_next: false,
-            line_height: 0.0,
-            clip_rect,
+        let ctx = UiWindowContext {
             window: self,
-            viewport_size,
-            cursor,
-            cursor_origin: cursor,
-            prev_element_hoverd: true,
-            prev_element: content_area,
-            input,
-            direction: false,
-            scroll_consumed: false,
-            prev_cursor: cursor,
+            focused: &mut focused_state,
             keys,
+            window_id: id,
+            viewport_size,
+            input,
+            max_width,
             ctrl,
             shift,
+            hovered,
+        };
+        let mut builder = UiWindowBuilder {
+            ctx,
+            clip_rect,
+            focuse_next: false,
+            scroll_delta: scroll.delta,
+            line_height: 0.0,
+            content_max: cursor,
+            prev_cursor: cursor,
+            cursor,
+            cursor_origin: cursor,
+            prev_element: content_area,
+            prev_element_hoverd: true,
+            direction: false,
             hovered_smth: false,
+            scroll_consumed: false,
             disabled: false,
-            focused: &mut focused_state,
         };
 
         let r = f(&mut builder);
@@ -276,6 +277,7 @@ impl TabState {
             self.content_scroll
                 .scroll(scroll.delta, content_area.size());
         }
+        self.content_scroll.clamp_scroll(content_area.size());
         let mut content_scroll = self.content_scroll;
         content_scroll.update_and_draw(
             Draggable::TabScrollHandle,

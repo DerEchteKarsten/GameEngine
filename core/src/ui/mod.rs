@@ -51,8 +51,7 @@ use std::{
     fs,
     num::NonZeroU64,
     range::Range,
-    sync::{Mutex, atomic::AtomicU32},
-    vec::IntoIter,
+    sync::Mutex,
 };
 
 use anyhow::Result;

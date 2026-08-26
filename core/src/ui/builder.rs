@@ -18,7 +18,7 @@ use bevy::{
     reflect::Reflect,
     window::Window,
 };
-use glam::{UVec2, Vec2, Vec4};
+use glam::{Vec2, Vec4};
 use itertools::Itertools;
 
 use crate::{
@@ -36,7 +36,6 @@ pub struct UiBuilder<'w, 's> {
     mouse: Res<'w, ButtonInput<MouseButton>>,
     touch: Res<'w, Touches>,
     scroll: Res<'w, AccumulatedMouseScroll>,
-    ctx: Res<'w, UiContext>,
     windows: Res<'w, UiWindows>,
     keys: MessageReader<'w, 's, KeyboardInput>,
     keyspressed: Res<'w, ButtonInput<KeyCode>>,
@@ -79,11 +78,10 @@ impl<'s, 'w> UiBuilder<'w, 's> {
         };
         let window = window.unwrap();
 
-        let ctx = Res::clone(&self.ctx);
         let scroll = Res::clone(&self.scroll);
         let shift = self.keyspressed.pressed(KeyCode::ShiftLeft)
             || self.keyspressed.pressed(KeyCode::ShiftRight);
-        let strg = self.keyspressed.pressed(KeyCode::ControlLeft)
+        let ctrl = self.keyspressed.pressed(KeyCode::ControlLeft)
             || self.keyspressed.pressed(KeyCode::ControlRight);
 
         let Ok(mut state) = tab.state.lock() else {
@@ -100,13 +98,12 @@ impl<'s, 'w> UiBuilder<'w, 's> {
             window,
             focused_state,
             &tab.label,
-            ctx,
             input,
             &self.window,
             scroll,
             &mut self.keys,
             shift,
-            strg,
+            ctrl,
             hovered,
             f,
         );
@@ -167,33 +164,38 @@ impl TextCursor {
     }
 }
 
-pub struct UiWindowBuilder<'a, 'w, 's> {
-    pub clip_rect: Rect,
-    pub max_width: f32,
+pub struct UiWindowContext<'a, 'w, 's> {
     pub window: &'a mut TabState,
     pub focused: &'a mut Option<&'s mut FocusedState>,
-    pub window_id: u64,
     pub keys: &'a mut MessageReader<'w, 's, KeyboardInput>,
-
-    pub hovered: bool,
+    pub window_id: u64,
+    pub viewport_size: Vec2,
+    pub input: MultiInput,
+    pub max_width: f32,
     pub ctrl: bool,
     pub shift: bool,
-    pub focuse_next: bool,
-    pub scroll_delta: Vec2,
-    pub viewport_size: Vec2,
+    pub hovered: bool,
+}
 
-    pub input: MultiInput,
+pub struct UiWindowBuilder<'a, 'w, 's> {
+    pub ctx: UiWindowContext<'a, 'w, 's>,
 
-    pub line_height: f32,
-    pub content_max: Vec2,
-    pub prev_cursor: Vec2,
+    // Layout
+    pub clip_rect: Rect,
     pub cursor: Vec2,
     pub cursor_origin: Vec2,
+    pub prev_cursor: Vec2,
     pub prev_element: Rect,
     pub prev_element_hoverd: bool,
+    pub line_height: f32,
+    pub content_max: Vec2,
     pub direction: bool,
-    pub hovered_smth: bool,
+
+    // Interaction
+    pub focuse_next: bool,
+    pub scroll_delta: Vec2,
     pub scroll_consumed: bool,
+    pub hovered_smth: bool,
     pub disabled: bool,
 }
 
@@ -260,40 +262,34 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     fn id(&self, h: &impl Hash) -> NonZeroU64 {
         let mut hash = DefaultHasher::new();
         h.hash(&mut hash);
-        self.window_id.hash(&mut hash);
+        self.ctx.window_id.hash(&mut hash);
         NonZeroU64::new(hash.finish()).unwrap()
     }
 
     fn element_clicked(&self, rect: Rect) -> bool {
-        self.hoverd(rect) && self.input.primary_pressed
+        self.hoverd(rect) && self.ctx.input.primary_pressed
     }
 
     fn hoverd(&self, rect: Rect) -> bool {
         Self::hoverdp(
             rect,
             self.clip_rect,
-            self.input.cursor_pos,
+            self.ctx.input.cursor_pos,
             self.hovered_smth,
-        ) && self.focused.is_some()
+        ) && self.ctx.focused.is_some()
     }
 
     fn hoverdp(rect: Rect, clip: Rect, cursor_pos: Option<Vec2>, hovered_smth: bool) -> bool {
-        let clipped_rect = rect.intersect(clip);
-        if let Some(mouse_pos) = cursor_pos
-            && clipped_rect.contains(mouse_pos)
-            && !hovered_smth
-        {
-            true
-        } else {
-            false
-        }
+        cursor_pos
+            .map(|pos| rect.intersect(clip).contains(pos) && !hovered_smth)
+            .unwrap_or(false)
     }
 
     pub fn rect(&mut self, size: Vec2, ds: DrawSettings) {
-        self.window.draw_box(
+        self.ctx.window.draw_box(
             from_pos_size(self.cursor, size),
             ds,
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
         );
         self.finish_element(size, false);
@@ -335,11 +331,11 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         if self.begin_element(size, false) {
             return;
         }
-        self.window.draw_text(
+        self.ctx.window.draw_text(
             self.cursor,
             self.text_color(),
             label.as_ref(),
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
             false,
         );
@@ -371,22 +367,15 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             return false;
         }
         let hoverd = self.hoverd(Rect::from_corners(self.cursor, self.cursor + size));
-        let clicked = self.input.primary_pressed && hoverd;
+        let clicked = self.ctx.input.primary_pressed && hoverd;
 
-        self.window.draw_box(
+        self.ctx.window.draw_box(
             from_pos_size(self.cursor, size),
             DrawSettings::new(hoverd, clicked),
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
         );
-        self.window.draw_text(
-            self.child_cursor(),
-            self.text_color(),
-            label.as_ref(),
-            self.viewport_size,
-            self.clip_rect,
-            false,
-        );
+        self.draw_text(self.child_cursor(), label, self.clip_rect, false);
         self.finish_element(size, false);
         clicked
     }
@@ -413,21 +402,22 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             ..Default::default()
         };
 
-        let hoverd = self.input.hovered(rect);
-        if self.hovered && hoverd && valid_drop_target() {
+        let hoverd = self.ctx.input.hovered(rect);
+        if self.ctx.hovered && hoverd && valid_drop_target() {
             let rect = Rect::from_corners(
                 rect.min - Vec2::new(4.0, 4.0),
                 rect.max + Vec2::new(4.0, 4.0),
             );
 
-            self.window
-                .draw_box(rect, ds, self.viewport_size, self.clip_rect);
+            self.ctx
+                .window
+                .draw_box(rect, ds, self.ctx.viewport_size, self.clip_rect);
 
-            if self.input.primary_released {
+            if self.ctx.input.primary_released {
                 on_drop(state);
             }
         }
-        self.content_max = content_max;
+        self.content_max = self.content_max.max(content_max);
     }
 
     pub fn draggable(
@@ -443,9 +433,9 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         self.content_max = Vec2::ZERO;
 
         let mut drag_state = DraggableState::default();
-        if let Some(focused) = self.focused {
+        if let Some(focused) = self.ctx.focused {
             if focused.draging == Some(Draggable::Element(id))
-                && (focused.drag_start - self.input.cursor_pos.unwrap()).length()
+                && (focused.drag_start - self.ctx.input.cursor_pos.unwrap()).length()
                     > UiContext::DRAG_THRESHHOLD
             {
                 focused.draging = Some(Draggable::DragAndDrop(id));
@@ -457,37 +447,51 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         children(self, drag_state);
         let rect = Rect::from_corners(prev, self.content_max);
 
-        if let Some(focused) = self.focused {
-            let hoverd = self.input.hovered(rect);
-            if hoverd && self.input.primary_pressed {
+        if let Some(focused) = self.ctx.focused {
+            let hoverd = self.ctx.input.hovered(rect);
+            if hoverd && self.ctx.input.primary_pressed {
                 focused.draging = Some(Draggable::Element(id));
-                focused.drag_start = self.input.cursor_pos.unwrap();
+                focused.drag_start = self.ctx.input.cursor_pos.unwrap();
             }
 
             if focused.draging == Some(Draggable::DragAndDrop(id)) {
-                let verticies = std::mem::take(&mut self.window.verticies);
-                let indicies = std::mem::take(&mut self.window.indicies);
-
-                let cursor = self.cursor;
-                self.cursor = self.input.cursor_pos.unwrap();
-                let clip_rect = self.clip_rect;
-                self.clip_rect = Rect::from_corners(Vec2::ZERO, self.viewport_size);
-                drag_icon(self);
-
-                let offset = self.window.top_verticies.len();
-                self.window.top_verticies.append(&mut self.window.verticies);
-                self.window
-                    .top_indicies
-                    .extend(self.window.indicies.drain(..).map(|i| i + offset as u32));
-
-                self.window.verticies = verticies;
-                self.window.indicies = indicies;
-                self.cursor = cursor;
-                self.clip_rect = clip_rect;
+                self.render_drag_icon(drag_icon);
             }
         }
 
+        self.content_max = self.content_max.max(content_max);
+    }
+
+    fn render_drag_icon(&mut self, drag_icon: impl FnOnce(&mut Self)) {
+        let verticies = std::mem::take(&mut self.ctx.window.verticies);
+        let indicies = std::mem::take(&mut self.ctx.window.indicies);
+
+        let cursor = self.cursor;
+        self.cursor = self.ctx.input.cursor_pos.unwrap();
+        let clip_rect = self.clip_rect;
+        self.clip_rect = Rect::from_corners(Vec2::ZERO, self.ctx.viewport_size);
+
+        let content_max = self.content_max;
+        drag_icon(self);
         self.content_max = content_max;
+
+        let offset = self.ctx.window.top_verticies.len();
+        self.ctx
+            .window
+            .top_verticies
+            .append(&mut self.ctx.window.verticies);
+        self.ctx.window.top_indicies.extend(
+            self.ctx
+                .window
+                .indicies
+                .drain(..)
+                .map(|i| i + offset as u32),
+        );
+
+        self.ctx.window.verticies = verticies;
+        self.ctx.window.indicies = indicies;
+        self.cursor = cursor;
+        self.clip_rect = clip_rect;
     }
 
     pub fn slider(&mut self, id: impl Hash, min: f32, max: f32, width: f32, value: f32) -> f32 {
@@ -504,10 +508,10 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             return value;
         }
         let slider_pos = self.cursor + Vec2::new(0.0, (line_size - slider_height) / 2.0);
-        self.window.draw_box(
+        self.ctx.window.draw_box(
             from_pos_size(slider_pos, size),
             ds,
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
         );
 
@@ -526,7 +530,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let slide = from_pos_size(slide_pos, slide_size);
 
         if self.element_clicked(slide) {
-            if let Some(f) = &mut self.focused {
+            if let Some(f) = &mut self.ctx.focused {
                 f.draging = Some(Draggable::Element(id.into()));
                 f.drag_start = self.cursor;
             }
@@ -535,16 +539,17 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         ds.color = UiContext::ACENT;
         ds.rounding = 4;
 
-        self.window
-            .draw_box(slide, ds, self.viewport_size, self.clip_rect);
+        self.ctx
+            .window
+            .draw_box(slide, ds, self.ctx.viewport_size, self.clip_rect);
 
         let mut ret = value;
-        if let Some(f) = &self.focused
+        if let Some(f) = &self.ctx.focused
             && min != max
         {
             if let Some(Draggable::Element(element)) = f.draging
                 && element == id
-                && let Some(cursor) = self.input.cursor_pos
+                && let Some(cursor) = self.ctx.input.cursor_pos
             {
                 let val = (cursor - f.drag_start).project_onto(Vec2::new(1.0, 0.0)).x;
                 ret = f32::clamp(val / width * (max - min) + min, min, max);
@@ -586,7 +591,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let text_clip = from_pos_size(text_cursor, inner_size).intersect(self.clip_rect);
 
         let mut just_focused = false;
-        let mut focused = if let Some(focused) = self.focused.as_mut() {
+        let mut focused = if let Some(focused) = self.ctx.focused.as_mut() {
             if (clicked && focused.focused != Some(id)) || self.focuse_next {
                 focused.focused = Some(id);
                 self.focuse_next = false;
@@ -625,7 +630,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let mut ds = DrawSettings::default();
         if let Some((cursor, view, selected, focused)) = &mut focused {
             ds = ds.border_color(UiContext::ACENT);
-            for key in self.keys.read() {
+            for key in self.ctx.keys.read() {
                 let has_selection = selected.start != selected.end;
                 let sel_min = selected.start.min(selected.end);
                 let sel_max = selected.start.max(selected.end);
@@ -636,11 +641,11 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 let mut navigation = false;
                 if key.key_code == KeyCode::ArrowLeft {
                     navigation = true;
-                    if has_selection && !self.shift {
+                    if has_selection && !self.ctx.shift {
                         cursor.byte_pos = sel_min;
                     } else {
                         cursor.move_left(&value);
-                        if self.ctrl {
+                        if self.ctx.ctrl {
                             while let Some(char) = cursor.ch_before(&value)
                                 && !Self::WORD_DELIMITER.contains(&char)
                                 && cursor.byte_pos != 0
@@ -651,11 +656,11 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                     }
                 } else if key.key_code == KeyCode::ArrowRight {
                     navigation = true;
-                    if has_selection && !self.shift {
+                    if has_selection && !self.ctx.shift {
                         cursor.byte_pos = sel_max;
                     } else {
                         cursor.move_right(&value);
-                        if self.ctrl {
+                        if self.ctx.ctrl {
                             while let Some(char) = cursor.ch(&value)
                                 && !Self::WORD_DELIMITER.contains(&char)
                                 && cursor.byte_pos != value.len()
@@ -680,7 +685,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                     } else {
                         cursor.delete_before(value);
                         changed = true;
-                        if self.ctrl {
+                        if self.ctx.ctrl {
                             while let Some(char) = cursor.ch_before(&value)
                                 && !Self::WORD_DELIMITER.contains(&char)
                                 && cursor.byte_pos != 0
@@ -702,7 +707,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                     } else {
                         cursor.delete_after(value);
                         changed = true;
-                        if self.ctrl {
+                        if self.ctx.ctrl {
                             while let Some(char) = cursor.ch(&value)
                                 && !Self::WORD_DELIMITER.contains(&char)
                                 && cursor.byte_pos != value.len()
@@ -714,7 +719,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                     selected.start = cursor.byte_pos;
                     selected.end = cursor.byte_pos;
                     continue;
-                } else if self.ctrl && key.key_code == KeyCode::KeyA {
+                } else if self.ctx.ctrl && key.key_code == KeyCode::KeyA {
                     selected.start = 0;
                     selected.end = value.len();
                     cursor.byte_pos = value.len();
@@ -735,7 +740,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                     cursor.insert(value, str);
                     changed = true;
                 }
-                if !self.shift {
+                if !self.ctx.shift {
                     selected.start = cursor.byte_pos;
                     selected.end = cursor.byte_pos;
                 } else if navigation {
@@ -745,22 +750,22 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
             let mut pos = -**view;
             let mut any_clicked = false;
-            for (i, c) in value.char_indices() {
-                if self.input.primary_pressing
+            for (i, _c) in value.char_indices() {
+                if self.ctx.input.primary_pressing
                     && Self::hoverdp(
                         from_pos_size(
                             text_cursor + Vec2::new(pos, 0.0),
                             UiContext::ATLAS_CELL_SIZE.as_vec2(),
                         ),
                         self.clip_rect,
-                        self.input.cursor_pos,
+                        self.ctx.input.cursor_pos,
                         self.hovered_smth,
                     )
                     && !just_focused
                 {
                     any_clicked = true;
                     cursor.byte_pos = i;
-                    if self.shift {
+                    if self.ctx.shift {
                         selected.end = i;
                     } else {
                         selected.start = i;
@@ -772,7 +777,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             if !any_clicked && clicked && !just_focused {
                 let end = value.len();
                 cursor.byte_pos = end;
-                if self.shift {
+                if self.ctx.shift {
                     selected.end = end;
                 } else {
                     selected.start = end;
@@ -792,16 +797,22 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         }
         let focused = focused.map(|(e1, e2, e3, _)| (*e1, *e2, e3.clone()));
 
-        self.window.draw_box(
+        self.ctx.window.draw_box(
             from_pos_size(self.cursor, size),
             ds,
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
         );
 
         let p = text_cursor - Vec2::new(focused.as_ref().map(|e| e.1).unwrap_or(0.0), 0.0);
-        self.window
-            .draw_text(p, text_color, &value, self.viewport_size, text_clip, false);
+        self.ctx.window.draw_text(
+            p,
+            text_color,
+            &value,
+            self.ctx.viewport_size,
+            text_clip,
+            false,
+        );
 
         if let Some((cursor, offset, selected)) = &focused {
             let x = UiContext::text_len(&value[..cursor.byte_pos]);
@@ -815,13 +826,13 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 border: None,
                 on_top: false,
             };
-            self.window.draw_box(
+            self.ctx.window.draw_box(
                 from_pos_size(
                     text_cursor + Vec2::new(x - *offset, 0.0),
                     Vec2::new(1.0, UiContext::ATLAS_CELL_SIZE.y as f32),
                 ),
                 ds,
-                self.viewport_size,
+                self.ctx.viewport_size,
                 text_clip,
             );
 
@@ -832,13 +843,13 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             let start = UiContext::text_len(&value[..start]);
             let end = UiContext::text_len(&value[..end]);
 
-            self.window.draw_box(
+            self.ctx.window.draw_box(
                 from_pos_size(
                     text_cursor + Vec2::new(start - offset, 0.0),
                     Vec2::new(end - start, UiContext::ATLAS_CELL_SIZE.y as f32),
                 ),
                 ds,
-                self.viewport_size,
+                self.ctx.viewport_size,
                 text_clip,
             );
         }
@@ -889,18 +900,19 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         }
         let rect = from_pos_size(self.cursor, size);
         let hoverd = self.hoverd(rect);
-        if self.input.primary_pressed && hoverd {
+        if self.ctx.input.primary_pressed && hoverd {
             value = !value;
         }
         let ds = DrawSettings::new(hoverd, false);
-        self.window
-            .draw_box(rect, ds, self.viewport_size, self.clip_rect);
+        self.ctx
+            .window
+            .draw_box(rect, ds, self.ctx.viewport_size, self.clip_rect);
         if value {
-            self.window.draw_text(
+            self.ctx.window.draw_text(
                 self.child_cursor(),
                 UiContext::ACENT,
                 "✓",
-                self.viewport_size,
+                self.ctx.viewport_size,
                 self.clip_rect,
                 false,
             );
@@ -930,10 +942,10 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let rect = from_pos_size(self.cursor, button_size);
         let hoverd = self.hoverd(rect);
         let open = self
+            .ctx
             .focused
             .as_ref()
-            .map(|e| e.focused == Some(id))
-            .unwrap_or(false);
+            .is_some_and(|e| e.focused == Some(id));
 
         let ds = DrawSettings {
             color: if hoverd { UiContext::S1 } else { UiContext::S0 },
@@ -942,17 +954,16 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             ..Default::default()
         };
 
-        self.window
-            .draw_box(rect, ds, self.viewport_size, self.clip_rect);
-        self.window.draw_text(
+        self.ctx
+            .window
+            .draw_box(rect, ds, self.ctx.viewport_size, self.clip_rect);
+        self.draw_text(
             self.child_cursor(),
-            self.text_color(),
             options[selected],
-            self.viewport_size,
             self.clip_rect,
             false,
         );
-        self.window.draw_text_direction(
+        self.ctx.window.draw_text_direction(
             self.child_cursor()
                 + Vec2::new(
                     sizex + UiContext::ELEMENT_GAP.x as f32,
@@ -964,7 +975,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 ),
             self.text_color(),
             "▼",
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
             if open {
                 TextDirection::Right
@@ -972,31 +983,56 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 TextDirection::Up
             },
         );
-        if hoverd && self.input.primary_pressed {
-            if let Some(f) = &mut self.focused {
-                if f.focused != Some(id) {
-                    f.focused = Some(id);
-                } else if f.focused == Some(id) {
-                    f.focused = None;
-                }
+        if hoverd && self.ctx.input.primary_pressed {
+            if let Some(f) = &mut self.ctx.focused {
+                f.focused = if f.focused == Some(id) {
+                    None
+                } else {
+                    Some(id)
+                };
             }
         }
-        if let Some(f) = &mut self.focused
+        if let Some(f) = &mut self.ctx.focused
             && f.focused == Some(id)
         {
             let mut cursor = self.cursor + Vec2::new(0.0, button_size.y);
             for (i, o) in options.iter().enumerate() {
                 let rect = from_pos_size(cursor, button_size);
                 let last = i + 1 == options.len();
-                let mut ds = DrawSettings {
-                    color: UiContext::S0,
-                    border: Some(BorderSettings {
-                        color_bottom: if last { UiContext::S2 } else { UiContext::S0 },
-                        color_top: UiContext::S0,
-                        color_left: UiContext::S2,
-                        color_right: UiContext::S2,
-                        size: UiContext::BORDER,
-                    }),
+                let hovered = self.hoverd(rect);
+                if hovered {
+                    self.hovered_smth = true;
+                    if self.ctx.input.primary_pressed {
+                        selected = i;
+                        if let Some(f) = &mut self.ctx.focused {
+                            f.focused = None;
+                        }
+                    }
+                }
+                let border = BorderSettings {
+                    color_bottom: if last {
+                        UiContext::S2
+                    } else if hovered {
+                        UiContext::S1
+                    } else {
+                        UiContext::S0
+                    },
+                    color_top: if hovered {
+                        UiContext::S1
+                    } else {
+                        UiContext::S0
+                    },
+                    color_left: UiContext::S2,
+                    color_right: UiContext::S2,
+                    size: UiContext::BORDER,
+                };
+                let ds = DrawSettings {
+                    color: if hovered {
+                        UiContext::S1
+                    } else {
+                        UiContext::S0
+                    },
+                    border: Some(border),
                     round_bottomleft: last,
                     round_bottomright: last,
                     round_topleft: false,
@@ -1004,27 +1040,12 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                     rounding: 0,
                     on_top: true,
                 };
-                if self.hoverd(rect) {
-                    self.hovered_smth = true;
-                    ds.color = UiContext::S1;
-                    ds.border.as_mut().unwrap().color_top = UiContext::S1;
-                    if !last {
-                        ds.border.as_mut().unwrap().color_bottom = UiContext::S1;
-                    }
-                    if self.input.primary_pressed {
-                        selected = i;
-                        if let Some(f) = &mut self.focused {
-                            f.focused = None;
-                        }
-                    }
-                }
-                self.window
-                    .draw_box(rect, ds, self.viewport_size, self.clip_rect);
-                self.window.draw_text(
+                self.ctx
+                    .window
+                    .draw_box(rect, ds, self.ctx.viewport_size, self.clip_rect);
+                self.draw_text(
                     (cursor + Self::child_offset()).round(),
-                    self.text_color(),
                     o,
-                    self.viewport_size,
                     self.clip_rect,
                     true,
                 );
@@ -1041,6 +1062,17 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         } else {
             UiContext::TEXT
         }
+    }
+
+    fn draw_text(&mut self, pos: Vec2, text: impl AsRef<str>, clip: Rect, on_top: bool) {
+        self.ctx.window.draw_text(
+            pos,
+            self.text_color(),
+            text.as_ref(),
+            self.ctx.viewport_size,
+            clip,
+            on_top,
+        );
     }
 
     pub fn collapsable<R>(
@@ -1061,15 +1093,14 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let hoverd = self.hoverd(rect);
 
         let text_cursor = self.child_cursor();
-        if hoverd && self.input.primary_pressed {
-            if self.window.open_headers.contains(&id.into()) {
-                self.window.open_headers.remove(&id.into());
-            } else {
-                self.window.open_headers.insert(id.into());
+        if hoverd && self.ctx.input.primary_pressed {
+            let headers = &mut self.ctx.window.open_headers;
+            if !headers.insert(id.into()) {
+                headers.remove(&id.into());
             }
         }
 
-        let open = !self.window.open_headers.contains(&id.into());
+        let open = !self.ctx.window.open_headers.contains(&id.into());
 
         if !open {
             if self.begin_element(size, false) {
@@ -1077,14 +1108,14 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             }
         }
 
-        self.window.draw_box(
+        self.ctx.window.draw_box(
             rect,
             DrawSettings::new(hoverd, false),
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
         );
 
-        self.window.draw_text_direction(
+        self.ctx.window.draw_text_direction(
             text_cursor
                 + if !open {
                     Vec2::new(0.0, UiContext::ATLAS_CELL_SIZE.x as f32 * 1.5)
@@ -1093,7 +1124,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 },
             self.text_color(),
             "▼",
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect.intersect(rect),
             if open {
                 TextDirection::Right
@@ -1102,16 +1133,14 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             },
         );
 
-        self.window.draw_text(
+        self.draw_text(
             Vec2::new(
                 text_cursor.x
                     + UiContext::ATLAS_CELL_SIZE.x as f32
                     + UiContext::ELEMENT_GAP.x as f32 * 2.0,
                 text_cursor.y,
             ),
-            self.text_color(),
-            label.as_ref(),
-            self.viewport_size,
+            label,
             self.clip_rect.intersect(rect),
             false,
         );
@@ -1130,7 +1159,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     }
 
     pub fn remaining_width(&self) -> f32 {
-        (self.cursor_origin.x + self.max_width - self.cursor.x).max(0.0)
+        (self.cursor_origin.x + self.ctx.max_width - self.cursor.x).max(0.0)
     }
 
     pub fn color_picker(&mut self, id: impl Hash, color: Vec4) -> Vec4 {
@@ -1166,27 +1195,26 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let id_hue = NonZeroU64::new(id.get() + 1).unwrap();
         let id_alpha = NonZeroU64::new(id.get() + 2).unwrap();
 
-        if let Some(cursor_pos) = self.input.cursor_pos {
-            if self.input.primary_pressing {
-                if let Some(f) = &mut self.focused {
-                    if self.input.primary_pressed {
-                        let sv_rect = Rect::from_corners(sv_pos, sv_pos + Vec2::splat(picker_size));
-                        let hue_rect = Rect::from_corners(
-                            hue_pos,
-                            hue_pos + Vec2::new(bar_width, picker_size),
-                        );
-                        let alpha_rect = Rect::from_corners(
-                            alpha_pos,
-                            alpha_pos + Vec2::new(bar_width, picker_size),
-                        );
-                        if sv_rect.contains(cursor_pos) {
-                            f.draging = Some(Draggable::Element(id_sv));
-                        } else if hue_rect.contains(cursor_pos) {
-                            f.draging = Some(Draggable::Element(id_hue));
-                        } else if alpha_rect.contains(cursor_pos) {
-                            f.draging = Some(Draggable::Element(id_alpha));
-                        }
+        if let Some(cursor_pos) = self.ctx.input.cursor_pos
+            && self.ctx.input.primary_pressing
+        {
+            if let Some(f) = &mut self.ctx.focused {
+                if self.ctx.input.primary_pressed {
+                    let sv_rect = Rect::from_corners(sv_pos, sv_pos + Vec2::splat(picker_size));
+                    let hue_rect =
+                        Rect::from_corners(hue_pos, hue_pos + Vec2::new(bar_width, picker_size));
+                    let alpha_rect = Rect::from_corners(
+                        alpha_pos,
+                        alpha_pos + Vec2::new(bar_width, picker_size),
+                    );
+                    if sv_rect.contains(cursor_pos) {
+                        f.draging = Some(Draggable::Element(id_sv));
+                    } else if hue_rect.contains(cursor_pos) {
+                        f.draging = Some(Draggable::Element(id_hue));
+                    } else if alpha_rect.contains(cursor_pos) {
+                        f.draging = Some(Draggable::Element(id_alpha));
                     }
+
                     if f.draging == Some(Draggable::Element(id_sv)) {
                         s = ((cursor_pos.x - sv_pos.x) / picker_size).clamp(0.0, 1.0);
                         v = 1.0 - ((cursor_pos.y - sv_pos.y) / picker_size).clamp(0.0, 1.0);
@@ -1201,7 +1229,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
         let new_color = hsv_to_rgb(h, s, v, a);
         let pure_hue = hsv_to_rgb(h, 1.0, 1.0, 1.0);
-        let half_vp = self.viewport_size / 2.0;
+        let half_vp = self.ctx.viewport_size / 2.0;
         let clip_min = self.clip_rect.min;
         let clip_max = self.clip_rect.max;
         let solid = Vec2::splat(20.0);
@@ -1287,7 +1315,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                         from_pos_size(p, s),
                         None,
                         c,
-                        self.viewport_size,
+                        self.ctx.viewport_size,
                         self.clip_rect,
                         false,
                     );
@@ -1302,8 +1330,8 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             let bl = sv_pos + Vec2::new(0.0, picker_size);
 
             emit_quad(
-                &mut self.window.verticies,
-                &mut self.window.indicies,
+                &mut self.ctx.window.verticies,
+                &mut self.ctx.window.indicies,
                 [
                     (tl, Vec4::ONE),
                     (tr, pure_hue),
@@ -1312,8 +1340,8 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 ],
             );
             emit_quad(
-                &mut self.window.verticies,
-                &mut self.window.indicies,
+                &mut self.ctx.window.verticies,
+                &mut self.ctx.window.indicies,
                 [
                     (tl, Vec4::new(0.0, 0.0, 0.0, 0.0)),
                     (tr, Vec4::new(0.0, 0.0, 0.0, 0.0)),
@@ -1324,19 +1352,19 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
             let cx = sv_pos + Vec2::new(s * picker_size, (1.0 - v) * picker_size);
             let cross = 4.0f32;
-            self.window.draw_rect(
+            self.ctx.window.draw_rect(
                 from_pos_size(cx - Vec2::new(cross, 1.0), Vec2::new(cross * 2.0, 2.0)),
                 None,
                 Vec4::ONE,
-                self.viewport_size,
+                self.ctx.viewport_size,
                 self.clip_rect,
                 false,
             );
-            self.window.draw_rect(
+            self.ctx.window.draw_rect(
                 from_pos_size(cx - Vec2::new(1.0, cross), Vec2::new(2.0, cross * 2.0)),
                 None,
                 Vec4::ONE,
-                self.viewport_size,
+                self.ctx.viewport_size,
                 self.clip_rect,
                 false,
             );
@@ -1357,8 +1385,8 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 let c0 = hsv_to_rgb(t0, 1.0, 1.0, 1.0);
                 let c1 = hsv_to_rgb(t1, 1.0, 1.0, 1.0);
                 emit_quad(
-                    &mut self.window.verticies,
-                    &mut self.window.indicies,
+                    &mut self.ctx.window.verticies,
+                    &mut self.ctx.window.indicies,
                     [
                         (Vec2::new(hue_pos.x, y0), c0),
                         (Vec2::new(hue_pos.x + bar_width, y0), c0),
@@ -1368,11 +1396,11 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 );
             }
             let cy = hue_pos.y + h * picker_size;
-            self.window.draw_rect(
+            self.ctx.window.draw_rect(
                 from_pos_size(Vec2::new(hue_pos.x, cy - 1.0), Vec2::new(bar_width, 2.0)),
                 None,
                 Vec4::ONE,
-                self.viewport_size,
+                self.ctx.viewport_size,
                 self.clip_rect,
                 false,
             );
@@ -1380,15 +1408,15 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
         {
             checker(
-                &mut self.window,
+                &mut self.ctx.window,
                 alpha_pos,
                 Vec2::new(bar_width, picker_size),
             );
             let c_top = Vec4::new(new_color.x, new_color.y, new_color.z, 1.0);
             let c_bot = Vec4::new(new_color.x, new_color.y, new_color.z, 0.0);
             emit_quad(
-                &mut self.window.verticies,
-                &mut self.window.indicies,
+                &mut self.ctx.window.verticies,
+                &mut self.ctx.window.indicies,
                 [
                     (alpha_pos, c_top),
                     (alpha_pos + Vec2::new(bar_width, 0.0), c_top),
@@ -1397,23 +1425,23 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 ],
             );
             let cy = alpha_pos.y + (1.0 - a) * picker_size;
-            self.window.draw_rect(
+            self.ctx.window.draw_rect(
                 from_pos_size(Vec2::new(alpha_pos.x, cy - 1.0), Vec2::new(bar_width, 2.0)),
                 None,
                 Vec4::ONE,
-                self.viewport_size,
+                self.ctx.viewport_size,
                 self.clip_rect,
                 false,
             );
         }
 
         {
-            checker(&mut self.window, preview_pos, preview_size);
-            self.window.draw_rect(
+            checker(&mut self.ctx.window, preview_pos, preview_size);
+            self.ctx.window.draw_rect(
                 from_pos_size(preview_pos, preview_size),
                 None,
                 new_color,
-                self.viewport_size,
+                self.ctx.viewport_size,
                 self.clip_rect,
                 false,
             );
@@ -1443,6 +1471,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     pub fn container<R>(&mut self, id: impl Hash, size: Vec2, f: impl FnOnce(&mut Self) -> R) -> R {
         let id = self.id(&id);
         let scroll = self
+            .ctx
             .window
             .scrollables
             .entry(id.into())
@@ -1453,10 +1482,10 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             .scroll;
 
         let rect = from_pos_size(self.cursor, size);
-        self.window.draw_box(
+        self.ctx.window.draw_box(
             rect,
             DrawSettings::default(),
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
         );
 
@@ -1474,16 +1503,21 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
         self.hovered_smth = hoverd;
 
-        let (_, mut scrollable) = self.window.scrollables.remove_entry(&id.into()).unwrap();
+        let (_, mut scrollable) = self
+            .ctx
+            .window
+            .scrollables
+            .remove_entry(&id.into())
+            .unwrap();
         scrollable.content_size = self.content_max - org;
         scrollable.update_and_draw(
             Draggable::Element(id),
             rect,
-            self.window,
-            &mut self.focused,
-            self.viewport_size,
-            self.input.cursor_pos,
-            self.input.primary_pressed,
+            self.ctx.window,
+            &mut self.ctx.focused,
+            self.ctx.viewport_size,
+            self.ctx.input.cursor_pos,
+            self.ctx.input.primary_pressed,
             self.clip_rect,
         );
 
@@ -1491,7 +1525,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             scrollable.scroll(self.scroll_delta, size);
         }
 
-        self.window.scrollables.insert(id.into(), scrollable);
+        self.ctx.window.scrollables.insert(id.into(), scrollable);
         self.cursor = prev_cursor;
         self.content_max = content_max;
         self.finish_element(size, true);
@@ -1514,7 +1548,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         }
 
         let rect = from_pos_size(self.cursor, size);
-        self.window.draw_box(
+        self.ctx.window.draw_box(
             rect,
             DrawSettings {
                 rounding: 0,
@@ -1524,7 +1558,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 round_topright: false,
                 ..Default::default()
             },
-            self.viewport_size,
+            self.ctx.viewport_size,
             self.clip_rect,
         );
 
@@ -1544,11 +1578,11 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 child_cursor,
                 child_cursor - Vec2::new(-value_width, value_height),
             );
-            self.window.draw_rect(
+            self.ctx.window.draw_rect(
                 value_rect,
                 None,
                 color,
-                self.viewport_size,
+                self.ctx.viewport_size,
                 self.clip_rect,
                 false,
             );
@@ -1562,31 +1596,29 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
     }
 
     fn tooltip_label(&mut self, label: impl AsRef<str>) {
-        if let Some(cursor_pos) = self.input.cursor_pos {
+        if let Some(cursor_pos) = self.ctx.input.cursor_pos {
             let cursor_pos = cursor_pos.round();
             let info_size = Self::contain_size(UiContext::text_size(label.as_ref()).round());
             let fullscreen_rect = Rect {
                 min: Vec2::ZERO,
-                max: self.viewport_size,
+                max: self.ctx.viewport_size,
             };
             let info_rect = Rect {
                 min: cursor_pos - info_size,
                 max: cursor_pos,
             };
-            self.window.draw_box(
+            self.ctx.window.draw_box(
                 info_rect,
                 DrawSettings {
                     on_top: true,
                     ..Default::default()
                 },
-                self.viewport_size,
+                self.ctx.viewport_size,
                 fullscreen_rect,
             );
-            self.window.draw_text(
+            self.draw_text(
                 info_rect.min + Self::child_offset(),
-                self.text_color(),
-                label.as_ref(),
-                self.viewport_size,
+                label,
                 fullscreen_rect,
                 true,
             );

@@ -1,8 +1,5 @@
 use core::f32;
-use std::{
-    any::TypeId,
-    hash::{DefaultHasher, Hash, Hasher},
-};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bevy::{
     asset::{Asset, Handle},
@@ -11,19 +8,18 @@ use bevy::{
         entity::Entity,
         query::With,
         reflect::{AppTypeRegistry, ReflectComponent},
-        system::{RunSystemOnce, SystemState},
-        world::{Mut, World},
+        system::SystemState,
+        world::World,
     },
     reflect::{
-        PartialReflect, Reflect, ReflectMut, ReflectRef, TypeData, TypeInfo, TypeRegistry,
+        PartialReflect, Reflect, ReflectMut, TypeRegistry,
         reflect_trait,
     },
 };
-use glam::{EulerRot, Mat3, Mat3A, Quat, Vec3};
-use tracing_log::log;
+use glam::{EulerRot, Mat3, Quat, Vec3};
 
 use crate::{
-    editor::{asset_browser::AssetDND, picking::Selected},
+    editor::picking::Selected,
     ui::{
         UiContext,
         builder::{UiBuilder, UiWindowBuilder},
@@ -295,10 +291,11 @@ impl EditorView for glam::Mat4 {
         _registry: &TypeRegistry,
     ) -> bool {
         ui.text(name);
-        self.x_axis.ui(ui, "|    x-Axis", id, _registry)
-            || self.y_axis.ui(ui, "|    y-Axis", id + 4, _registry)
-            || self.z_axis.ui(ui, "|    z-Axis", id + 8, _registry)
-            || self.w_axis.ui(ui, "|    w-Axis", id + 12, _registry)
+        let x_axis = self.x_axis.ui(ui, "|    x-Axis", id, _registry);
+        let y_axis = self.y_axis.ui(ui, "|    y-Axis", id + 4, _registry);
+        let z_axis = self.z_axis.ui(ui, "|    z-Axis", id + 8, _registry);
+        let w_axis = self.w_axis.ui(ui, "|    w-Axis", id + 12, _registry);
+        x_axis || y_axis || z_axis || w_axis
     }
 }
 
@@ -312,19 +309,12 @@ impl EditorView for glam::Affine3A {
     ) -> bool {
         ui.text(name);
         let det = self.matrix3.determinant();
-        if det == 0.0 {
-            return false;
-        }
 
         let mut scale = Vec3::new(
             self.matrix3.x_axis.length() * det.signum(),
             self.matrix3.y_axis.length(),
             self.matrix3.z_axis.length(),
         );
-
-        if scale.cmpne(Vec3::ZERO).all() {
-            return false;
-        }
 
         let inv_scale = scale.recip();
 
@@ -334,12 +324,12 @@ impl EditorView for glam::Affine3A {
             (self.matrix3.z_axis * inv_scale.z).into(),
         ));
 
-        let changed = scale.ui(ui, "    scale", id, _registry)
-            || rotation.ui(ui, "    rotation", id + 3, _registry)
+        let changed = scale.ui(ui, "|    scale", id, _registry)
+            || rotation.ui(ui, "|    rotation", id + 3, _registry)
             || self
                 .translation
                 .to_vec3()
-                .ui(ui, "    translation", id + 6, _registry);
+                .ui(ui, "|    translation", id + 6, _registry);
         if changed {
             let rotation = rotation.normalize();
             *self = glam::Affine3A::from_scale_rotation_translation(
@@ -357,11 +347,19 @@ impl EditorView for Entity {
         &mut self,
         ui: &mut UiWindowBuilder,
         name: &str,
-        id: u64,
+        _id: u64,
         _registry: &TypeRegistry,
     ) -> bool {
-        let val = format!("Entity {}", self.index());
-        ui.text(val);
+        let label = format!("Entity {}", self.index());
+        let width = UiContext::text_len(&label);
+        let before = ui.cursor.x;
+        ui.horizontal();
+        ui.text(name);
+        ui.cursor.x = ui.remaining_width() - width;
+        ui.text(label);
+        ui.cursor.x = before;
+        ui.vertical();
+
         false
     }
 }
@@ -370,8 +368,8 @@ impl<A: Asset> EditorView for Handle<A> {
     fn ui(
         &mut self,
         ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
+        _name: &str,
+        _id: u64,
         _registry: &TypeRegistry,
     ) -> bool {
         self.path()
@@ -392,12 +390,17 @@ fn draw_reflect_value(
 
     let type_short = value.reflect_short_type_path().to_owned();
 
-    if let Some(v) = value.try_as_reflect_mut()
-        && let Some(reg) = registry.get(v.type_id())
-        && let Some(editor_view) = reg.data::<ReflectEditorView>()
-        && let Some(concrete) = editor_view.get_mut(v.as_reflect_mut())
-    {
-        return concrete.ui(ui, name.unwrap_or(""), id, registry);
+    if let Some(v) = value.try_as_reflect_mut() {
+        if let Some(reg) = registry.get(v.type_id()) {
+            if let Some(editor_view) = reg.data::<ReflectEditorView>() {
+                if let Some(concrete) = editor_view.get_mut(v.as_reflect_mut()) {
+                    return concrete.ui(ui, name.unwrap_or(""), id, registry);
+                }
+                // ui.text("Doesnt have Editor View");
+            }
+            // ui.text("Not in registry");
+        }
+        // ui.text("Cant Reflect");
     }
 
     let label = name.map(|n| format!("{}: ", n)).unwrap_or("".to_string());
@@ -539,11 +542,12 @@ fn draw_reflect_value(
             ui.collapsable(format!("{}{}[{}]", label, type_short, v.len()), |ui| {
                 for i in 0..v.len() {
                     let Some(value) = v.get_mut(i) else { continue };
-                    changed |= draw_reflect_value(ui, Some(""), id, value, registry);
+                    changed |=
+                        draw_reflect_value(ui, Some(&format!("[{}]", i)), id, value, registry);
                 }
             });
         }
-        ReflectMut::Map(v) => {
+        ReflectMut::Map(_v) => {
             ui.collapsable(format!("{}{}", label, type_short), |ui| {
                 // for (i, (key, _)) in v.iter().enumerate() {
                 //     let mut hash = DefaultHasher::new();
@@ -587,7 +591,7 @@ pub(crate) fn selected_ui(world: &mut World) {
     let type_registry = world.resource::<AppTypeRegistry>().clone();
     let registry = type_registry.read();
 
-    let mut components: Vec<(bool, String, ComponentId, Option<Box<dyn Reflect>>)> =
+    let components: Vec<(bool, String, ComponentId, Option<Box<dyn Reflect>>)> =
         if let Some(entity) = entity {
             let entity_ref = world.entity(entity);
             entity_ref

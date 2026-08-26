@@ -1,11 +1,10 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::collections::HashMap;
 
 use bevy::{ecs::resource::Resource, math::Rect};
 use glam::{Vec2, Vec2Swizzles};
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
 
-use crate::ui::{UiContext, from_pos_size, window::TabState};
+use crate::ui::{UiContext, from_pos_size};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Split {
@@ -248,7 +247,7 @@ impl DockingNode {
                 right,
             } => {
                 let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
-                let thickness = 100.0;
+                let thickness = UiContext::RESIZE_THRESHOLD;
                 let d = split.direction_vec();
                 let perp = d.yx();
 

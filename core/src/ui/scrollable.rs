@@ -1,10 +1,9 @@
 use bevy::math::Rect;
 use glam::Vec2;
-use std::num::NonZeroU64;
 
 use crate::ui::{
     Draggable, FocusedState, UiContext, from_pos_size,
-    window::{DrawSettings, Drawable, TabState},
+    window::{DrawSettings, Drawable},
 };
 
 #[derive(Copy, Clone, Default, Debug)]
@@ -22,7 +21,6 @@ impl Scrollable {
             scrollbar_x as u32 as f32 * delta.x,
             scrollbar_y as u32 as f32 * delta.y,
         );
-        self.clamp_scroll(size);
     }
 
     pub fn clamp_scroll(&mut self, size: Vec2) {

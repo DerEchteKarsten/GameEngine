@@ -1,41 +1,21 @@
 use core::slice;
-use std::{
-    alloc::Layout,
-    collections::HashMap,
-    mem::{ManuallyDrop, MaybeUninit},
-};
+use std::alloc::Layout;
 
 use anyhow::{Ok, Result};
 use bevy::{
     asset::{
-        AssetLoader, AsyncReadExt, AsyncWriteExt, LoadContext, processor::LoadTransformAndSave,
-        saver::AssetSaver, transformer::AssetTransformer,
+        AsyncReadExt, AsyncWriteExt, processor::LoadTransformAndSave,
     },
     prelude::*,
 };
-use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut, try_cast_vec};
-use futures::future::join_all;
-use glam::{Mat4, Vec3};
-use std::sync::Arc;
-use tracing_log::log;
+use bytemuck::Pod;
 
-use crate::{
-    assets::{
-        material::Material,
-        mesh::{
-            GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer, MeshletMesh,
+use crate::assets::mesh::{
+            GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer,
             Scene,
-        },
-    },
-    bindings::{AabbError, BvhNode, CullData, Meshlet, Vertex},
-    physics,
-    render::world::UploadQueue,
-};
+        };
 
-use lava::{
-    buffer::{Buffer, slice::BufferSlice},
-    state::Ctx,
-};
+use lava::buffer::slice::BufferSlice;
 
 pub mod material;
 pub mod mesh;

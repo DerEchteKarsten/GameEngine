@@ -1,60 +1,21 @@
-use core::{
-    CorePlugin,
-    assets::mesh::Scene,
-    editor::{
-        camera::EditorCamera,
-        gizzmos::{ArrowGizzmo, BoxGizzmo, DrawGizzmos, SphereGizzmo},
-        viewport::ViewPortProxy,
-    },
-    physics::bvh::Raycast,
-    render::render::RenderSettings,
-    scene::{
-        SpawnScene,
-        camera::{Camera, CameraBundle},
-    },
-    ui::builder::UiBuilder,
-};
-use std::{
-    f32::consts::PI,
-    fs::FileType,
-    path::{Path, PathBuf},
-    thread,
-    time::Duration,
-};
+use core::{CorePlugin, editor::camera::EditorCamera, scene::camera::CameraBundle};
 
 use bevy::{
     app::{App, Startup, Update},
-    asset::{AssetServer, Assets},
+    asset::AssetServer,
     ecs::{
         component::Component,
-        entity::Entity,
-        message::MessageReader,
-        query::With,
-        system::{Commands, Local, Res, ResMut, Single},
+        system::{Commands, Res},
     },
-    input::{
-        ButtonInput,
-        mouse::{MouseButton, MouseButtonInput, MouseMotion},
-        touch::Touches,
-    },
-    log::{self, tracing},
-    math::{
-        Dir3A, VectorSpace,
-        bounding::{BoundingVolume, RayCast3d},
-    },
-    reflect::{self, Reflect},
     time::Time,
-    transform::components::{GlobalTransform, Transform},
-    window::Window,
+    transform::components::Transform,
 };
-use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4, Vec4Swizzles, vec3};
-
-use bevy::ecs::reflect::ReflectComponent;
+use glam::Vec3;
 
 #[derive(Component)]
 struct MyModel;
 
-fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
+fn init(mut cmd: Commands, _asset_server: Res<AssetServer>) {
     // let handle = asset_server.load("tower.glb");
     let camera = CameraBundle::new(
         Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
@@ -78,7 +39,7 @@ fn update_mesh(
     // mut local: Local<(usize, Vec<String>)>,
     // mut gizzmos: DrawGizzmos,
     // viewport: ViewPortProxy,
-    time: Res<Time>,
+    _time: Res<Time>,
 ) {
     // log::info!("{:#?}", time.delta());
     // if let Some(pos) = window.cursor_position() {

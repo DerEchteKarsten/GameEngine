@@ -8,7 +8,7 @@ use bevy::{
 };
 use glam::{UVec2, Vec2};
 
-use crate::ui::{builder::UiBuilder, dock::DockingNode};
+use crate::ui::dock::DockingNode;
 
 #[derive(Resource, Debug, Copy, Clone)]
 pub struct ViewPort {

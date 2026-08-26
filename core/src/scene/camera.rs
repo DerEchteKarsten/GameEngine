@@ -1,14 +1,6 @@
-use glam::{Mat4, Vec3, vec3};
-use std::f32::consts::PI;
+use glam::{Mat4, Vec3};
 
-use bevy::{
-    input::{
-        ButtonState,
-        mouse::{MouseButtonInput, MouseMotion},
-    },
-    prelude::*,
-};
-use lava::state::Ctx;
+use bevy::prelude::*;
 
 use crate::editor::viewport::ViewPortProxy;
 

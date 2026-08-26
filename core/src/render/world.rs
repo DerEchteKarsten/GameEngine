@@ -1,31 +1,17 @@
-use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
-use std::ffi::c_void;
 use std::fmt::Debug;
-use std::num::NonZeroU64;
-use std::ops::{Deref, DerefMut, Range};
-use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, OnceLock};
-use std::thread::{JoinHandle, Thread};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use bevy::app::App;
-use bevy::asset::{AsAssetId, AssetId, Assets, Handle, LoadState};
-use bevy::ecs::component::Component;
-use bevy::ecs::entity::{Entities, Entity};
-use bevy::ecs::hierarchy::ChildOf;
-use bevy::ecs::query::{Has, With};
+use bevy::asset::Assets;
+use bevy::ecs::query::Has;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::schedule::IntoScheduleConfigs;
-use bevy::ecs::system::{Commands, If, Local, Query, Res, ResMut, Single, SystemState};
-use bevy::ecs::world::EntityMut;
-use bevy::log;
+use bevy::ecs::system::{Commands, Query, Res, ResMut, Single};
 use bevy::math::Rect;
-use bevy::reflect::{
-    PartialReflect, Reflect, StructInfo, TupleStructInfo, TypePath, Typed, UnnamedField,
-};
+use bevy::reflect::Reflect;
 use bevy::transform::components::GlobalTransform;
 use bevy::window::Window;
 use futures::channel::oneshot;
@@ -33,43 +19,31 @@ use lava::image::Image;
 use lava::image::slice::AsImage;
 use std::sync::Mutex;
 
-use bevy::tasks::futures::check_ready;
-use bevy::tasks::futures_lite::future;
-use bevy::tasks::{AsyncComputeTaskPool, ComputeTaskPool, Scope, Task, TaskPool, block_on};
 use bytemuck::Pod;
-use futures::join;
-use glam::{IVec2, Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
-use gpu_allocator::vulkan::Allocation;
+use glam::{Mat4, Vec2, Vec3};
 use lava::buffer::Buffer;
 
 use lava::buffer::slice::BufferSlice;
-use lava::command_buffer::CommandBuffer;
-use lava::image::format::R8Uint;
 use lava::image::slice::ImageSlice;
 use lava::image::usage::UsageSet;
 use lava::state::{Ctx, Functions, raw_vulkan};
-use lava::vkobjects::acceleration_structure::AccelerationStructure;
 use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue, Transfer};
-use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2, vkobjects};
-use rand::random;
-use smallvec::SmallVec;
+use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
 use tracing::error;
 
-use crate::assets::mesh::MeshletMesh;
-use crate::assets::{material::Material, mesh::Scene};
 use crate::assets::{mesh::GpuMesh, mesh::MeshHeader};
 use crate::bindings::{
-    self, AabbError, BvhNode, CullData, Gizzmo, InstanceBvhRoot, Meshlet, Vertex,
+    self, AabbError,
 };
 use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
 use crate::render::extract_param::Extract;
 use crate::render::render::{
-    CommandPools, FrameCount, QueueStrategie, Queues, Swapchain, SynchronizationResources,
+    FrameCount, QueueStrategie, Queues,
     extract_camera,
 };
 use crate::render::{
-    ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderStartup, RenderSystems,
+    ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderStartup, RenderSystems,
 };
 use crate::scene::Instance;
 

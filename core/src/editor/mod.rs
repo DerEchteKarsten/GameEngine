@@ -5,13 +5,12 @@ use bevy::{
         entity::Entity,
         resource::Resource,
         schedule::IntoScheduleConfigs,
-        system::{Local, Res, ResMut},
+        system::{Local, Res},
     },
     math::Rect,
     time::Time,
 };
-use glam::{IVec2, UVec2, Vec2};
-use lava::buffer::Buffer;
+use glam::Vec2;
 use tracing::Level;
 
 use crate::{
@@ -21,6 +20,7 @@ use crate::{
         asset_browser::{AssetDND, asset_browser},
         camera::{CameraSettings, update_camera},
         console::ConsolePlugin,
+        dragndrop::{AssetDragAndDropProvider, EntityDragAndDropProvider},
         gizzmos::{Gizzmos, extract_gizzmos, init_gizzmos, write_gizzmos},
         picking::{hierarchy_ui, picking},
         selected::{ReflectEditorView, selected_ui},
@@ -28,8 +28,7 @@ use crate::{
     },
     physics::bvh::debug_draw_scene_bvh,
     render::{
-        ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderApp, RenderStartup, RenderSystems,
-        extract_param::Extract, render::RenderDebugUi, world::MAX_INSTANCES,
+        ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems, render::RenderDebugUi,
     },
     ui::builder::UiBuilder,
 };
@@ -37,6 +36,7 @@ use crate::{
 pub mod asset_browser;
 pub mod camera;
 pub mod console;
+pub mod dragndrop;
 pub mod gizzmos;
 pub(crate) mod picking;
 pub mod selected;
@@ -118,6 +118,8 @@ impl Plugin for EditorPlugin {
             RenderDebugUi,
         ))
         .insert_resource(self.camera_settings)
+        .init_resource::<AssetDragAndDropProvider>()
+        .init_resource::<EntityDragAndDropProvider>()
         .init_resource::<UiState>()
         .insert_resource(ViewPort {
             rect: Rect::from_corners(Vec2::ZERO, INITIAL_WINDOW_SIZE),

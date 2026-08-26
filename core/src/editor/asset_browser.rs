@@ -1,25 +1,14 @@
-use std::{
-    fs::FileType,
-    mem::{replace, swap, take},
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
 use bevy::{
-    asset::{AssetServer, Handle, UntypedHandle},
+    asset::{AssetServer, UntypedHandle},
     ecs::{
         resource::Resource,
         system::{Local, ResMut},
     },
-    log,
-    window::FileDragAndDrop,
 };
-use glam::{UVec2, Vec2};
 
-use crate::{
-    assets::mesh::{GpuMesh, Scene},
-    ui::builder::UiBuilder,
-};
+use crate::ui::builder::UiBuilder;
 
 #[derive(Resource)]
 pub struct AssetDND(pub Option<UntypedHandle>);
@@ -27,15 +16,15 @@ pub struct AssetDND(pub Option<UntypedHandle>);
 //TODO make faster
 pub(crate) fn asset_browser(
     mut ui: UiBuilder,
-    mut asset_server: ResMut<AssetServer>,
-    mut dnd: ResMut<AssetDND>,
+    _asset_server: ResMut<AssetServer>,
+    _dnd: ResMut<AssetDND>,
     mut local: Local<(Option<PathBuf>, Vec<PathBuf>, usize)>,
 ) {
-    let (cwd, replay, redo_cursor) = &mut *local;
-    let cwd =
+    let (cwd, _replay, _redo_cursor) = &mut *local;
+    let _cwd =
         cwd.get_or_insert_with(|| std::env::current_dir().unwrap().join("game").join("assets"));
 
-    ui.build("Asset Browser", |ui| {
+    ui.build("Asset Browser", |_ui| {
         // let item_size = [150.0, 150.0];
         // let item_padding = 8.0;
 

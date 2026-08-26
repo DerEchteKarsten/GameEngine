@@ -7,7 +7,7 @@ use bevy::{
         resource::Resource,
         system::{Commands, Query, Res},
     },
-    reflect::{self, Reflect},
+    reflect::Reflect,
     transform::components::Transform,
 };
 

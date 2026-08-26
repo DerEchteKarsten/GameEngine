@@ -10,23 +10,18 @@ use bevy::{
         mouse::{AccumulatedMouseScroll, MouseButton},
         touch::Touches,
     },
-    log,
     math::{Rect, VectorSpace},
     window::Window,
 };
-use glam::{Vec2, Vec4};
+use glam::Vec2;
 use itertools::Itertools;
 use smallvec::SmallVec;
-use std::{
-    hash::{DefaultHasher, Hash, Hasher},
-    num::NonZeroU64,
-    sync::{Mutex, atomic::AtomicU32},
-};
+use std::sync::Mutex;
 
 use crate::ui::{
-    FocusedState, MultiInput, UiContext, UiWindows, from_pos_size,
+    FocusedState, MultiInput, UiContext, UiWindows,
     scrollable::Scrollable,
-    window::{BorderSettings, DrawSettings, TextDirection},
+    window::{BorderSettings, DrawSettings},
 };
 
 struct FrameInfo {

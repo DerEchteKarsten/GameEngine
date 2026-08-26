@@ -8,25 +8,20 @@
 //   (tracy allocator, tracing subscriber, panic hook, etc.)
 
 use std::fmt::Debug;
-use std::process::id;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use bevy::app::{
-    App, First, Last, Plugin, PostStartup, PostUpdate, PreStartup, PreUpdate, Startup, Update,
+    App, First, Plugin, PostUpdate,
 };
 use bevy::ecs::prelude::*;
-use bevy::ecs::schedule::{InternedScheduleLabel, ScheduleLabel};
-use bevy::log;
 use glam::Vec4;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 
 use crate::id;
-use crate::render::{ExtractSchedule, Render, RenderStartup};
 use crate::ui::UiContext;
-use crate::ui::builder::{UiBuilder, UiWindowBuilder};
+use crate::ui::builder::UiBuilder;
 
 #[cfg(feature = "trace_tracy_memory")]
 #[global_allocator]
@@ -55,7 +50,7 @@ impl<S> Layer<S> for ConsoleLayer
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
         let message = {
             use tracing::field::{Field, Visit};
             struct Msg(String);
@@ -350,7 +345,7 @@ fn render_console_window(
                     }
                 }
 
-                let color = level_colors[entry_level_idx as usize];
+                let _color = level_colors[entry_level_idx as usize];
                 // let _col = ui.push_style_color(imgui::StyleColor::Text, color);
 
                 ui.text(&format!(

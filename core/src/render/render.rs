@@ -1,47 +1,27 @@
-use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::mem::offset_of;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
-use std::time::Duration;
 
 use bevy::app::App;
-use bevy::app::PreUpdate;
-use bevy::app::Startup;
 use bevy::app::Update;
-use bevy::ecs::message::MessageReader;
 use bevy::ecs::query::With;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::Commands;
-use bevy::ecs::system::If;
 use bevy::ecs::system::Local;
-use bevy::ecs::system::Query;
 use bevy::ecs::system::Res;
 use bevy::ecs::system::ResMut;
 use bevy::ecs::system::Single;
-use bevy::ecs::system::SystemState;
-use bevy::tasks::AsyncComputeTaskPool;
-use bevy::tasks::Task;
-use bevy::time::Time;
 use bevy::transform::components::Transform;
 use bevy::window::PrimaryWindow;
 use bevy::window::Window;
 
-use bevy::window::WindowResized;
-use glam::IVec2;
 use glam::Mat4;
-use glam::UVec2;
-use glam::UVec4;
 use glam::Vec3;
 use glam::Vec4;
 use glam::Vec4Swizzles;
-use itertools::Itertools;
-use itertools::traits::IteratorIndex;
-use lava::command_buffer::Filter;
 use lava::command_buffer::RasterVertexDispatch;
 use lava::command_buffer::ResourceHandle;
 use lava::command_buffer::ResourceState;
@@ -50,46 +30,33 @@ use lava::command_buffer::Viewport;
 use lava::image::Image;
 use lava::image::format;
 use lava::image::format::D32Sfloat;
-use lava::image::format::R32G32B32A32Sfloat;
 use lava::image::slice::AsImage;
-use lava::image::slice::ImageSlice;
 use lava::image::slice::ImageView;
-use lava::image::usage::ColorAttachmentSampled;
 use lava::image::usage::ColorAttachmentStorage;
 use lava::image::usage::DepthAttachmentSampled;
-use lava::image::usage::Storage;
 use lava::state::Ctx;
-use lava::state::raw_vulkan::Extent2D;
-use lava::tracy_span;
 use lava::vkobjects;
 use lava::vkobjects::queue::Binary;
 use lava::vkobjects::queue::CommandBufferMemory;
 use lava::vkobjects::queue::CommandPool;
-use lava::vkobjects::queue::Event;
 use lava::vkobjects::queue::Gfx;
 use lava::vkobjects::queue::Present;
 use lava::vkobjects::queue::Queue;
 use lava::vkobjects::queue::Semaphore;
-use lava::vkobjects::queue::Timeline;
 
 use lava::buffer::Buffer;
 use lava::vkobjects::queue::Fence;
-use tracing_log::log;
 
 use crate::INITIAL_WINDOW_SIZE;
 use crate::bindings;
 use crate::bindings::BvhCull;
 use crate::bindings::BvhCullBindings;
-use crate::bindings::DrawAabbsBindings;
-use crate::bindings::DrawArrowsBindings;
 use crate::bindings::DrawOutline;
 use crate::bindings::DrawOutlineBindings;
-use crate::bindings::DrawSpheresBindings;
 use crate::bindings::InstanceBvhRoot;
 use crate::bindings::InstanceCull;
 use crate::bindings::InstanceCullBindings;
 use crate::bindings::InstancedMeshlet;
-use crate::bindings::Meshlet;
 use crate::bindings::Raster;
 use crate::bindings::RasterBindings;
 use crate::bindings::RasterOutline;
@@ -99,7 +66,6 @@ use crate::bindings::RasterUiBindings;
 use crate::bindings::Skybox;
 use crate::bindings::SkyboxBindings;
 use crate::bindings::TraversalVariables;
-use crate::bindings::UIVertex;
 use crate::editor::gizzmos::GizzmoResources;
 use crate::editor::viewport::ViewPort;
 use crate::id;
@@ -170,7 +136,7 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub fn image(&self) -> ImageView<format::Swapchain, ColorAttachmentStorage> {
+    pub fn image(&self) -> ImageView<'_, format::Swapchain, ColorAttachmentStorage> {
         self.images[self.image_index as usize]
     }
 }
