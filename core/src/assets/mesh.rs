@@ -13,25 +13,23 @@ use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use glam::{Mat4, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
 use itertools::Itertools;
-use lava::{
-    buffer::Buffer,
-    state::Ctx,
-};
+use lava::{buffer::Buffer, state::Ctx};
 use meshopt::{
-    SimplifyOptions, VertexDataAdapter, build_meshlets, generate_position_remap, simplify_with_attributes_and_locks,
+    SimplifyOptions, VertexDataAdapter, build_meshlets, generate_position_remap,
+    simplify_with_attributes_and_locks,
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
-use std::{collections::HashMap, ops::Range};
 use std::mem::ManuallyDrop;
+use std::{collections::HashMap, ops::Range};
 use tracing::debug_span;
 
 use crate::{
     assets::{material::Material, read_slice, read_slice_to_buffer, read_u64, write_slice},
     bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex},
     physics::bvh::{
-            ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
-        },
+        ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
+    },
     render::world::UploadQueue,
 };
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
@@ -148,7 +146,7 @@ impl AssetTransformer for MeshTransformer {
                 let verticies = reader
                     .read_positions()
                     .unwrap()
-                    .map(|e| Vec3::from(e))
+                    .map(Vec3::from)
                     .collect::<Vec<_>>();
 
                 assert_eq!(verticies.len() * 3, normals.len());
@@ -203,21 +201,21 @@ impl AssetTransformer for MeshTransformer {
                 };
 
                 instance_materials.push(material as u32);
-                instance_mesh.push(mesh.clone());
+                instance_mesh.push(*mesh);
                 instance_transforms.push(Mat4::from_cols_array_2d(&transform));
             }
         }
 
         let mesh = FileScene {
-            instance_transforms: instance_transforms,
-            instance_materials: instance_materials,
-            instance_mesh: instance_mesh,
-            materials: materials,
-            meshes: meshes,
+            instance_transforms,
+            instance_materials,
+            instance_mesh,
+            materials,
+            meshes,
         };
 
         let asset = asset.replace_asset(mesh);
-        return Ok(asset);
+        Ok(asset)
     }
 }
 
@@ -247,7 +245,7 @@ impl AssetSaver for MeshSaver {
             write_slice(&mesh.colission_bvh, writer).await?;
         }
 
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -354,8 +352,8 @@ impl AssetLoader for MeshLoader {
                 meshes.push(handle);
             }
         }
-        if futures.len() > 0 {
-            let iter = futures::future::join_all(futures.into_iter()).await;
+        if !futures.is_empty() {
+            let iter = futures::future::join_all(futures).await;
             for res in iter {
                 let (mesh, i) = res?;
                 let handle = load_context.add_labeled_asset(format!("mesh_{}", i), mesh);
@@ -455,7 +453,7 @@ impl MeshletMesh {
         // Split the mesh into an initial list of meshlets (LOD 0)
 
         let (mut meshlets, mut cull_data) = compute_meshlets(
-            &indices,
+            indices,
             &vertex_adapter,
             vertices,
             &position_only_vertex_remap,
@@ -597,7 +595,6 @@ impl MeshletMesh {
                     Aabb3d::from_point_cloud(
                         Isometry3d::IDENTITY,
                         points
-                            .clone()
                             .into_iter()
                             .map(|v| Vec4::from_array(v).xyz().to_vec3a()),
                     ),
@@ -630,9 +627,9 @@ impl MeshletMesh {
             .iter()
             .enumerate()
             .map(|(i, v)| Vertex {
-                position_and_uv1: v.xyz().extend(vertex_uvs[i * 2 + 0]),
+                position_and_uv1: v.xyz().extend(vertex_uvs[i * 2]),
                 normal_and_uv2: Vec4::new(
-                    vertex_normals[i * 3 + 0],
+                    vertex_normals[i * 3],
                     vertex_normals[i * 3 + 1],
                     vertex_normals[i * 3 + 2],
                     vertex_uvs[i * 2 + 1],

@@ -1,9 +1,7 @@
 use crate::render::{
-        render::{
-            RenderPassesPlugin, resize_swapchain,
-        },
-        world::WorldPlugin,
-    };
+    render::{RenderPassesPlugin, resize_swapchain},
+    world::WorldPlugin,
+};
 use async_std::channel::{Receiver, Sender};
 use bevy::{
     app::{App, AppExit, AppLabel, Plugin, PreStartup, SubApp},
@@ -23,7 +21,6 @@ use bevy::{
     utils::default,
     window::{PrimaryWindow, RawHandleWrapperHolder},
 };
-use lava::image::slice::AsImage;
 use std::ops::{Deref, DerefMut};
 
 pub mod extract_param;
@@ -208,9 +205,7 @@ impl Plugin for PipelinedRenderingPlugin {
         ));
 
         std::thread::spawn(move || {
-            #[cfg(feature = "trace")]
             let _span = log::info_span!("render thread").entered();
-
             let compute_task_pool = ComputeTaskPool::get();
             loop {
                 // run a scope here to allow main world to use this thread while it's waiting for the render app
@@ -224,7 +219,6 @@ impl Plugin for PipelinedRenderingPlugin {
                 };
 
                 {
-                    #[cfg(feature = "trace")]
                     let _sub_app_span = log::info_span!("sub app", name = ?RenderApp).entered();
                     render_app.update();
                 }

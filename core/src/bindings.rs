@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use std::sync::{OnceLock, Mutex};
 use glam::*;
 use bytemuck::{Pod, Zeroable};
-use lava::command_buffer::{Binding, ResourceHandle, ResourceState, RasterHash, ComputePass, RasterPass, RasterMeshShaderPass, RasterVertexShaderPass};
+use lava::command_buffer::{Binding, ResourceHandle, ResourceState, ShaderHash, RasterHash, ComputePass, RasterPass, RayTracingPass, RasterMeshShaderPass, RasterVertexShaderPass};
 use lava::bindless::BindlessHandle;
 use lava::buffer::slice::BufferSlice;
 use std::cell::{LazyCell};
-use lava::{PipelineStageFlags2, AccessFlags2, VkPipeline, VkShaderModule};
+use lava::{PipelineStageFlags2, AccessFlags2, ImageLayout, VkPipeline, VkShaderModule};
 use lava::image::slice::{StorageImageViewBinding, SampledImageViewBinding};
 
 #[derive(Clone, Copy)]
@@ -859,29 +859,25 @@ impl ComputePass for Skybox {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct TraversalVariables {
-    pub node_batch_read_offset: u32,
-    pub total_meshlets: u32,
-    pub node_write_offset: u32,
-    pub node_count: u32,
-    pub vertex_count: u32,
-    pub visible_meshlet_count: u32,
-    pub first_vertex: u32,
-    pub first_instance: u32,
-    pub candidate_meshlet_write_offset: u32,
-    pub meshlet_batch_read_offset: u32,
+pub struct AabbError {
+    pub center_and_error: Vec4,
+    pub half_extent: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstancedMeshlet {
-    pub instance: u64,
-    pub meshlet: u64,
+pub struct UIVertex {
+    pub pos: Vec2,
+    pub uv: Vec2,
+    pub color: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstanceMeshletIndex {
-    pub instance: u32,
-    pub meshlet: u32,
+pub struct BvhNode {
+    pub aabb_and_offsets: [AabbPtr; 8],
+    pub errors: [f32; 8],
+    pub lod_bounds: [Vec4; 8],
+    pub child_counts: u64,
+    pub pad: UVec2,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -899,36 +895,15 @@ pub struct InstanceHeader {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct BvhNode {
-    pub aabb_and_offsets: [AabbPtr; 8],
-    pub errors: [f32; 8],
-    pub lod_bounds: [Vec4; 8],
-    pub child_counts: u64,
-    pub pad: UVec2,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct Gizzmo {
-    pub transform: Mat4,
-    pub color: Vec4,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
 pub struct Vertex {
     pub position_and_uv1: Vec4,
     pub normal_and_uv2: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct InstanceBvhRoot {
-    pub instance: u64,
-    pub node: u64,
-}
-#[derive(Pod, Copy, Clone, Zeroable, Debug)]
-#[repr(C)]
-pub struct AabbError {
-    pub center_and_error: Vec4,
-    pub half_extent: Vec4,
+pub struct AabbPtr {
+    pub center_and_offset_high: Vec4,
+    pub half_extent_and_offset_low: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
@@ -938,14 +913,39 @@ pub struct CullData {
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct UIVertex {
-    pub pos: Vec2,
-    pub uv: Vec2,
+pub struct InstanceMeshletIndex {
+    pub instance: u32,
+    pub meshlet: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct Gizzmo {
+    pub transform: Mat4,
     pub color: Vec4,
 }
 #[derive(Pod, Copy, Clone, Zeroable, Debug)]
 #[repr(C)]
-pub struct AabbPtr {
-    pub center_and_offset_high: Vec4,
-    pub half_extent_and_offset_low: Vec4,
+pub struct InstancedMeshlet {
+    pub instance: u64,
+    pub meshlet: u64,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct TraversalVariables {
+    pub node_batch_read_offset: u32,
+    pub total_meshlets: u32,
+    pub node_write_offset: u32,
+    pub node_count: u32,
+    pub vertex_count: u32,
+    pub visible_meshlet_count: u32,
+    pub first_vertex: u32,
+    pub first_instance: u32,
+    pub candidate_meshlet_write_offset: u32,
+    pub meshlet_batch_read_offset: u32,
+}
+#[derive(Pod, Copy, Clone, Zeroable, Debug)]
+#[repr(C)]
+pub struct InstanceBvhRoot {
+    pub instance: u64,
+    pub node: u64,
 }

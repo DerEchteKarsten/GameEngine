@@ -46,13 +46,7 @@ use bevy::{
     window::Window,
 };
 use fontdue::*;
-use std::{
-    collections::HashMap,
-    fs,
-    num::NonZeroU64,
-    range::Range,
-    sync::Mutex,
-};
+use std::{collections::HashMap, fs, num::NonZeroU64, range::Range, sync::Mutex};
 
 use anyhow::Result;
 use bevy::{
@@ -130,7 +124,7 @@ pub enum Draggable {
 #[derive(Clone, Debug)]
 pub struct FocusedState {
     pub draging: Option<Draggable>,
-    pub focused: Option<NonZeroU64>,
+    pub focused_element: Option<NonZeroU64>,
     pub cursor: TextCursor,
     pub selected: Range<usize>,
     pub offset: f32,
@@ -144,7 +138,7 @@ impl Default for FocusedState {
     fn default() -> Self {
         Self {
             draging: None,
-            focused: None,
+            focused_element: None,
             cursor: TextCursor { byte_pos: 0 },
             selected: (0..0).into(),
             offset: 0.0,
@@ -264,6 +258,13 @@ impl UiContext {
     pub const WINDOW_PAD: UVec2 = UVec2::new(3, 2);
     pub const WINDOW_HEADER_HEIGHT: f32 =
         (UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
+    pub const RMB: u32 = const {
+        if Self::ROUNDING > Self::BORDER {
+            Self::BORDER
+        } else {
+            Self::ROUNDING
+        }
+    };
     pub const RESIZE_THRESHOLD: f32 = 15.0f32;
     pub const BAR_THICKNESS: f32 = 6.0f32;
     pub const MIN_THUMB: f32 = 20.0f32;
@@ -305,7 +306,7 @@ impl UiContext {
                                 state: Mutex::new(TabState::default()),
                             })
                             .collect(),
-                        w.rect.clone(),
+                        w.rect,
                         w.active_tab,
                     ))
                 })
@@ -367,16 +368,10 @@ impl UiContext {
     }
 
     pub fn text_size(str: &str) -> Vec2 {
-        let mut size = Vec2::new(0.0, 0.0);
-        for line in str.lines() {
-            size.x = size.x.max(
-                (UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32)
-                    * line.len() as f32,
-            );
-            size.y += UiContext::ATLAS_CELL_SIZE.y as f32;
-        }
-
-        size
+        Vec2::new(
+            UiContext::ATLAS_CELL_SIZE.x as f32 * str.len() as f32,
+            UiContext::ATLAS_CELL_SIZE.y as f32,
+        )
     }
 
     pub fn text_len(str: &str) -> f32 {
@@ -471,15 +466,15 @@ impl MultiInput {
         };
 
         if let Some(touch) = touch.iter().next() {
-            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor() as f32);
+            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor());
             this.primary_pressing = true;
         }
         if let Some(touch) = touch.iter_just_pressed().next() {
-            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor() as f32);
+            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor());
             this.primary_pressed = true;
         }
         if let Some(touch) = touch.iter_just_released().next() {
-            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor() as f32);
+            this.cursor_pos = Some(touch.position() * desktop_window.scale_factor());
             this.primary_released = true;
         }
         this

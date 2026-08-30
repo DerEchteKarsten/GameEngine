@@ -74,7 +74,7 @@ impl DockingNode {
                     )
                     .contains(cursor_pos)
                 {
-                    return Some(w.clone());
+                    return Some(*w);
                 } else if area.contains(cursor_pos) {
                     let thickness = 40.0;
                     let top =
@@ -285,7 +285,7 @@ impl DockingNode {
                 }
                 let (left_area, right_area) = Self::split_area(area, split.clone(), *extend);
 
-                if ((path >> depth) & 1) as u64 > 0 {
+                if ((path >> depth) & 1) > 0 {
                     left.as_mut()
                         .resize(path, max_depth, depth + 1, delta, left_area);
                 } else {
@@ -341,7 +341,7 @@ impl DockingNode {
                 right,
             } => DockingNode::Node {
                 split,
-                extend: extend,
+                extend,
                 left: Box::new(left.remap(map)),
                 right: Box::new(right.remap(map)),
             },

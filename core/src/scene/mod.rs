@@ -62,6 +62,7 @@ fn add_sub_instances(
     }
 }
 
+#[allow(non_snake_case)]
 pub fn ScenePlugin(app: &mut App) {
     app.add_systems(PostUpdate, update_camera)
         .add_systems(Update, add_sub_instances)

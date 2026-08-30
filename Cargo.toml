@@ -2,13 +2,51 @@
 resolver = "3"
 members = ["core", "game", "lava"]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
 
-[profile.release]
-debug = 2
-strip = "none"
-split-debuginfo = "off"
+[workspace.dependencies]
+anyhow = "1.0.99"
+bytemuck = { version = "1.24.0", features = ["derive"] }
+glam = { version = "0.30.5", features = ["bytemuck", "mint"] }
+bevy = {version = "0.18.0", default-features = false, features = [
+    "debug",
+    "wayland",
+    "asset_processor",
+    "embedded_watcher",
+    "file_watcher",
+    "multi_threaded",
+    "bevy_asset",
+    "bevy_window",
+    "trace",
+    "detailed_trace",
+    "reflect_auto_register"
+]}
+ash = "0.38.0"
+ash-window = "0.13.0"
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
+raw-window-handle = "0.6.2"
+bytemuck_derive = "1.10.2"
+gltf = "1.4.1"
+smallvec = { version = "1.15.1", features = ["serde"] }
+meshopt = "0.6.1"
+itertools = "0.14.0"
+metis = "0.2.2"
+rand = "0.9.2"
+async-std = "1.13.2"
+futures = "0.3.31"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
+tracing-log = "0.2"
+tracing = {version = "0.1.44"}
+tracing-tracy = {version = "0.11.4"}
+tracy-client = {version = "0.18.4"}
+tracing-core = {version = "0.1.36"}
+fontdue = "0.9.3"
+ron = "0.12.1"
+serde = { version = "1.0", features = ["derive"] }
+walkdir = "2"
+serde_json = "1.0"
 
-[profile.release.build-override]
-debug = 2
-strip = "none"
-split-debuginfo = "off"
+[profile.dev]
+features = ["tracy-client/enable", "tracing-tracy/enable"]

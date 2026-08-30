@@ -1,25 +1,13 @@
 [package]
 name = "game"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 core = { version = "0.1.0", path = "../core" }
-glam = {version = "0.30.5", features = ["mint"]}
-bevy = {version = "0.18.0", default-features = false, features = [
-    "debug",
-    "wayland",
-    "asset_processor",
-    "embedded_watcher",
-    "file_watcher",
-    "multi_threaded",
-    "bevy_asset",
-    "bevy_window",
-]}
+glam = {workspace = true}
+bevy = {workspace = true}
 
 [features]
-default = []
-trace = ["core/trace", "bevy/trace_tracy", "bevy/trace", "bevy/detailed_trace"]
-# Dev-only: builds bevy as a dynamic library so `cargo run` skips relinking it on
-# every iteration. Do NOT enable this for release builds.
+default = ["dynamic_linking"]
 dynamic_linking = ["core/dynamic_linking", "bevy/dynamic_linking"]

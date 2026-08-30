@@ -3,17 +3,14 @@ use std::alloc::Layout;
 
 use anyhow::{Ok, Result};
 use bevy::{
-    asset::{
-        AsyncReadExt, AsyncWriteExt, processor::LoadTransformAndSave,
-    },
+    asset::{AsyncReadExt, AsyncWriteExt, processor::LoadTransformAndSave},
     prelude::*,
 };
 use bytemuck::Pod;
 
 use crate::assets::mesh::{
-            GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer,
-            Scene,
-        };
+    GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer, Scene,
+};
 
 use lava::buffer::slice::BufferSlice;
 
@@ -41,7 +38,7 @@ async fn write_slice<T: Pod>(field: &[T], writer: &mut bevy::asset::io::Writer) 
     let len = field.len() as u64;
     writer.write_all(&len.to_le_bytes()).await?;
     let byte_slice = bytemuck::cast_slice(field);
-    writer.write_all(&byte_slice).await?;
+    writer.write_all(byte_slice).await?;
     Ok(())
 }
 async fn read_u64(reader: &mut dyn bevy::asset::io::Reader) -> Result<u64> {
@@ -78,7 +75,7 @@ async fn read_slice_to_buffer<'a>(
     reader: &mut dyn bevy::asset::io::Reader,
     slice: BufferSlice<'a, u8>,
 ) -> Result<()> {
-    let mut mem_slice = unsafe { slice::from_raw_parts_mut(slice.ptr(), slice.len()) };
-    reader.read_exact(&mut mem_slice).await?;
+    let mem_slice = unsafe { slice::from_raw_parts_mut(slice.ptr(), slice.len()) };
+    reader.read_exact(mem_slice).await?;
     Ok(())
 }

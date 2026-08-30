@@ -1,12 +1,5 @@
-#![feature(f16)]
-#![feature(random)]
-#![feature(const_default)]
-#![feature(lock_value_accessors)]
 #![feature(integer_casts)]
 
-
-#[cfg(feature = "bevy_window")]
-use bevy::a11y::AccessibilityPlugin;
 use bevy::{
     a11y::AccessibilityPlugin,
     app::{App, PanicHandlerPlugin, TaskPoolPlugin},
@@ -28,13 +21,14 @@ use bevy::{
     window::{CursorIcon, SystemCursorIcon},
 };
 use glam::Vec2;
+use tracing::Level;
 
 mod bindings;
 pub mod physics;
 
 use crate::{
     assets::MeshAssets,
-    editor::EditorPlugin,
+    editor::{EditorPlugin, console::ConsolePlugin},
     physics::PhysicsPlugin,
     render::{PipelinedRenderingPlugin, RenderPlugin},
     scene::ScenePlugin,
@@ -52,10 +46,15 @@ pub const INITIAL_WINDOW_SIZE: Vec2 = Vec2::new(2000.0, 2000.0 * 9.0 / 16.0);
 #[allow(non_snake_case)]
 pub fn CorePlugin(app: &mut App) {
     app.add_plugins((
+        ConsolePlugin {
+            also_log_to_stderr: false,
+            level: Level::DEBUG,
+            ..Default::default()
+        },
         AssetPlugin {
             mode: AssetMode::Processed,
-            file_path: format!("/home/karsten/code/GameEngine/game/assets"),
-            processed_file_path: format!("/home/karsten/code/GameEngine/game/imported_assets"),
+            file_path: "/home/karsten/code/GameEngine/game/assets".to_string(),
+            processed_file_path: "/home/karsten/code/GameEngine/game/imported_assets".to_string(),
             ..Default::default()
         },
         WinitPlugin::default(),
@@ -79,15 +78,14 @@ pub fn CorePlugin(app: &mut App) {
         InputPlugin,
         AccessibilityPlugin,
         MeshAssets,
-        TransformPlugin::default(),
+        TransformPlugin,
     ))
     .add_plugins((
-        RenderPlugin::default(),
-        PipelinedRenderingPlugin::default(),
+        RenderPlugin,
+        PipelinedRenderingPlugin,
         UiPlugin,
         PhysicsPlugin,
         EditorPlugin::default(),
-        bevy::log::LogPlugin::default(),
         ScenePlugin,
     ))
     .add_systems(

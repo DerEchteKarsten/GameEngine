@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -15,36 +15,26 @@ use bevy::reflect::Reflect;
 use bevy::transform::components::GlobalTransform;
 use bevy::window::Window;
 use futures::channel::oneshot;
-use lava::image::Image;
-use lava::image::slice::AsImage;
-use std::sync::Mutex;
 
+use bevy::log::error;
 use bytemuck::Pod;
 use glam::{Mat4, Vec2, Vec3};
 use lava::buffer::Buffer;
-
 use lava::buffer::slice::BufferSlice;
-use lava::image::slice::ImageSlice;
+use lava::image::Image;
+use lava::image::slice::{AsImage, ImageSlice};
 use lava::image::usage::UsageSet;
 use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue, Transfer};
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
-use tracing::error;
 
-use crate::assets::{mesh::GpuMesh, mesh::MeshHeader};
-use crate::bindings::{
-    self, AabbError,
-};
+use crate::assets::mesh::{GpuMesh, MeshHeader};
+use crate::bindings::{self, AabbError};
 use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
 use crate::render::extract_param::Extract;
-use crate::render::render::{
-    FrameCount, QueueStrategie, Queues,
-    extract_camera,
-};
-use crate::render::{
-    ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderStartup, RenderSystems,
-};
+use crate::render::render::{FrameCount, QueueStrategie, Queues, extract_camera};
+use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderStartup, RenderSystems};
 use crate::scene::Instance;
 
 #[derive(Resource)]
@@ -172,7 +162,7 @@ impl UploadQueue {
                 let Dst::Image(image) = item.dst.take().unwrap() else {
                     unreachable!()
                 };
-                if let Err(_) = imag.send(image) {
+                if imag.send(image).is_err() {
                     error!(
                         "Receiver was dropped, image could not be sent back and will be dropped"
                     );
@@ -257,9 +247,8 @@ impl UploadQueue {
             };
 
             std::thread::spawn(move || {
-                #[cfg(feature = "trace")]
-                let _span = log::info_span!("Upload Thread").entered();
-                let mut staging_slice = res.staging.range(..).clone();
+                let _span = tracing::info_span!("Upload Thread").entered();
+                let mut staging_slice = res.staging.range(..);
                 let mut regions = Vec::new();
                 let mut need_send_back = Vec::new();
                 loop {
@@ -337,8 +326,7 @@ impl UploadQueue {
             })
         } else {
             std::thread::spawn(move || {
-                #[cfg(feature = "trace")]
-                let _span = log::info_span!("Upload Thread").entered();
+                let _span = tracing::info_span!("Upload Thread").entered();
                 for item in receiver.iter() {
                     match item.dst.as_ref().unwrap() {
                         Dst::Buffer(buff) => {
@@ -350,8 +338,8 @@ impl UploadQueue {
                                 .image_extent(image.extent)
                                 .image_offset(raw_vulkan::Offset3D { x: 0, y: 0, z: 0 })
                                 .image_subresource(image.view().subresource_layers())
-                                .memory_image_height(image.extent.height as u32)
-                                .memory_row_length(image.extent.width as u32)];
+                                .memory_image_height(image.extent.height)
+                                .memory_row_length(image.extent.width)];
                             let copy_memory_to_image_info =
                                 raw_vulkan::CopyMemoryToImageInfoEXT::default()
                                     .dst_image(image.image)
@@ -483,6 +471,7 @@ fn extract_view_port(
     }));
 }
 
+#[allow(non_snake_case)]
 pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
         .add_systems(

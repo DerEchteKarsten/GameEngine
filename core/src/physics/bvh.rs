@@ -1,14 +1,9 @@
-
 use bevy::{
     ecs::system::{SystemParam, lifetimeless::Read},
-    math::{
-        VectorSpace,
-        bounding::{Aabb3d, BoundingVolume, RayCast3d},
-    },
+    math::bounding::{Aabb3d, BoundingVolume, RayCast3d},
     prelude::*,
 };
 use bytemuck::{Pod, Zeroable, bytes_of};
-use itertools::Itertools;
 
 use crate::{
     assets::mesh::GpuMesh,
@@ -38,7 +33,7 @@ impl ChildType {
 
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
-struct HasNode {
+pub(crate) struct HasNode {
     ptr: usize,
 }
 
@@ -47,7 +42,7 @@ unsafe impl Zeroable for HasBlas {}
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct HasBlas {
+pub(crate) struct HasBlas {
     blas_root_node_index: usize,
     entity: Entity,
 }
@@ -108,19 +103,13 @@ impl NodeBuilder {
         self.child_offset += 1;
         self
     }
-    fn push_leaf_child(self, data: HasLeaf, aabb: Aabb3d) -> Self {
-        self.push_child(Some(ChildData::HasLeaf(data)), ChildType::HasLeaf, aabb)
-    }
-    fn push_blas_child(self, data: HasBlas, aabb: Aabb3d) -> Self {
-        self.push_child(Some(ChildData::HasBlas(data)), ChildType::HasBlas, aabb)
-    }
     fn push_node_child(self, data: HasNode, aabb: Aabb3d) -> Self {
-        assert!(data.ptr % 8 == 0);
+        assert!(data.ptr.is_multiple_of(8));
         self.push_child(Some(ChildData::HasNode(data)), ChildType::HasNode, aabb)
     }
     fn build(self, data: &mut Vec<u8>) -> usize {
         let ptr = data.len();
-        assert!(data.len() % 8 == 0);
+        assert!(data.len().is_multiple_of(8));
         data.extend_from_slice(&self.child_mask);
         for aabb in self.child_aabbs {
             data.extend_from_slice(&aabb_to_pod(aabb));
@@ -157,7 +146,7 @@ struct NodeView<'a> {
 
 impl<'a> NodeView<'a> {
     fn new(data: &'a [u8], offset: usize) -> Self {
-        assert!(offset % 8 == 0);
+        assert!(offset.is_multiple_of(8));
         NodeView { offset, data }
     }
     fn get_child_mask(&self) -> u64 {
@@ -169,7 +158,7 @@ impl<'a> NodeView<'a> {
     }
     fn get_type(&self, i: usize) -> ChildType {
         let child_mask = self.get_child_mask();
-        unsafe { std::mem::transmute::<u8, ChildType>(((child_mask >> i * 8) & 0xFF) as u8) }
+        unsafe { std::mem::transmute::<u8, ChildType>(((child_mask >> (i * 8)) & 0xFF) as u8) }
     }
     fn get_data(&self, i: usize) -> Option<ChildData> {
         let mut offset = 8 + 8 * 32;
@@ -299,7 +288,7 @@ impl SceneBvh {
         let mut stack: Vec<(usize, &[u8], f32)> = vec![(self.root, &self.bvh, ray.max)];
 
         while let Some((offset, bvh, t_entry)) = stack.pop() {
-            if best.map_or(false, |b| t_entry >= b.t) {
+            if best.is_some_and(|b| t_entry >= b.t) {
                 continue;
             }
 
@@ -311,7 +300,7 @@ impl SceneBvh {
                 let Some(t) = ray.aabb_intersection_at(&aabb) else {
                     continue;
                 };
-                if best.map_or(false, |b| t >= b.t) {
+                if best.is_some_and(|b| t >= b.t) {
                     continue;
                 }
                 hits.push((t, data));
@@ -357,7 +346,7 @@ impl SceneBvh {
 
                         if let Some(mut result) = blas_result {
                             result.t *= local_to_world_t;
-                            if best.map_or(true, |b| result.t < b.t) {
+                            if best.is_none_or(|b| result.t < b.t) {
                                 best = Some(result);
                             }
                         }
@@ -385,10 +374,10 @@ fn raycast_blas(
 
     while let Some((offset, t_entry)) = stack.pop() {
         // Prune against both local best and the t_max hint from the TLAS
-        if best.map_or(false, |b| t_entry >= b.t) {
+        if best.is_some_and(|b| t_entry >= b.t) {
             continue;
         }
-        if t_max.map_or(false, |t| t_entry >= t) {
+        if t_max.is_some_and(|t| t_entry >= t) {
             continue;
         }
 
@@ -398,10 +387,10 @@ fn raycast_blas(
             let Some(t) = ray.aabb_intersection_at(&aabb) else {
                 continue;
             };
-            if best.map_or(false, |b| t >= b.t) {
+            if best.is_some_and(|b| t >= b.t) {
                 continue;
             }
-            if t_max.map_or(false, |tm| t >= tm) {
+            if t_max.is_some_and(|tm| t >= tm) {
                 continue;
             }
             hits.push((t, data));
@@ -420,10 +409,10 @@ fn raycast_blas(
                         Vec4::from_array(leaf.triangle[1]).xyz().to_vec3a(),
                         Vec4::from_array(leaf.triangle[2]).xyz().to_vec3a(),
                     );
-                    if let Some(hit) = hit {
-                        if best.map_or(true, |b| hit < b.t) {
-                            best = Some(RayCastResult { entity, t: hit });
-                        }
+                    if let Some(hit) = hit
+                        && best.is_none_or(|b| hit < b.t)
+                    {
+                        best = Some(RayCastResult { entity, t: hit });
                     }
                 }
                 ChildData::HasBlas(_) => {}
@@ -507,10 +496,10 @@ pub(crate) fn build_intial_nodes(
     leafs: &mut [LeafData],
     max_aabb: Aabb3d,
 ) -> Vec<(NodeBuilder, u64, Aabb3d)> {
-    if leafs.len() == 0 {
+    if leafs.is_empty() {
         return Vec::new();
     }
-    leafs.sort_by(|a, b| a.mortan_code.cmp(&b.mortan_code));
+    leafs.sort_by_key(|a| a.mortan_code);
     let mut out = Vec::new();
     let mut builder = NodeBuilder::new();
     for leaf in leafs {
@@ -536,11 +525,11 @@ pub(crate) fn build_bvh(
     max_aabb: Aabb3d,
     data: &mut Vec<u8>,
 ) -> usize {
-    if nodes.len() == 0 {
+    if nodes.is_empty() {
         return 0;
     }
     let mut builder = NodeBuilder::new();
-    nodes.sort_by(|a, b| a.1.cmp(&b.1));
+    nodes.sort_by_key(|a| a.1);
     let mut out = Vec::new();
     for node in nodes {
         if builder.child_offset == 8 {
@@ -587,7 +576,7 @@ pub(crate) fn update_bvh(
             ),
             &mat,
         );
-        meshes.push((entity.clone(), mesh, aabb));
+        meshes.push((entity, mesh, aabb));
         if let Some(total_aabb) = &mut total_aabb {
             *total_aabb = total_aabb.merge(&aabb);
         } else {

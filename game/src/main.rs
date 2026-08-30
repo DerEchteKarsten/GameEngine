@@ -3,17 +3,12 @@ use core::{CorePlugin, editor::camera::EditorCamera, scene::camera::CameraBundle
 use bevy::{
     app::{App, Startup, Update},
     asset::AssetServer,
-    ecs::{
-        component::Component,
-        system::{Commands, Res},
-    },
+    ecs::system::{Commands, Res},
+    log,
     time::Time,
     transform::components::Transform,
 };
 use glam::Vec3;
-
-#[derive(Component)]
-struct MyModel;
 
 fn init(mut cmd: Commands, _asset_server: Res<AssetServer>) {
     // let handle = asset_server.load("tower.glb");
@@ -39,9 +34,9 @@ fn update_mesh(
     // mut local: Local<(usize, Vec<String>)>,
     // mut gizzmos: DrawGizzmos,
     // viewport: ViewPortProxy,
-    _time: Res<Time>,
+    time: Res<Time>,
 ) {
-    // log::info!("{:#?}", time.delta());
+    log::info!("time: {:#?}", time.elapsed());
     // if let Some(pos) = window.cursor_position() {
     //     let cam_pos = settings.freez_pos.unwrap_or(camera.1.translation().extend(0.0)).xyz();
     //     gizzmos.draw_gizzmo(&ArrowGizzmo {
@@ -107,6 +102,11 @@ fn update_mesh(
 }
 
 fn main() {
+    println!(
+        "cargo:rustc-env=WORKSPACE_ROOT={}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+
     App::new()
         .add_plugins(CorePlugin)
         .add_systems(Startup, init)

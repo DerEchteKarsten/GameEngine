@@ -11,10 +11,7 @@ use bevy::{
         system::SystemState,
         world::World,
     },
-    reflect::{
-        PartialReflect, Reflect, ReflectMut, TypeRegistry,
-        reflect_trait,
-    },
+    reflect::{PartialReflect, Reflect, ReflectMut, TypeRegistry, reflect_trait},
 };
 use glam::{EulerRot, Mat3, Quat, Vec3};
 
@@ -390,18 +387,16 @@ fn draw_reflect_value(
 
     let type_short = value.reflect_short_type_path().to_owned();
 
-    if let Some(v) = value.try_as_reflect_mut() {
-        if let Some(reg) = registry.get(v.type_id()) {
-            if let Some(editor_view) = reg.data::<ReflectEditorView>() {
-                if let Some(concrete) = editor_view.get_mut(v.as_reflect_mut()) {
-                    return concrete.ui(ui, name.unwrap_or(""), id, registry);
-                }
-                // ui.text("Doesnt have Editor View");
-            }
-            // ui.text("Not in registry");
-        }
-        // ui.text("Cant Reflect");
+    if let Some(v) = value.try_as_reflect_mut()
+        && let Some(reg) = registry.get(v.type_id())
+        && let Some(editor_view) = reg.data::<ReflectEditorView>()
+        && let Some(concrete) = editor_view.get_mut(v.as_reflect_mut())
+    {
+        return concrete.ui(ui, name.unwrap_or(""), id, registry);
     }
+    // ui.text("Doesnt have Editor View");
+    // ui.text("Not in registry");
+    // ui.text("Cant Reflect");
 
     let label = name.map(|n| format!("{}: ", n)).unwrap_or("".to_string());
 
@@ -521,7 +516,7 @@ fn draw_reflect_value(
         ReflectMut::Set(v) => {
             ui.collapsable(format!("{}{}{{{}}}", label, type_short, v.len()), |ui| {
                 for i in v.iter() {
-                    let before = ui.disabled;
+                    let before = ui.disable_all_input;
                     ui.disabled(true);
                     changed |= draw_reflect_value(
                         ui,
@@ -673,7 +668,7 @@ pub(crate) fn selected_ui(world: &mut World) {
             let type_id = info.type_id().unwrap();
             let registration = registry.get(type_id).unwrap();
             let reflect_component = registration.data::<ReflectComponent>().unwrap();
-            reflect_component.apply(&mut world.entity_mut(entity), new_value.as_ref());
+            reflect_component.apply(world.entity_mut(entity), new_value.as_ref());
         }
     }
 }

@@ -42,11 +42,9 @@ impl AssetDragAndDropProvider {
     pub fn drop<A: Asset>(&self) -> Option<Handle<A>> {
         if let Ok(mut item) = self.item.write()
             && let Some(item) = item.take()
-        {
-            if item.tid == TypeId::of::<A>() {
+            && item.tid == TypeId::of::<A>() {
                 return item.handle.try_typed::<A>().ok();
             }
-        }
         None
     }
 

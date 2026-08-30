@@ -1,88 +1,57 @@
-use std::collections::HashMap;
-use std::mem::offset_of;
-use std::ops::Deref;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::{
+    collections::HashMap,
+    mem::offset_of,
+    sync::{Arc, Mutex},
+};
 
-use bevy::app::App;
-use bevy::app::Update;
-use bevy::ecs::query::With;
-use bevy::ecs::resource::Resource;
-use bevy::ecs::schedule::IntoScheduleConfigs;
-use bevy::ecs::system::Commands;
-use bevy::ecs::system::Local;
-use bevy::ecs::system::Res;
-use bevy::ecs::system::ResMut;
-use bevy::ecs::system::Single;
-use bevy::transform::components::Transform;
-use bevy::window::PrimaryWindow;
-use bevy::window::Window;
+use bevy::{
+    app::{App, Update},
+    ecs::{
+        query::With,
+        resource::Resource,
+        schedule::IntoScheduleConfigs,
+        system::{Commands, Local, Res, ResMut, Single},
+    },
+    log::*,
+    transform::components::Transform,
+    window::{PrimaryWindow, Window},
+};
+use glam::{Mat4, Vec3, Vec4, Vec4Swizzles};
+use lava::{
+    buffer::Buffer,
+    command_buffer::{RasterVertexDispatch, ResourceHandle, ResourceState, Scissor, Viewport},
+    image::{
+        Image,
+        format::{self, D32Sfloat},
+        slice::{AsImage, ImageView},
+        usage::{ColorAttachmentStorage, DepthAttachmentSampled},
+    },
+    state::Ctx,
+    vkobjects::{
+        self,
+        queue::{Binary, CommandBufferMemory, CommandPool, Fence, Gfx, Present, Queue, Semaphore},
+    },
+};
 
-use glam::Mat4;
-use glam::Vec3;
-use glam::Vec4;
-use glam::Vec4Swizzles;
-use lava::command_buffer::RasterVertexDispatch;
-use lava::command_buffer::ResourceHandle;
-use lava::command_buffer::ResourceState;
-use lava::command_buffer::Scissor;
-use lava::command_buffer::Viewport;
-use lava::image::Image;
-use lava::image::format;
-use lava::image::format::D32Sfloat;
-use lava::image::slice::AsImage;
-use lava::image::slice::ImageView;
-use lava::image::usage::ColorAttachmentStorage;
-use lava::image::usage::DepthAttachmentSampled;
-use lava::state::Ctx;
-use lava::vkobjects;
-use lava::vkobjects::queue::Binary;
-use lava::vkobjects::queue::CommandBufferMemory;
-use lava::vkobjects::queue::CommandPool;
-use lava::vkobjects::queue::Gfx;
-use lava::vkobjects::queue::Present;
-use lava::vkobjects::queue::Queue;
-use lava::vkobjects::queue::Semaphore;
-
-use lava::buffer::Buffer;
-use lava::vkobjects::queue::Fence;
-
-use crate::INITIAL_WINDOW_SIZE;
-use crate::bindings;
-use crate::bindings::BvhCull;
-use crate::bindings::BvhCullBindings;
-use crate::bindings::DrawOutline;
-use crate::bindings::DrawOutlineBindings;
-use crate::bindings::InstanceBvhRoot;
-use crate::bindings::InstanceCull;
-use crate::bindings::InstanceCullBindings;
-use crate::bindings::InstancedMeshlet;
-use crate::bindings::Raster;
-use crate::bindings::RasterBindings;
-use crate::bindings::RasterOutline;
-use crate::bindings::RasterOutlineBindings;
-use crate::bindings::RasterUi;
-use crate::bindings::RasterUiBindings;
-use crate::bindings::Skybox;
-use crate::bindings::SkyboxBindings;
-use crate::bindings::TraversalVariables;
-use crate::editor::gizzmos::GizzmoResources;
-use crate::editor::viewport::ViewPort;
-use crate::id;
-use crate::render::ExtractSchedule;
-use crate::render::MainWorld;
-use crate::render::Render;
-use crate::render::RenderApp;
-use crate::render::RenderStartup;
-use crate::render::RenderSystems;
-use crate::render::extract_param::Extract;
-use crate::render::world::InstanceManager;
-use crate::render::world::MAX_INSTANCES;
-use crate::render::world::UploadQueue;
-use crate::ui::UiResources;
-use crate::ui::builder::UiBuilder;
-use crate::{render::FRAMES_IN_FLIGHT, scene::camera::Camera};
-use tracing::info;
+use crate::{
+    INITIAL_WINDOW_SIZE,
+    bindings::{
+        BvhCull, BvhCullBindings, DrawOutline, DrawOutlineBindings, InstanceBvhRoot, InstanceCull,
+        InstanceCullBindings, InstanceMeshletIndex, InstancedMeshlet, Raster, RasterBindings,
+        RasterOutline, RasterOutlineBindings, RasterUi, RasterUiBindings, Skybox, SkyboxBindings,
+        TraversalVariables,
+    },
+    editor::{gizzmos::GizzmoResources, viewport::ViewPort},
+    id,
+    render::{
+        ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, Render, RenderApp, RenderStartup,
+        RenderSystems,
+        extract_param::Extract,
+        world::{InstanceManager, MAX_INSTANCES, UploadQueue},
+    },
+    scene::camera::Camera,
+    ui::{UiResources, builder::UiBuilder},
+};
 
 #[derive(Resource)]
 pub struct CommandPools {
@@ -141,7 +110,7 @@ impl Swapchain {
     }
 }
 
-impl Deref for Swapchain {
+impl std::ops::Deref for Swapchain {
     type Target = lava::vkobjects::swapchain::Swapchain<'static>;
     fn deref(&self) -> &Self::Target {
         &self.swpachain
@@ -251,7 +220,7 @@ pub struct RenderResources {
     meshlets: Buffer<InstancedMeshlet>,
     bvh_node_stack: Buffer<InstanceBvhRoot>,
     meshlet_batches: Buffer<u32>,
-    candidate_meshlets: Buffer<bindings::InstanceMeshletIndex>,
+    candidate_meshlets: Buffer<InstanceMeshletIndex>,
     variables: Buffer<TraversalVariables>,
 }
 
@@ -403,8 +372,8 @@ pub(super) fn render(
                         cmd.fill_buffer(resources.bvh_node_stack.range(..), !0);
                         cmd.fill_buffer(resources.candidate_meshlets.range(..), !0);
                         cmd.fill_buffer(resources.meshlet_batches.range(..), 0);
-                        let cull_proj = setting.freez_proj.unwrap_or(camera.camera.proj.clone());
-                        let cull_view = setting.freez_view.unwrap_or(camera.camera.view.clone());
+                        let cull_proj = setting.freez_proj.unwrap_or(camera.camera.proj);
+                        let cull_view = setting.freez_view.unwrap_or(camera.camera.view);
 
                         cmd.update_buffer(
                             resources.variables.range(..),
@@ -606,6 +575,7 @@ pub(super) fn render(
     }
 }
 
+#[allow(non_snake_case)]
 pub fn RenderPassesPlugin(app: &mut App) {
     app.add_systems(
         Render,
@@ -619,6 +589,7 @@ pub fn RenderPassesPlugin(app: &mut App) {
     .add_systems(RenderStartup, init_render);
 }
 
+#[allow(non_snake_case)]
 pub fn RenderDebugUi(app: &mut App) {
     app.insert_resource(RenderValues::default())
         .add_systems(Update, settings_ui)

@@ -1,10 +1,8 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env,
-    fmt::format,
-    fs::{self, File},
-    io::{self, Write},
-    path::{Path, PathBuf},
+    fs::{self},
+    path::PathBuf,
 };
 
 use serde::Deserialize;
@@ -13,6 +11,7 @@ use walkdir::WalkDir;
 #[derive(Debug, Deserialize)]
 pub struct Root {
     pub parameters: Vec<Parameter>,
+    #[allow(non_snake_case)]
     pub entryPoints: Vec<EntryPoint>,
 }
 
@@ -59,18 +58,23 @@ pub struct TypeInfo {
     pub fields: Vec<Field>,
 
     #[serde(default)]
+    #[allow(non_snake_case)]
     pub scalarType: Option<String>,
 
     #[serde(default)]
+    #[allow(non_snake_case)]
     pub rowCount: Option<u32>,
 
     #[serde(default)]
+    #[allow(non_snake_case)]
     pub columnCount: Option<u32>,
 
     #[serde(default)]
+    #[allow(non_snake_case)]
     pub valueType: Option<Box<TypeInfo>>,
 
     #[serde(default)]
+    #[allow(non_snake_case)]
     pub elementCount: Option<u32>,
 
     #[serde(default, rename = "elementType")]
@@ -154,12 +158,8 @@ pub fn rust_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String 
                 let mut body = String::new();
                 for f in &t.fields {
                     body.push_str(
-                        format!(
-                            "    pub {}: {},\n",
-                            &f.name,
-                            &gpu_type(&f.type_info, structs)
-                        )
-                        .as_str(),
+                        format!("    pub {}: {},\n", f.name, gpu_type(&f.type_info, structs))
+                            .as_str(),
                     );
                 }
                 structs.insert(name.clone(), body);
@@ -168,7 +168,7 @@ pub fn rust_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String 
             name
         }
         "pointer" => {
-            rust_type(&t.valueType.as_ref().unwrap(), structs);
+            rust_type(t.valueType.as_ref().unwrap(), structs);
             "u64".to_string()
         }
         other => format!("compile_error!(\"Unsupported Type {}\")", other),
@@ -204,11 +204,11 @@ pub fn cpu_type(t: &TypeInfo, structs: &mut HashMap<String, String>) -> String {
     }
 }
 
-pub fn resource(field: &Field, name: &str) -> Option<String> {
+pub fn resource(field: &Field, _name: &str) -> Option<String> {
     if field.type_info.kind != "struct" {
         return None;
     }
-    let field_name = field.name.clone();
+    let _field_name = field.name.clone();
     let struct_name = field.type_info.name.clone().unwrap();
     if struct_name != "MutImage"
         && struct_name != "Texture"
@@ -280,17 +280,15 @@ pub fn generate_push_constant(
 
     let constructors = fields
         .iter()
-        .map(
-            |f| match f.type_info.name.as_ref().map(|e| e.as_str()).unwrap_or("") {
-                "MutBuf" | "Buf" => {
-                    format!("{}: bindings.{}.gpu_ptr,", f.name, f.name)
-                }
-                "Image" | "MutImage" | "Texture" => {
-                    format!("{}: bindings.{}.handle,", f.name, f.name)
-                }
-                _ => format!("{}: bindings.{},", f.name, f.name),
-            },
-        )
+        .map(|f| match f.type_info.name.as_deref().unwrap_or("") {
+            "MutBuf" | "Buf" => {
+                format!("{}: bindings.{}.gpu_ptr,", f.name, f.name)
+            }
+            "Image" | "MutImage" | "Texture" => {
+                format!("{}: bindings.{}.handle,", f.name, f.name)
+            }
+            _ => format!("{}: bindings.{},", f.name, f.name),
+        })
         .collect::<Vec<_>>()
         .join("\n");
 

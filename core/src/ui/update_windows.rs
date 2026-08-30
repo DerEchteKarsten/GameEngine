@@ -10,7 +10,7 @@ use bevy::{
         mouse::{AccumulatedMouseScroll, MouseButton},
         touch::Touches,
     },
-    math::{Rect, VectorSpace},
+    math::Rect,
     window::Window,
 };
 use glam::Vec2;
@@ -272,13 +272,12 @@ pub fn update_windows(
                         focused.drag_press_pos = window.rect.min - cursor_pos;
                     }
                 }
-                if window.active_tab == j as u32 {
-                    if let Some(cp) = frame.input.cursor_pos
-                        && focused.draging == Some(Draggable::ActiveTab)
-                        && (focused.drag_start - cp).length() > UiContext::DRAG_THRESHHOLD
-                    {
-                        detatch_tab = Some(j as u32);
-                    }
+                if window.active_tab == j as u32
+                    && let Some(cp) = frame.input.cursor_pos
+                    && focused.draging == Some(Draggable::ActiveTab)
+                    && (focused.drag_start - cp).length() > UiContext::DRAG_THRESHHOLD
+                {
+                    detatch_tab = Some(j as u32);
                 }
             }
             cursor.x += tab_rect.width() + UiContext::TAB_GAP.x as f32;
@@ -308,13 +307,15 @@ pub fn update_windows(
 
         let header_rect = window.header_rect();
         if let Some(focused) = &mut window.focused {
-            if frame.input.primary_pressed {
-                if frame.input.hovered(header_rect) && !hovering_tab && !focused.edges.any() {
-                    focused.draging = Some(Draggable::Window);
-                    let cp = frame.input.cursor_pos.unwrap();
-                    focused.drag_start = cp;
-                    focused.drag_press_pos = window.rect.min - cp;
-                }
+            if frame.input.primary_pressed
+                && frame.input.hovered(header_rect)
+                && !hovering_tab
+                && !focused.edges.any()
+            {
+                focused.draging = Some(Draggable::Window);
+                let cp = frame.input.cursor_pos.unwrap();
+                focused.drag_start = cp;
+                focused.drag_press_pos = window.rect.min - cp;
             }
 
             if frame.input.primary_released {

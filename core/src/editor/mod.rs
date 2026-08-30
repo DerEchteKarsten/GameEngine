@@ -11,7 +11,6 @@ use bevy::{
     time::Time,
 };
 use glam::Vec2;
-use tracing::Level;
 
 use crate::{
     INITIAL_WINDOW_SIZE,
@@ -109,14 +108,7 @@ impl Plugin for EditorPlugin {
         app.insert_resource(Gizzmos {
             gizzmos: Vec::new(),
         })
-        .add_plugins((
-            ConsolePlugin {
-                also_log_to_stderr: false,
-                level: Level::DEBUG,
-                ..Default::default()
-            },
-            RenderDebugUi,
-        ))
+        .add_plugins(RenderDebugUi)
         .insert_resource(self.camera_settings)
         .init_resource::<AssetDragAndDropProvider>()
         .init_resource::<EntityDragAndDropProvider>()

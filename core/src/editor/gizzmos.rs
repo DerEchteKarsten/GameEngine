@@ -16,8 +16,7 @@ use bevy::{
     ecs::{
         resource::Resource,
         system::{
-            Commands, Local, Res, ResMut, Single, SystemParam, SystemState,
-            lifetimeless::Read,
+            Commands, Local, Res, ResMut, Single, SystemParam, SystemState, lifetimeless::Read,
         },
     },
     transform::components::GlobalTransform,
@@ -30,7 +29,7 @@ use lava::{
 
 const MAX_GIZZMOS: usize = 1_000_000;
 
-pub(crate) trait GizzmoShape {
+pub trait GizzmoShape {
     fn local_transform(&self) -> Mat4;
     fn color(&self) -> Vec4;
     fn ty(&self) -> GizzmoType;
@@ -92,7 +91,7 @@ impl GizzmoShape for BoxGizzmo {
         let origin = camera_transfrom.translation();
 
         let inv = local_transform.inverse();
-        let origin = inv.transform_point3(origin.into());
+        let origin = inv.transform_point3(origin);
         let dir = inv.transform_vector3(dir);
 
         let inv_dir = Vec3::ONE / dir;
@@ -136,7 +135,7 @@ impl GizzmoShape for SphereGizzmo {
         let origin = camera_transfrom.translation();
 
         let inv = local_transform.inverse();
-        let origin = inv.transform_point3(origin.into());
+        let origin = inv.transform_point3(origin);
         let dir = inv.transform_vector3(dir).normalize();
 
         let oc = origin - Vec3::splat(0.5);
@@ -198,20 +197,20 @@ impl GizzmoShape for ArrowGizzmo {
         }
 
         let hit_z = origin.z + dir.z * t;
-        hit_z >= 0.0 && hit_z <= 1.0
+        (0.0..=1.0).contains(&hit_z)
     }
 }
 
 #[derive(PartialEq, Debug)]
-pub(crate) enum GizzmoType {
+pub enum GizzmoType {
     Box,
     Sphere,
     Arrow,
 }
 
 #[derive(Resource)]
-pub(crate) struct Gizzmos {
-    pub(crate) gizzmos: Vec<(Gizzmo, GizzmoType)>,
+pub struct Gizzmos {
+    pub gizzmos: Vec<(Gizzmo, GizzmoType)>,
 }
 
 #[derive(SystemParam)]
@@ -350,7 +349,7 @@ impl GizzmoResources {
         viewport: &ViewPort,
         frame_in_flight: usize,
     ) {
-        if self.aabb_range.len() > 0 {
+        if !self.aabb_range.is_empty() {
             cmd.raster::<DrawAabbs>()
                 .bind(DrawAabbsBindings {
                     world_to_clip: camera.camera.proj * camera.camera.view,
@@ -376,7 +375,7 @@ impl GizzmoResources {
                     },
                 );
         }
-        if self.sphere_range.len() > 0 {
+        if !self.sphere_range.is_empty() {
             cmd.raster::<DrawSpheres>()
                 .bind(DrawSpheresBindings {
                     world_to_clip: camera.camera.proj * camera.camera.view,
@@ -402,7 +401,7 @@ impl GizzmoResources {
                     },
                 );
         }
-        if self.arrow_range.len() > 0 {
+        if !self.arrow_range.is_empty() {
             cmd.raster::<DrawArrows>()
                 .bind(DrawArrowsBindings {
                     world_to_clip: camera.camera.proj * camera.camera.view,

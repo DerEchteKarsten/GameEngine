@@ -13,6 +13,19 @@ pub struct Scrollable {
 }
 
 impl Scrollable {
+    pub fn cursor_pos(&self, content_pos: Vec2) -> Vec2 {
+        (content_pos + UiContext::RMB as f32 + UiContext::WINDOW_PAD.as_vec2() - self.scroll)
+            .round()
+    }
+
+    pub fn bar_size(&self, size: Vec2) -> Vec2 {
+        UiContext::BAR_THICKNESS
+            * Vec2::new(
+                (self.content_size.y > size.y) as u32 as f32,
+                (self.content_size.x > size.x) as u32 as f32,
+            )
+    }
+
     pub fn scroll(&mut self, delta: Vec2, size: Vec2) {
         let scrollbar_y = self.content_size.y > size.y;
         let scrollbar_x = self.content_size.x > size.x;
@@ -92,13 +105,14 @@ impl Scrollable {
             .map(|p| Rect::from_corners(thumb_pos, thumb_pos + thumb_size).contains(p))
             .unwrap_or(false);
 
-        if left_mouse_pressed && hovered {
-            if let Some(f) = focused {
-                let grab_offset = cursor_pos.map(|p| p - thumb).unwrap_or(Vec2::ZERO);
-                f.draging = Some(draging);
-                f.drag_start =
-                    grab_offset * Vec2::new(!direction as u32 as f32, direction as u32 as f32);
-            }
+        if left_mouse_pressed
+            && hovered
+            && let Some(f) = focused
+        {
+            let grab_offset = cursor_pos.map(|p| p - thumb).unwrap_or(Vec2::ZERO);
+            f.draging = Some(draging);
+            f.drag_start =
+                grab_offset * Vec2::new(!direction as u32 as f32, direction as u32 as f32);
         }
 
         if let Some(p) = cursor_pos

@@ -40,11 +40,11 @@ impl CameraBundle {
 }
 impl Camera {
     pub fn proj_inv(&mut self) -> Mat4 {
-        self.proj_inv.get_or_insert(self.proj.inverse()).clone()
+        *self.proj_inv.get_or_insert(self.proj.inverse())
     }
 
     pub fn view_inv(&mut self) -> Mat4 {
-        self.view_inv.get_or_insert(self.view.inverse()).clone()
+        *self.view_inv.get_or_insert(self.view.inverse())
     }
 
     pub fn ray_direction(

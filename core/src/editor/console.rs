@@ -1,49 +1,107 @@
-// console_plugin/src/lib.rs
-//
-// Drop-in replacement for Bevy's LogPlugin.
-// - Captures tracing/log events into a Bevy Resource (ConsoleLog)
-// - Tags each entry with the schedule that was active when it was emitted
-// - Renders an ImGui window via ResMut<UiBuilder>
-// - Re-implements all the setup LogPlugin normally does
-//   (tracy allocator, tracing subscriber, panic hook, etc.)
-
+use std::cell::UnsafeCell;
 use std::fmt::Debug;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use bevy::app::{
-    App, First, Plugin, PostUpdate,
-};
+use bevy::app::{App, Last, Plugin, PostUpdate};
 use bevy::ecs::prelude::*;
 use glam::Vec4;
-use tracing_subscriber::Layer;
+use tracing::Level;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{Layer, fmt};
 
 use crate::id;
 use crate::ui::UiContext;
 use crate::ui::builder::UiBuilder;
 
-#[cfg(feature = "trace_tracy_memory")]
-#[global_allocator]
-static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
-    tracy_client::ProfiledAllocator::new(std::alloc::System, 100);
+// #[global_allocator]
+// static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
+//     tracy_client::ProfiledAllocator::new(std::alloc::System, 100);
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
-    pub level: tracing::Level,
-    pub target: String,
-    pub message: String,
+    pub buffer: Box<str>,
+    pub message: u16,
+    pub level: u8,
+    pub message_type: MessageType,
     pub frame: u64,
 }
 
-type FrameCounter = Arc<std::sync::atomic::AtomicU64>;
+#[derive(Debug, Clone)]
+pub struct Serverity(pub u8);
 
-#[derive(Clone)]
-struct SharedBuffer(Arc<Mutex<Vec<LogEntry>>>);
+impl Serverity {
+    pub const VERBOSE: Self = Self(0);
+    pub const INFO: Self = Self(1);
+    pub const WARNING: Self = Self(2);
+    pub const ERROR: Self = Self(4);
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidationMessageType(pub u8);
+
+impl ValidationMessageType {
+    pub const GENERAL: Self = Self(0);
+    pub const VALIDATION: Self = Self(1);
+    pub const PERFORMANCE: Self = Self(2);
+}
+
+#[derive(Debug, Clone)]
+pub enum MessageType {
+    Validation {
+        ty: ValidationMessageType,
+        serverity: Serverity,
+    },
+    Normal {
+        target: u16,
+        location: u16,
+    },
+}
+
+impl LogEntry {
+    const LEVEL_NAMES: [&str; 5] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+    const LEVEL_COLORS: [Vec4; 5] = [
+        UiContext::TRACE,
+        UiContext::DEBUG,
+        UiContext::INFO,
+        UiContext::WARN,
+        UiContext::ERROR,
+    ];
+
+    fn format(&self) -> (String, u32) {
+        let entry_level_idx = Self::index_level(self.level);
+        let strg = format!(
+            "[{:>6}] [{:<5}] {}: {}",
+            self.frame,
+            Self::LEVEL_NAMES[entry_level_idx as usize],
+            self.target,
+            self.message,
+        );
+        (strg, entry_level_idx as u32)
+    }
+    fn index_level(l: tracing::Level) -> u8 {
+        match l {
+            tracing::Level::TRACE => 0u8,
+            tracing::Level::DEBUG => 1,
+            tracing::Level::INFO => 2,
+            tracing::Level::WARN => 3,
+            tracing::Level::ERROR => 4,
+        }
+    }
+}
+
+struct SharedBuffer {
+    buffer: std::cell::UnsafeCell<Box<[LogEntry; MAX_ENTIRES]>>,
+    head: AtomicU64,
+    frame: AtomicU64,
+}
+
+unsafe impl Send for SharedBuffer {}
+unsafe impl Sync for SharedBuffer {}
 
 struct ConsoleLayer {
-    buffer: SharedBuffer,
-    frame: FrameCounter,
+    buffer: Arc<SharedBuffer>,
 }
 
 impl<S> Layer<S> for ConsoleLayer
@@ -53,83 +111,74 @@ where
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
         let message = {
             use tracing::field::{Field, Visit};
-            struct Msg(String);
-            impl Visit for Msg {
+
+            impl Visit for LogEntry {
                 fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
                     if f.name() == "message" {
-                        self.0 = format!("{v:?}");
+                        self.message = format!("{v:?}");
                     }
-                }
-                fn record_str(&mut self, f: &Field, v: &str) {
                     if f.name() == "message" {
-                        self.0 = v.to_owned();
+                        self.message = format!("{v:?}");
                     }
+                    println!("Debug: {}: {:?}", f.name(), v);
                 }
             }
-            let mut m = Msg(String::new());
+            println!("{:#?}", event.metadata());
+            let mut m = LogEntry::default();
             event.record(&mut m);
-            m.0
+            println!("----------------------------------------");
+            m.message
         };
 
-        let frame = self.frame.load(std::sync::atomic::Ordering::Relaxed);
+        let frame = self.buffer.frame.load(std::sync::atomic::Ordering::Relaxed);
 
-        if let Ok(mut buf) = self.buffer.0.lock() {
-            buf.push(LogEntry {
+        let idx = self
+            .buffer
+            .head
+            .fetch_add(1, std::sync::atomic::Ordering::Acquire) as usize
+            % MAX_ENTIRES;
+        unsafe {
+            self.buffer.buffer.get().as_mut().unwrap()[idx] = LogEntry {
                 level: *event.metadata().level(),
                 target: event.metadata().target().to_owned(),
                 message,
                 frame,
-            });
-        }
+            }
+        };
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ECS Resources
-// ─────────────────────────────────────────────────────────────────────────────
+const MAX_ENTIRES: usize = 10_000;
 
-/// All captured log entries.
-#[derive(Resource, Default)]
-pub struct ConsoleLog {
-    pub entries: Vec<LogEntry>,
-    frame_counter: u64,
-}
-
-/// UI state for the console window.
 #[derive(Resource)]
 pub struct ConsoleUiState {
     pub filter_text: String,
     pub auto_scroll: bool,
-    pub clear_requested: bool,
-    pub scroll_to_bottom: bool,
-    pub max_entries: usize,
-    /// Minimum level index: 0=TRACE 1=DEBUG 2=INFO 3=WARN 4=ERROR
     pub min_level: u8,
+    pub filter_buf: Vec<(String, u32)>,
+    pub filter_buf_head: usize,
+    pub matches: usize,
+    pub old_head: usize,
 }
 
 impl Default for ConsoleUiState {
     fn default() -> Self {
         Self {
+            matches: 0,
+            filter_buf_head: 0,
+            old_head: 0,
+            filter_buf: vec![(String::new(), 0); MAX_ENTIRES],
             filter_text: String::new(),
             auto_scroll: true,
-            clear_requested: false,
-            scroll_to_bottom: false,
-            max_entries: 10_000,
             min_level: 2,
         }
     }
 }
 
-// Internal resource bridging shared state into ECS.
 #[derive(Resource)]
 struct ConsoleBuffer {
-    buffer: SharedBuffer,
-    frame: FrameCounter,
+    buffer: Arc<SharedBuffer>,
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Plugin
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub struct ConsolePlugin {
     pub level: tracing::Level,
@@ -146,11 +195,9 @@ impl Default for ConsolePlugin {
         }
     }
 }
-#[cfg(feature = "trace")]
 #[derive(Default)]
 struct TracyConfig(tracing_subscriber::fmt::format::DefaultFields);
 
-#[cfg(feature = "trace")]
 impl tracing_tracy::Config for TracyConfig {
     type Formatter = tracing_subscriber::fmt::format::DefaultFields;
     fn format_fields_in_zone_name(&self) -> bool {
@@ -169,10 +216,17 @@ impl tracing_tracy::Config for TracyConfig {
 
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
-        let buffer: SharedBuffer = SharedBuffer(Arc::new(Mutex::new(Vec::new())));
-        let frame: FrameCounter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let buffer = Arc::new(SharedBuffer {
+            buffer: UnsafeCell::new(Box::new(std::array::from_fn(|_| LogEntry {
+                frame: 0,
+                level: Level::TRACE,
+                message: String::new(),
+                target: String::new(),
+            }))),
+            head: AtomicU64::new(0),
+            frame: AtomicU64::new(0),
+        });
 
-        // ── Tracing subscriber ────────────────────────────────────────────────
         {
             use tracing_subscriber::prelude::*;
             use tracing_subscriber::{EnvFilter, Registry};
@@ -187,16 +241,12 @@ impl Plugin for ConsolePlugin {
 
             let console_layer = ConsoleLayer {
                 buffer: buffer.clone(),
-                frame: frame.clone(),
             };
 
-            // Registry is required — it is the subscriber implementation that
-            // provides LookupSpan, which ConsoleLayer depends on.
-            let subscriber = Registry::default().with(env_filter).with(console_layer);
-
-            #[cfg(feature = "trace")]
-            let subscriber =
-                subscriber.with(tracing_tracy::TracyLayer::new(TracyConfig::default()));
+            let subscriber = Registry::default()
+                .with(env_filter)
+                .with(console_layer)
+                .with(tracing_tracy::TracyLayer::new(TracyConfig::default()));
 
             if self.also_log_to_stderr {
                 let fmt = tracing_subscriber::fmt::layer()
@@ -219,7 +269,6 @@ impl Plugin for ConsolePlugin {
             let _ = tracing_log::LogTracer::init();
         }
 
-        // ── Panic hook ────────────────────────────────────────────────────────
         {
             let old = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
@@ -236,127 +285,108 @@ impl Plugin for ConsolePlugin {
             }));
         }
 
-        // ── ECS ───────────────────────────────────────────────────────────────
-        app.insert_resource(ConsoleBuffer { buffer, frame })
-            .insert_resource(ConsoleLog::default())
+        app.insert_resource(ConsoleBuffer { buffer })
             .insert_resource(ConsoleUiState::default())
-            .add_systems(First, tick_frame_counter)
-            .add_systems(
-                PostUpdate,
-                (flush_pending_logs, render_console_window).chain(),
-            );
+            .add_systems(PostUpdate, render_console_window.chain());
 
-        #[cfg(feature = "trace")]
         app.add_systems(Last, frame_mark);
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Systems
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn tick_frame_counter(mut log: ResMut<ConsoleLog>, cb: Res<ConsoleBuffer>) {
-    log.frame_counter = log.frame_counter.wrapping_add(1);
-    cb.frame
-        .store(log.frame_counter, std::sync::atomic::Ordering::Relaxed);
-}
-
-fn flush_pending_logs(
-    cb: Res<ConsoleBuffer>,
-    mut log: ResMut<ConsoleLog>,
-    mut state: ResMut<ConsoleUiState>,
-) {
-    if state.clear_requested {
-        log.entries.clear();
-        state.clear_requested = false;
-        state.scroll_to_bottom = true;
-    }
-
-    let Ok(mut pending) = cb.buffer.0.lock() else {
-        return;
-    };
-    let max = state.max_entries;
-    log.entries.extend(pending.drain(..));
-
-    if log.entries.len() > max {
-        let excess = log.entries.len() - max;
-        log.entries.drain(..excess);
-    }
-}
-
 fn render_console_window(
-    log: Res<ConsoleLog>,
+    log: Res<ConsoleBuffer>,
     mut ui_state: ResMut<ConsoleUiState>,
     mut ui_builder: UiBuilder,
 ) {
-    let level_names = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
-    let level_colors: [Vec4; 5] = [
-        UiContext::TRACE,
-        UiContext::DEBUG,
-        UiContext::INFO,
-        UiContext::WARN,
-        UiContext::ERROR,
-    ];
+    log.buffer
+        .frame
+        .fetch_add(1, std::sync::atomic::Ordering::Release);
+
     ui_builder.build("Console", |ui| {
         ui.horizontal();
         ui.text("Level:");
 
-        ui_state.min_level = ui.dropdown(id!(), ui_state.min_level as usize, &level_names) as u8;
+        let prev = ui_state.min_level;
+        ui_state.min_level =
+            ui.dropdown(id!(), ui_state.min_level as usize, &LogEntry::LEVEL_NAMES) as u8;
+        let min_level_changed = prev != ui_state.min_level;
 
         ui.text("Filter:");
-        ui.text_input(id!(), &mut ui_state.filter_text, 300.0);
+        let filter_changed = ui.text_input(id!(), &mut ui_state.filter_text, 300.0);
 
-        if ui.button("Clear") {
-            ui_state.filter_text.clear();
-        }
         ui.text("Auto-scroll");
         ui_state.auto_scroll = ui.checkbox(ui_state.auto_scroll);
+
+        let head = log.buffer.head.load(std::sync::atomic::Ordering::Relaxed) as usize;
         if ui.button("Clear log") {
-            ui_state.clear_requested = true;
+            log.buffer.head.store(0, Ordering::Relaxed);
+            ui_state.filter_buf_head = 0;
+            ui_state.old_head = head.saturating_sub(MAX_ENTIRES);
+            ui_state.matches = 0;
         }
 
         ui.vertical();
-
-        // ui.separator();
 
         let mut rect = ui.clip_rect;
         rect.min.y = ui.cursor.y;
         let size = rect.size()
             - (UiContext::WINDOW_PAD.as_vec2() + UiContext::ROUNDING.max(UiContext::BORDER) as f32)
                 * 2.0;
-        ui.container(id!(), size, |ui| {
-            let filter_lc = ui_state.filter_text.to_lowercase();
-            for entry in log.entries.iter().rev() {
-                let entry_level_idx = match entry.level {
-                    tracing::Level::TRACE => 0u8,
-                    tracing::Level::DEBUG => 1,
-                    tracing::Level::INFO => 2,
-                    tracing::Level::WARN => 3,
-                    tracing::Level::ERROR => 4,
-                };
-                if entry_level_idx < ui_state.min_level {
-                    continue;
-                }
 
-                if !filter_lc.is_empty() {
-                    let haystack = format!("{} {}", entry.target, entry.message,).to_lowercase();
-                    if !haystack.contains(&filter_lc) {
-                        continue;
-                    }
-                }
+        let filter_lc = ui_state.filter_text.to_lowercase();
+        let min_level = ui_state.min_level;
+        let filter = |entry: &LogEntry| {
+            let entry_level_idx = LogEntry::index_level(entry.level);
 
-                let _color = level_colors[entry_level_idx as usize];
-                // let _col = ui.push_style_color(imgui::StyleColor::Text, color);
+            let filter = entry.message.to_lowercase().contains(&filter_lc)
+                || entry.target.to_lowercase().contains(&filter_lc);
 
-                ui.text(&format!(
-                    "[{:>6}] [{:<5}] {}: {}",
-                    entry.frame, level_names[entry_level_idx as usize], entry.target, entry.message,
-                ));
+            let level = entry_level_idx >= min_level;
+
+            if filter && level {
+                Some(entry.format())
+            } else {
+                None
             }
-        });
+        };
+
+        if filter_changed || min_level_changed {
+            ui_state.filter_buf_head = 0;
+            ui_state.old_head = head.saturating_sub(MAX_ENTIRES);
+            ui_state.matches = 0;
+        }
+
+        let buffer = unsafe { log.buffer.buffer.get().as_ref().unwrap() };
+
+        for k in ui_state.old_head..head {
+            let idx = k % MAX_ENTIRES;
+
+            if let Some(entry) = filter(&buffer[idx]) {
+                let filter_head = ui_state.filter_buf_head;
+                ui_state.filter_buf[filter_head] = entry;
+                ui_state.filter_buf_head = (ui_state.filter_buf_head + 1) % MAX_ENTIRES;
+                ui_state.matches += 1;
+            }
+        }
+        ui_state.old_head = head;
+        ui.text_container(
+            id!(),
+            size,
+            ui_state.auto_scroll,
+            |ui, i| {
+                let offset = if ui_state.matches < MAX_ENTIRES {
+                    0
+                } else {
+                    ui_state.filter_buf_head
+                };
+                let idx = (offset + i) % MAX_ENTIRES;
+                let entry = &ui_state.filter_buf[idx];
+                ui.colored_text(&entry.0, LogEntry::LEVEL_COLORS[entry.1 as usize]);
+            },
+            ui_state.matches.min(MAX_ENTIRES),
+        );
     });
 }
-#[cfg(feature = "trace")]
 fn frame_mark() {
     tracy_client::frame_mark();
 }

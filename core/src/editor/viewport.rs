@@ -3,7 +3,7 @@ use bevy::{
         resource::Resource,
         system::{If, Res, ResMut, Single, SystemParam, lifetimeless},
     },
-    math::{Rect, VectorSpace},
+    math::Rect,
     window::Window,
 };
 use glam::{UVec2, Vec2};

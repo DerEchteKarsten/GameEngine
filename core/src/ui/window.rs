@@ -7,10 +7,7 @@ use std::{
 
 use bevy::{
     ecs::{message::MessageReader, system::Res},
-    input::{
-        keyboard::KeyboardInput,
-        mouse::AccumulatedMouseScroll,
-    },
+    input::{keyboard::KeyboardInput, mouse::AccumulatedMouseScroll},
     math::Rect,
     window::Window,
 };
@@ -204,46 +201,30 @@ impl TabState {
         label.hash(&mut id);
         let id = id.finish();
 
-        let r = UiContext::WINDOW_ROUNDING as f32;
-        let b = UiContext::BORDER as f32;
-        let rmb = r.max(b);
-
-        let header_h =
-            (UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::WINDOW_PAD.y as f32 * 2.0).round();
         let focused = parent_window.focused.is_some();
+        let content_rect = parent_window.content_rect();
+        let cursor = self.content_scroll.cursor_pos(content_rect.min);
 
-        let content_area = Rect {
-            min: parent_window.rect.min + Vec2::new(0.0, header_h),
-            max: parent_window.rect.max,
-        };
-
-        let cursor = (content_area.min + rmb + UiContext::WINDOW_PAD.as_vec2()
-            - self.content_scroll.scroll)
-            .round();
-
-        let bar_size = UiContext::BAR_THICKNESS
-            * Vec2::new(
-                (self.content_scroll.content_size.y > content_area.size().y) as u32 as f32,
-                (self.content_scroll.content_size.x > content_area.size().x) as u32 as f32,
-            );
-        let clip_rect = from_pos_size(
-            content_area.min + b,
-            content_area.size() - b * 2.0 - bar_size,
+        let clip_rect = Rect::from_corners(
+            content_rect.min + UiContext::BORDER as f32,
+            content_rect.max
+                + UiContext::BORDER as f32 * 2.0
+                + self.content_scroll.bar_size(content_rect.size()),
         );
-        let max_width = (content_area.size().max(self.content_scroll.content_size)).x
-            - UiContext::WINDOW_PAD.x as f32
-            - rmb
-            - bar_size.x;
 
         let viewport_size = window.physical_size().as_vec2();
         let ctx = UiWindowContext {
+            scrollable: self.content_scroll,
             window: self,
             focused: &mut focused_state,
             keys,
             window_id: id,
+            origin: cursor,
+            window_rect: parent_window.rect,
+            window_content_rect: content_rect,
             viewport_size,
             input,
-            max_width,
+            scroll_delta: scroll.delta,
             ctrl,
             shift,
             hovered,
@@ -252,36 +233,43 @@ impl TabState {
             ctx,
             clip_rect,
             focuse_next: false,
-            scroll_delta: scroll.delta,
             line_height: 0.0,
             content_max: cursor,
             prev_cursor: cursor,
             cursor,
-            cursor_origin: cursor,
-            prev_element: content_area,
-            prev_element_hoverd: true,
+            prev_element: content_rect,
             direction: false,
-            hovered_smth: false,
+            hovered_consumed: false,
             scroll_consumed: false,
-            disabled: false,
+            disable_all_input: false,
         };
 
         let r = f(&mut builder);
         let content_max = builder.content_max;
         let scroll_consumed = builder.scroll_consumed;
+        let hover_consumed = builder.hovered_consumed;
 
-        let content_size = content_max + UiContext::WINDOW_PAD.as_vec2() + rmb - cursor;
+        if !hover_consumed
+            && input.primary_pressed
+            && let Some(f) = &mut focused_state
+        {
+            f.focused_element = None;
+        }
+
+        let content_size =
+            content_max + UiContext::WINDOW_PAD.as_vec2() + UiContext::RMB as f32 - cursor;
 
         self.content_scroll.content_size = content_size;
         if !scroll_consumed && focused {
             self.content_scroll
-                .scroll(scroll.delta, content_area.size());
+                .scroll(scroll.delta, content_rect.size());
         }
-        self.content_scroll.clamp_scroll(content_area.size());
+        self.content_scroll.clamp_scroll(content_rect.size());
+
         let mut content_scroll = self.content_scroll;
         content_scroll.update_and_draw(
             Draggable::TabScrollHandle,
-            content_area,
+            content_rect,
             self,
             &mut focused_state,
             viewport_size,
@@ -323,7 +311,7 @@ pub trait Drawable {
         let pos = rect.min;
         let b = ds.border.map(|b| b.size).unwrap_or(0) as f32;
         let r = ds.rounding as f32;
-        let rmb = r.max(b) as f32;
+        let rmb = r.max(b);
 
         self.draw_rect(
             rect.inflate(-rmb),
@@ -537,11 +525,6 @@ pub trait Drawable {
     ) -> Vec2 {
         let mut pen = pos;
         for char in text.chars() {
-            if char == '\n' {
-                pen.x = pos.x;
-                pen.y += UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::LINE_SPACING as f32;
-                continue;
-            }
             let tpos = Vec2::new(pen.x, pen.y);
 
             let position = UiContext::char_to_atlas_pos(char);

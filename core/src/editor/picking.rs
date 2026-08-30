@@ -1,4 +1,3 @@
-
 use crate::{
     assets::mesh::GpuMesh,
     editor::{
@@ -24,12 +23,7 @@ use bevy::{
         reflect::ReflectComponent,
         system::{Commands, Local, Query, Res, Single},
     },
-    input::{
-        ButtonInput,
-        keyboard::KeyCode,
-        mouse::MouseButton,
-        touch::Touches,
-    },
+    input::{ButtonInput, keyboard::KeyCode, mouse::MouseButton, touch::Touches},
     math::{Dir3A, bounding::RayCast3d},
     reflect::Reflect,
     transform::{
@@ -197,7 +191,7 @@ fn draw_entity_node(
     );
     ui.disabled(true);
 
-    if ui.prev_element_hoverd && ui.ctx.input.primary_pressed {
+    if ui.prev_element_hoverd() && ui.ctx.input.primary_pressed {
         for e in selected {
             cmd.entity(e).remove::<Selected>();
         }
@@ -242,18 +236,18 @@ pub(crate) fn picking(
     }
 
     if let Some((_entity, global_transform, instance, mut transform)) = picked.iter_mut().next() {
-        if let Some(drag) = local.as_ref() {
-            if let Some(pos) = input.cursor_pos {
-                let t = drag.start_t
-                    - camera.0.closest_t_on_axis(
-                        camera.1,
-                        pos,
-                        viewport.size(),
-                        drag.world_space_axis_origin,
-                        drag.world_space_axis,
-                    );
-                transform.translation = drag.start_pos + drag.local_space_axis * (t / drag.scale);
-            }
+        if let Some(drag) = local.as_ref()
+            && let Some(pos) = input.cursor_pos
+        {
+            let t = drag.start_t
+                - camera.0.closest_t_on_axis(
+                    camera.1,
+                    pos,
+                    viewport.size(),
+                    drag.world_space_axis_origin,
+                    drag.world_space_axis,
+                );
+            transform.translation = drag.start_pos + drag.local_space_axis * (t / drag.scale);
         }
 
         let center = if let Some(instance) = instance
