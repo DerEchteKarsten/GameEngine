@@ -2508,8 +2508,17 @@ dependencies = [
  "bytemuck",
  "glam",
  "gpu-allocator",
+ "lava-macros",
  "raw-window-handle",
  "tracing",
+]
+
+[[package]]
+name = "lava-macros"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn 3.0.4",
 ]
 
 [[package]]

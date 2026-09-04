@@ -267,6 +267,7 @@ fn init(window: Single<&RawHandleWrapperHolder, With<PrimaryWindow>>) {
         &handle.get_display_handle(),
         &handle.get_window_handle(),
         validation,
+        // true,
         false,
     )
     .unwrap();

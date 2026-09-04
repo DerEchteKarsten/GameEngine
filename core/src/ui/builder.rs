@@ -272,7 +272,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         self.hoverd(rect) && self.ctx.input.primary_pressed
     }
 
-    fn hoverd(&self, rect: Rect) -> bool {
+    pub fn hoverd(&self, rect: Rect) -> bool {
         Self::hoverdp(
             rect,
             self.clip_rect,
@@ -336,6 +336,41 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
     pub fn text(&mut self, label: impl AsRef<str>) {
         self.colored_text(label, self.text_color());
+    }
+
+    pub fn wrapping_text(&mut self, text: impl AsRef<str>, max_width: f32, color: Vec4) {
+        let mut size = Vec2::ZERO;
+        let mut pen = self.cursor;
+        for char in text.as_ref().chars() {
+            if pen.x > self.cursor.x + max_width || char == '\n' {
+                pen.x = self.cursor.x;
+                pen.y += UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::LINE_SPACING as f32;
+            }
+            if char == '\n' {
+                continue;
+            }
+
+            let tpos = Vec2::new(pen.x, pen.y);
+
+            let position = UiContext::char_to_atlas_pos(char);
+            let uv = position.as_vec2() / UiContext::ATLAS_SIZE.as_vec2();
+            let rect = Rect::from_corners(tpos, tpos + UiContext::ATLAS_CELL_SIZE.as_vec2());
+            self.ctx.window.draw_rect(
+                rect,
+                Some((uv, UiContext::UV_SIZE)),
+                color,
+                self.ctx.viewport_size,
+                self.clip_rect,
+                false,
+            );
+            pen.x +=
+                UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32;
+            size = size.max(
+                (pen + UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::LINE_SPACING as f32)
+                    - self.cursor,
+            );
+        }
+        self.finish_element(size, false);
     }
 
     pub fn colored_text(&mut self, label: impl AsRef<str>, color: Vec4) {
@@ -1087,22 +1122,25 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
     pub fn collapsable<R>(
         &mut self,
-        label: impl Hash + AsRef<str>,
+        default_open: bool,
+        id: impl Hash,
+        label: impl AsRef<str>,
         children: impl FnOnce(&mut Self) -> R,
     ) -> Option<R> {
-        let id = self.id(&label);
+        let id = self.id(&id);
 
         let rmb = UiContext::ROUNDING.max(UiContext::BORDER) as f32;
         let size = Vec2::new(
-            self.remaining_width() - (UiContext::CHILD_PAD.x as f32 + rmb),
-            UiContext::ATLAS_CELL_SIZE.y as f32 + (UiContext::CHILD_PAD.y as f32 + rmb) * 2.0,
+            self.remaining_width()
+                - (UiContext::CHILD_PAD.x as f32 + rmb + UiContext::ELEMENT_GAP.x as f32),
+            UiContext::ATLAS_CELL_SIZE.y as f32 + UiContext::LINE_SPACING as f32,
         )
         .floor();
         let rect = from_pos_size(self.cursor, size);
 
         let hoverd = self.hoverd(rect);
 
-        let text_cursor = self.child_cursor();
+        let text_cursor = self.cursor + Vec2::new(UiContext::CHILD_PAD.x as f32, 0.0);
         if hoverd && self.ctx.input.primary_pressed {
             let headers = &mut self.ctx.window.open_headers;
             if !headers.insert(id.into()) {
@@ -1110,7 +1148,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             }
         }
 
-        let open = !self.ctx.window.open_headers.contains(&id.into());
+        let open = self.ctx.window.open_headers.contains(&id.into()) ^ default_open;
 
         if !open && self.begin_element(size, false) {
             return None;
@@ -1556,7 +1594,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         id: impl Hash,
         size: Vec2,
         auto_scroll: bool,
-        text: impl Fn(&mut Self, usize),
+        mut text: impl FnMut(&mut Self, usize),
         len: usize,
     ) {
         let id = self.id(&id);
@@ -1589,6 +1627,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         self.cursor = (self.cursor + UiContext::WINDOW_PAD.as_vec2()
             - Vec2::new(scroll.x, scroll.y.rem(line_height as f32)))
         .round();
+        let org = self.cursor;
         self.content_max = Vec2::ZERO;
 
         let start = (scroll.y.floor() as usize / line_height as usize).max(0);
@@ -1607,7 +1646,10 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             .scrollables
             .remove_entry(&id.into())
             .unwrap();
-        scrollable.content_size = Vec2::new(self.content_max.x, (len as u32 * line_height) as f32);
+        scrollable.content_size = Vec2::new(
+            self.content_max.x - org.x,
+            (len as u32 * line_height) as f32,
+        );
         scrollable.update_and_draw(
             Draggable::Element(id),
             rect,
@@ -1634,6 +1676,17 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         self.finish_element(size, true);
         self.clip_rect = cr;
     }
+
+    // pub fn text_box(&mut self, id: impl Hash, preview: &str, content) {
+    //     let size = UiContext::text_size(preview);
+    //     if self.begin_element(size, false) {
+    //         return;
+    //     }
+
+    //     let rect = from_pos_size(self.cursor, size);
+    //     self.draw_text();
+
+    // }
 
     pub fn histogram<'b>(
         &mut self,

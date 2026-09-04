@@ -3,9 +3,11 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bevy::app::{App, Last, Plugin, PostUpdate};
+use bevy::app::{App, Last, Plugin, Update};
 use bevy::ecs::prelude::*;
-use glam::Vec4;
+use bevy::math::{Rect, VectorSpace};
+use glam::{Vec2, Vec4};
+use lava::state::raw_vulkan::{DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT};
 use tracing::Level;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
@@ -14,53 +16,84 @@ use tracing_subscriber::{Layer, fmt};
 use crate::id;
 use crate::ui::UiContext;
 use crate::ui::builder::UiBuilder;
+use crate::ui::window::{BorderSettings, DrawSettings};
 
 // #[global_allocator]
 // static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
 //     tracy_client::ProfiledAllocator::new(std::alloc::System, 100);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LogEntry {
     pub buffer: Box<str>,
-    pub message: u16,
-    pub level: u8,
     pub message_type: MessageType,
+    pub location: u16,
     pub frame: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct Serverity(pub u8);
-
-impl Serverity {
-    pub const VERBOSE: Self = Self(0);
-    pub const INFO: Self = Self(1);
-    pub const WARNING: Self = Self(2);
-    pub const ERROR: Self = Self(4);
-}
-
-#[derive(Debug, Clone)]
-pub struct ValidationMessageType(pub u8);
-
-impl ValidationMessageType {
-    pub const GENERAL: Self = Self(0);
-    pub const VALIDATION: Self = Self(1);
-    pub const PERFORMANCE: Self = Self(2);
 }
 
 #[derive(Debug, Clone)]
 pub enum MessageType {
     Validation {
-        ty: ValidationMessageType,
-        serverity: Serverity,
+        ty: DebugUtilsMessageTypeFlagsEXT,
+        serverity: DebugUtilsMessageSeverityFlagsEXT,
     },
     Normal {
+        level: u8,
         target: u16,
-        location: u16,
     },
 }
 
+impl Default for MessageType {
+    fn default() -> Self {
+        MessageType::Normal {
+            level: 0,
+            target: 0,
+        }
+    }
+}
+
+impl MessageType {
+    pub fn to_str(&self, buffer: &str) -> String {
+        match self {
+            MessageType::Validation { ty, serverity } => {
+                format!("VULKAN-{:?}-{:?}", serverity, ty)
+            }
+            MessageType::Normal { level, target } => {
+                let target = *target as usize;
+                if target == buffer.len() {
+                    format!("{}", LogEntry::LEVEL_NAMES[*level as usize])
+                } else {
+                    format!(
+                        "{}-[{}]",
+                        LogEntry::LEVEL_NAMES[*level as usize],
+                        &buffer[target..buffer.len()]
+                    )
+                }
+            }
+        }
+    }
+
+    pub fn color(&self) -> Vec4 {
+        match self {
+            MessageType::Validation { ty, serverity } => {
+                if serverity.contains(DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+                    UiContext::ERROR * 1.25
+                } else if serverity.contains(DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+                    UiContext::WARN * 1.25
+                } else if serverity.contains(DebugUtilsMessageSeverityFlagsEXT::INFO) {
+                    UiContext::INFO * 1.25
+                } else if serverity.contains(DebugUtilsMessageSeverityFlagsEXT::VERBOSE) {
+                    UiContext::TRACE * 1.25
+                } else {
+                    UiContext::ERROR * 1.25
+                }
+            }
+            MessageType::Normal { level, .. } => LogEntry::LEVEL_COLORS[*level as usize],
+        }
+    }
+}
+
 impl LogEntry {
-    const LEVEL_NAMES: [&str; 5] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+    const LEVEL_NAMES: [&str; 5] = ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"];
     const LEVEL_COLORS: [Vec4; 5] = [
         UiContext::TRACE,
         UiContext::DEBUG,
@@ -69,16 +102,14 @@ impl LogEntry {
         UiContext::ERROR,
     ];
 
-    fn format(&self) -> (String, u32) {
-        let entry_level_idx = Self::index_level(self.level);
+    fn format(&self) -> (String, Vec4) {
         let strg = format!(
-            "[{:>6}] [{:<5}] {}: {}",
+            "[{:>6}] {} {}",
             self.frame,
-            Self::LEVEL_NAMES[entry_level_idx as usize],
-            self.target,
-            self.message,
+            self.message_type.to_str(&self.buffer),
+            &self.buffer[..self.location as usize],
         );
-        (strg, entry_level_idx as u32)
+        (strg, self.message_type.color())
     }
     fn index_level(l: tracing::Level) -> u8 {
         match l {
@@ -87,6 +118,12 @@ impl LogEntry {
             tracing::Level::INFO => 2,
             tracing::Level::WARN => 3,
             tracing::Level::ERROR => 4,
+        }
+    }
+    fn location_end(&self) -> usize {
+        match self.message_type {
+            MessageType::Normal { level: _, target } => target as usize,
+            MessageType::Validation { .. } => self.buffer.len(),
         }
     }
 }
@@ -109,28 +146,94 @@ where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-        let message = {
-            use tracing::field::{Field, Visit};
+        let frame = self.buffer.frame.load(std::sync::atomic::Ordering::Relaxed);
 
-            impl Visit for LogEntry {
+        let entry = {
+            use tracing::field::{Field, Visit};
+            #[derive(Default)]
+            struct Visitor {
+                message: String,
+                target: Option<String>,
+                file: Option<String>,
+                line: Option<u64>,
+                location: Option<String>,
+                flags: Option<DebugUtilsMessageSeverityFlagsEXT>,
+                typ: Option<DebugUtilsMessageTypeFlagsEXT>,
+            }
+            impl Visit for Visitor {
                 fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
-                    if f.name() == "message" {
-                        self.message = format!("{v:?}");
+                    match f.name() {
+                        "message" => self.message = format!("{:?}", v),
+                        _ => println!("Uncaptured Field: {}: {:?}", f.name(), v),
                     }
-                    if f.name() == "message" {
-                        self.message = format!("{v:?}");
+                }
+                fn record_u64(&mut self, field: &tracing_core::Field, value: u64) {
+                    match field.name() {
+                        "message" => self.message = format!("{}", value),
+                        "flags" => {
+                            self.flags =
+                                Some(DebugUtilsMessageSeverityFlagsEXT::from_raw(value as u32))
+                        }
+                        "typ" => {
+                            self.typ = Some(DebugUtilsMessageTypeFlagsEXT::from_raw(value as u32))
+                        }
+                        "log.line" => self.line = Some(value),
+                        _ => println!("Uncaptured Field: {}: {:?}", field.name(), value),
                     }
-                    println!("Debug: {}: {:?}", f.name(), v);
+                }
+                fn record_str(&mut self, field: &tracing_core::Field, value: &str) {
+                    match field.name() {
+                        "message" => self.message = format!("{}", value),
+                        "log.target" => self.target = Some(value.to_owned()),
+                        "log.file" => self.file = Some(value.to_owned()),
+                        "validation_location" => self.location = Some(value.to_owned()),
+                        "log.module_path" => {}
+                        _ => println!("Uncaptured Field: {}: {:?}", field.name(), value),
+                    }
                 }
             }
-            println!("{:#?}", event.metadata());
-            let mut m = LogEntry::default();
-            event.record(&mut m);
-            println!("----------------------------------------");
-            m.message
-        };
 
-        let frame = self.buffer.frame.load(std::sync::atomic::Ordering::Relaxed);
+            let mut m = Visitor::default();
+            event.record(&mut m);
+
+            let location = m.message.len();
+            if let Some(location) = m.location {
+                m.message.push_str(&location);
+            } else if let Some(file) = m.file
+                && let Some(line) = m.line
+            {
+                m.message.push_str(&format!("{}:{}", file, line));
+            } else if let Some(file) = event.metadata().file()
+                && let Some(line) = event.metadata().line()
+            {
+                m.message.push_str(&format!("{}:{}", file, line));
+            } else {
+                m.message.push_str(&"Unknown Location");
+            };
+
+            let target = m.message.len();
+
+            if let Some(target) = m.target {
+                m.message.push_str(&target);
+            } else {
+                m.message.push_str(event.metadata().target());
+            }
+
+            let buffer = m.message.into_boxed_str();
+            LogEntry {
+                buffer,
+                message_type: m
+                    .typ
+                    .zip(m.flags)
+                    .map(|(ty, serverity)| MessageType::Validation { ty, serverity })
+                    .unwrap_or(MessageType::Normal {
+                        level: LogEntry::index_level(*event.metadata().level()),
+                        target: target as u16,
+                    }),
+                location: location as u16,
+                frame,
+            }
+        };
 
         let idx = self
             .buffer
@@ -138,12 +241,7 @@ where
             .fetch_add(1, std::sync::atomic::Ordering::Acquire) as usize
             % MAX_ENTIRES;
         unsafe {
-            self.buffer.buffer.get().as_mut().unwrap()[idx] = LogEntry {
-                level: *event.metadata().level(),
-                target: event.metadata().target().to_owned(),
-                message,
-                frame,
-            }
+            self.buffer.buffer.get().as_mut().unwrap()[idx] = entry;
         };
     }
 }
@@ -155,10 +253,11 @@ pub struct ConsoleUiState {
     pub filter_text: String,
     pub auto_scroll: bool,
     pub min_level: u8,
-    pub filter_buf: Vec<(String, u32)>,
+    pub filter_buf: Vec<u32>,
     pub filter_buf_head: usize,
     pub matches: usize,
     pub old_head: usize,
+    pub inspecting: Option<(LogEntry, u32)>,
 }
 
 impl Default for ConsoleUiState {
@@ -167,10 +266,11 @@ impl Default for ConsoleUiState {
             matches: 0,
             filter_buf_head: 0,
             old_head: 0,
-            filter_buf: vec![(String::new(), 0); MAX_ENTIRES],
+            filter_buf: vec![0; MAX_ENTIRES],
             filter_text: String::new(),
-            auto_scroll: true,
+            auto_scroll: false,
             min_level: 2,
+            inspecting: None,
         }
     }
 }
@@ -217,12 +317,7 @@ impl tracing_tracy::Config for TracyConfig {
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
         let buffer = Arc::new(SharedBuffer {
-            buffer: UnsafeCell::new(Box::new(std::array::from_fn(|_| LogEntry {
-                frame: 0,
-                level: Level::TRACE,
-                message: String::new(),
-                target: String::new(),
-            }))),
+            buffer: UnsafeCell::new(Box::new(std::array::from_fn(|_| LogEntry::default()))),
             head: AtomicU64::new(0),
             frame: AtomicU64::new(0),
         });
@@ -287,13 +382,13 @@ impl Plugin for ConsolePlugin {
 
         app.insert_resource(ConsoleBuffer { buffer })
             .insert_resource(ConsoleUiState::default())
-            .add_systems(PostUpdate, render_console_window.chain());
+            .add_systems(Update, (console_window, console_inspector));
 
         app.add_systems(Last, frame_mark);
     }
 }
 
-fn render_console_window(
+fn console_window(
     log: Res<ConsoleBuffer>,
     mut ui_state: ResMut<ConsoleUiState>,
     mut ui_builder: UiBuilder,
@@ -336,18 +431,20 @@ fn render_console_window(
         let filter_lc = ui_state.filter_text.to_lowercase();
         let min_level = ui_state.min_level;
         let filter = |entry: &LogEntry| {
-            let entry_level_idx = LogEntry::index_level(entry.level);
+            // let entry_level_idx = entry.level
 
-            let filter = entry.message.to_lowercase().contains(&filter_lc)
-                || entry.target.to_lowercase().contains(&filter_lc);
+            // let filter = entry.message.to_lowercase().contains(&filter_lc)
+            //     || entry.target.to_lowercase().contains(&filter_lc);
 
-            let level = entry_level_idx >= min_level;
+            // let level = entry_level_idx >= min_level;
 
-            if filter && level {
-                Some(entry.format())
-            } else {
-                None
-            }
+            // if filter && level {
+            //     Some(entry.format())
+            // } else {
+            //     None
+            // }
+            // Some(entry.format())
+            true
         };
 
         if filter_changed || min_level_changed {
@@ -361,14 +458,15 @@ fn render_console_window(
         for k in ui_state.old_head..head {
             let idx = k % MAX_ENTIRES;
 
-            if let Some(entry) = filter(&buffer[idx]) {
+            if filter(&buffer[idx]) {
                 let filter_head = ui_state.filter_buf_head;
-                ui_state.filter_buf[filter_head] = entry;
+                ui_state.filter_buf[filter_head] = idx as u32;
                 ui_state.filter_buf_head = (ui_state.filter_buf_head + 1) % MAX_ENTIRES;
                 ui_state.matches += 1;
             }
         }
         ui_state.old_head = head;
+        let len = ui_state.matches.min(MAX_ENTIRES);
         ui.text_container(
             id!(),
             size,
@@ -380,11 +478,78 @@ fn render_console_window(
                     ui_state.filter_buf_head
                 };
                 let idx = (offset + i) % MAX_ENTIRES;
-                let entry = &ui_state.filter_buf[idx];
-                ui.colored_text(&entry.0, LogEntry::LEVEL_COLORS[entry.1 as usize]);
+                let entry_idx = &ui_state.filter_buf[idx];
+                let entry = buffer[*entry_idx as usize].clone();
+                let max_len = ((size.x
+                    / (UiContext::ATLAS_CELL_SIZE.x + UiContext::CHARACTER_ADVANCE_WIDTH) as f32)
+                    .floor() as usize)
+                    .saturating_sub(3);
+                let str;
+                let (message, mut level_color) = entry.format();
+                let message = if message.len() > max_len {
+                    str = format!("{}...", &message[..max_len]);
+                    &str
+                } else {
+                    &message
+                };
+                let size = UiContext::text_size(message);
+                let rect = Rect::from_corners(ui.cursor, ui.cursor + size);
+                if ui.hoverd(rect)
+                    || ui_state
+                        .inspecting
+                        .as_ref()
+                        .is_some_and(|i| i.1 == *entry_idx)
+                {
+                    level_color *= 1.4;
+                }
+                ui.colored_text(message, level_color);
+                if ui.prev_element_hoverd() && ui.ctx.input.primary_pressed {
+                    ui_state.inspecting = Some((entry, *entry_idx));
+                }
             },
-            ui_state.matches.min(MAX_ENTIRES),
+            len,
         );
+    });
+}
+fn console_inspector(mut ui: UiBuilder, ui_state: Res<ConsoleUiState>) {
+    ui.build("Inspect Log Entry", |ui| {
+        let Some((entry, _)) = &ui_state.inspecting else {
+            ui.text("No entry selected");
+            return;
+        };
+
+        ui.text(format!("Frame: {}", entry.frame));
+        match entry.message_type {
+            MessageType::Validation { ty, serverity } => {
+                ui.text(format!("Type: {:?}", ty));
+                ui.text(format!("Severity: {:?}", serverity));
+            }
+            MessageType::Normal { level, target } => {
+                ui.text(format!("Level: {}", LogEntry::LEVEL_NAMES[level as usize]));
+                ui.text(format!(
+                    "Target: {}",
+                    &entry.buffer[target as usize..entry.buffer.len()]
+                ));
+            }
+        }
+
+        let width = ui.ctx.window_rect.width() - UiContext::INDENT.x as f32 - 30.0;
+        ui.collapsable(true, id!(), "Message", |ui| {
+            ui.wrapping_text(
+                &entry.buffer[..(entry.location as usize)],
+                width,
+                UiContext::TEXT,
+            );
+        });
+        let location = &entry.buffer[entry.location as usize..entry.location_end()];
+        ui.collapsable(true, id!(), "Location", |ui| {
+            ui.wrapping_text(format!("{}", location,), width, UiContext::ACENT);
+            if ui.prev_element_hoverd() && ui.ctx.input.primary_pressed && ui.ctx.ctrl {
+                let mut cmd = std::process::Command::new("zeditor");
+                cmd.arg(location);
+                cmd.spawn().unwrap();
+            }
+        });
     });
 }
 fn frame_mark() {

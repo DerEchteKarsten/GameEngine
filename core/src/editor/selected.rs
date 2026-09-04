@@ -376,6 +376,13 @@ impl<A: Asset> EditorView for Handle<A> {
     }
 }
 
+fn child_id(id: u64, i: usize) -> u64 {
+    let mut hash = DefaultHasher::new();
+    i.hash(&mut hash);
+    id.hash(&mut hash);
+    hash.finish()
+}
+
 fn draw_reflect_value(
     ui: &mut UiWindowBuilder,
     name: Option<&str>,
@@ -402,7 +409,7 @@ fn draw_reflect_value(
 
     match value.reflect_mut() {
         ReflectMut::Struct(s) => {
-            ui.collapsable(format!("{}{type_short}", label), |ui| {
+            ui.collapsable(true, id, format!("{}{type_short}", label), |ui| {
                 for i in 0..s.field_len() {
                     let field_name = s.name_at(i).unwrap_or("UnknownField").to_string();
                     let Some(field_val) = s.field_at_mut(i) else {
@@ -418,15 +425,12 @@ fn draw_reflect_value(
             });
         }
         ReflectMut::TupleStruct(ts) => {
-            ui.collapsable(format!("{}{type_short}", label), |ui| {
+            ui.collapsable(true, id, format!("{}{type_short}", label), |ui| {
                 for i in 0..ts.field_len() {
                     let Some(field_val) = ts.field_mut(i) else {
                         continue;
                     };
-                    let mut hash = DefaultHasher::new();
-                    i.hash(&mut hash);
-                    id.hash(&mut hash);
-                    let child_id = hash.finish();
+                    let child_id = child_id(id, i);
                     changed |= draw_reflect_value(
                         ui,
                         Some(&format!("({})", i)),
@@ -438,15 +442,12 @@ fn draw_reflect_value(
             });
         }
         ReflectMut::Tuple(t) => {
-            ui.collapsable(format!("{}{type_short}", label), |ui| {
+            ui.collapsable(true, id, format!("{}{type_short}", label), |ui| {
                 for i in 0..t.field_len() {
                     let Some(field_val) = t.field_mut(i) else {
                         continue;
                     };
-                    let mut hash = DefaultHasher::new();
-                    i.hash(&mut hash);
-                    id.hash(&mut hash);
-                    let child_id = hash.finish();
+                    let child_id = child_id(id, i);
                     changed |= draw_reflect_value(
                         ui,
                         Some(&format!("({})", i)),
@@ -459,43 +460,47 @@ fn draw_reflect_value(
         }
         ReflectMut::Enum(e) => {
             let variant = e.variant_name().to_string();
-            ui.collapsable(format!("{}{type_short}::{}", label, variant), |ui| {
-                for i in 0..e.field_len() {
-                    let field_name = e.name_at(i).unwrap_or("0").to_string();
-                    let Some(field_val) = e.field_at_mut(i) else {
-                        continue;
-                    };
-                    let mut hash = DefaultHasher::new();
-                    i.hash(&mut hash);
-                    id.hash(&mut hash);
-                    let child_id = hash.finish();
-                    changed |= draw_reflect_value(
-                        ui,
-                        Some(field_name.as_ref()),
-                        child_id,
-                        field_val,
-                        registry,
-                    );
-                }
-            });
+            ui.collapsable(
+                true,
+                id,
+                format!("{}{type_short}::{}", label, variant),
+                |ui| {
+                    for i in 0..e.field_len() {
+                        let field_name = e.name_at(i).unwrap_or("0").to_string();
+                        let Some(field_val) = e.field_at_mut(i) else {
+                            continue;
+                        };
+                        let child_id = child_id(id, i);
+                        changed |= draw_reflect_value(
+                            ui,
+                            Some(field_name.as_ref()),
+                            child_id,
+                            field_val,
+                            registry,
+                        );
+                    }
+                },
+            );
         }
         ReflectMut::List(l) => {
-            ui.collapsable(format!("{}{}[{}]", label, type_short, l.len()), |ui| {
-                for i in 0..l.len() {
-                    let mut hash = DefaultHasher::new();
-                    i.hash(&mut hash);
-                    id.hash(&mut hash);
-                    let child_id = hash.finish();
-                    let Some(child) = l.get_mut(i) else { continue };
-                    changed |= draw_reflect_value(
-                        ui,
-                        Some(&format!("[{}]", i)),
-                        child_id,
-                        child,
-                        registry,
-                    );
-                }
-            });
+            ui.collapsable(
+                true,
+                id,
+                format!("{}{}[{}]", label, type_short, l.len()),
+                |ui| {
+                    for i in 0..l.len() {
+                        let child_id = child_id(id, i);
+                        let Some(child) = l.get_mut(i) else { continue };
+                        changed |= draw_reflect_value(
+                            ui,
+                            Some(&format!("[{}]", i)),
+                            child_id,
+                            child,
+                            registry,
+                        );
+                    }
+                },
+            );
         }
         ReflectMut::Opaque(v) => {
             if let Some(name) = name {
@@ -514,36 +519,53 @@ fn draw_reflect_value(
             }
         }
         ReflectMut::Set(v) => {
-            ui.collapsable(format!("{}{}{{{}}}", label, type_short, v.len()), |ui| {
-                for i in v.iter() {
-                    let before = ui.disable_all_input;
-                    ui.disabled(true);
-                    changed |= draw_reflect_value(
-                        ui,
-                        Some(""),
-                        id,
-                        unsafe {
-                            (i as *const dyn PartialReflect as *mut dyn PartialReflect)
-                                .as_mut()
-                                .unwrap()
-                        },
-                        registry,
-                    );
-                    ui.disabled(before);
-                }
-            });
+            ui.collapsable(
+                true,
+                id,
+                format!("{}{}{{{}}}", label, type_short, v.len()),
+                |ui| {
+                    for (i, item) in v.iter().enumerate() {
+                        let before = ui.disable_all_input;
+                        ui.disabled(true);
+                        let child_id = child_id(id, i);
+                        changed |= draw_reflect_value(
+                            ui,
+                            Some(""),
+                            id,
+                            unsafe {
+                                (item as *const dyn PartialReflect as *mut dyn PartialReflect)
+                                    .as_mut()
+                                    .unwrap()
+                            },
+                            registry,
+                        );
+                        ui.disabled(before);
+                    }
+                },
+            );
         }
         ReflectMut::Array(v) => {
-            ui.collapsable(format!("{}{}[{}]", label, type_short, v.len()), |ui| {
-                for i in 0..v.len() {
-                    let Some(value) = v.get_mut(i) else { continue };
-                    changed |=
-                        draw_reflect_value(ui, Some(&format!("[{}]", i)), id, value, registry);
-                }
-            });
+            ui.collapsable(
+                true,
+                id,
+                format!("{}{}[{}]", label, type_short, v.len()),
+                |ui| {
+                    for i in 0..v.len() {
+                        let Some(value) = v.get_mut(i) else { continue };
+                        let child_id = child_id(id, i);
+                        changed |= draw_reflect_value(
+                            ui,
+                            Some(&format!("[{}]", i)),
+                            child_id,
+                            value,
+                            registry,
+                        );
+                    }
+                },
+            );
         }
         ReflectMut::Map(_v) => {
-            ui.collapsable(format!("{}{}", label, type_short), |ui| {
+            ui.collapsable(true, id, format!("{}{}", label, type_short), |ui| {
                 // for (i, (key, _)) in v.iter().enumerate() {
                 //     let mut hash = DefaultHasher::new();
                 //     id.hash(&mut hash);

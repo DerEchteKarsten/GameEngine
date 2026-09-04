@@ -145,259 +145,259 @@ pub struct UploadQueue {
 
 static UPLOAD_QUEUE: OnceLock<UploadQueue> = OnceLock::new();
 
-impl UploadQueue {
-    fn send_back(mut item: CopyRegion) {
-        match item.send_back.take().unwrap() {
-            SendBack::Buffer(buff) => {
-                let Dst::Buffer(buffer) = item.dst.take().unwrap() else {
-                    unreachable!()
-                };
-                if let Err(_) = buff.send(buffer) {
-                    error!(
-                        "Receiver was dropped, buffer could not be sent back and will be dropped"
-                    );
-                }
-            }
-            SendBack::Image(imag) => {
-                let Dst::Image(image) = item.dst.take().unwrap() else {
-                    unreachable!()
-                };
-                if imag.send(image).is_err() {
-                    error!(
-                        "Receiver was dropped, image could not be sent back and will be dropped"
-                    );
-                }
-            }
-        }
-    }
-    fn flush(res: &NonRebarResources, mut regions: Vec<(BufferSlice<u8>, DstRef)>) {
-        res.pool.reset();
-        res.fence.reset();
-        res.queue.with(move |queue| {
-            queue
-                .execute_command(None, &res.cmd, Some(&res.fence), &[], &[], |cmd| {
-                    for entry in regions.iter_mut() {
-                        match &entry.1 {
-                            DstRef::Buffer(buff) => {
-                                cmd.copy_buffer(entry.0, *buff);
-                                if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
-                                    cmd.buffer_barrier(
-                                        *buff,
-                                        AccessFlags2::TRANSFER_WRITE,
-                                        AccessFlags2::NONE,
-                                        PipelineStageFlags2::TRANSFER,
-                                        PipelineStageFlags2::NONE,
-                                        Ctx::transfer_queue_index(),
-                                        Ctx::gfx_queue_index(),
-                                    );
-                                }
-                            }
-                            DstRef::Image(view) => {
-                                cmd.copy_buffer_to_image(entry.0, *view);
-                                if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
-                                    cmd.image_barrier(
-                                        view.view,
-                                        AccessFlags2::TRANSFER_WRITE,
-                                        AccessFlags2::NONE,
-                                        PipelineStageFlags2::TRANSFER,
-                                        PipelineStageFlags2::NONE,
-                                        ImageLayout::UNDEFINED,
-                                        ImageLayout::UNDEFINED,
-                                        Ctx::transfer_queue_index(),
-                                        Ctx::gfx_queue_index(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                })
-                .unwrap();
-            res.fence.wait();
-        });
-    }
-    pub fn init(queues: &Queues) {
-        let (sender, receiver) = std::sync::mpsc::channel::<CopyRegion>();
-        let thread = if !Ctx::features().rebar {
-            let pool;
-            let queue = match (
-                &queues.graphics,
-                Ctx::gfx_queue_index() == Ctx::transfer_queue_index(),
-            ) {
-                (QueueStrategie::Multiple(_), true) => {
-                    let queue = Queue::new().unwrap();
-                    pool = queue.create_pool();
-                    TransferQueueStrategie::MultipleGfx(queue)
-                }
-                (QueueStrategie::Single(queue), true) => {
-                    pool = queue.lock().unwrap().create_pool();
-                    TransferQueueStrategie::SingleQueue(queue.clone())
-                }
-                (_, false) => {
-                    let queue = Queue::new().unwrap();
-                    pool = queue.create_pool();
-                    TransferQueueStrategie::Transfer(queue)
-                }
-            };
-            let res = NonRebarResources {
-                queue,
-                cmd: pool.create_command_buffer(),
-                fence: Fence::new(),
-                pool,
-                staging: Buffer::new(STAGING_BUFFER_SIZE, true).unwrap(),
-            };
+// impl UploadQueue {
+//     fn send_back(mut item: CopyRegion) {
+//         match item.send_back.take().unwrap() {
+//             SendBack::Buffer(buff) => {
+//                 let Dst::Buffer(buffer) = item.dst.take().unwrap() else {
+//                     unreachable!()
+//                 };
+//                 if let Err(_) = buff.send(buffer) {
+//                     error!(
+//                         "Receiver was dropped, buffer could not be sent back and will be dropped"
+//                     );
+//                 }
+//             }
+//             SendBack::Image(imag) => {
+//                 let Dst::Image(image) = item.dst.take().unwrap() else {
+//                     unreachable!()
+//                 };
+//                 if imag.send(image).is_err() {
+//                     error!(
+//                         "Receiver was dropped, image could not be sent back and will be dropped"
+//                     );
+//                 }
+//             }
+//         }
+//     }
+//     fn flush(res: &NonRebarResources, mut regions: Vec<(BufferSlice<u8>, DstRef)>) {
+//         res.pool.reset();
+//         res.fence.reset();
+//         res.queue.with(move |queue| {
+//             queue
+//                 .execute_command(None, &res.cmd, Some(&res.fence), &[], &[], |cmd| {
+//                     for entry in regions.iter_mut() {
+//                         match &entry.1 {
+//                             DstRef::Buffer(buff) => {
+//                                 cmd.copy_buffer(entry.0, *buff);
+//                                 if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
+//                                     cmd.buffer_barrier(
+//                                         *buff,
+//                                         AccessFlags2::TRANSFER_WRITE,
+//                                         AccessFlags2::NONE,
+//                                         PipelineStageFlags2::TRANSFER,
+//                                         PipelineStageFlags2::NONE,
+//                                         Ctx::transfer_queue_index(),
+//                                         Ctx::gfx_queue_index(),
+//                                     );
+//                                 }
+//                             }
+//                             DstRef::Image(view) => {
+//                                 cmd.copy_buffer_to_image(entry.0, *view);
+//                                 if Ctx::transfer_queue_index() != Ctx::gfx_queue_index() {
+//                                     cmd.image_barrier(
+//                                         view.view,
+//                                         AccessFlags2::TRANSFER_WRITE,
+//                                         AccessFlags2::NONE,
+//                                         PipelineStageFlags2::TRANSFER,
+//                                         PipelineStageFlags2::NONE,
+//                                         ImageLayout::UNDEFINED,
+//                                         ImageLayout::UNDEFINED,
+//                                         Ctx::transfer_queue_index(),
+//                                         Ctx::gfx_queue_index(),
+//                                     );
+//                                 }
+//                             }
+//                         }
+//                     }
+//                 })
+//                 .unwrap();
+//             res.fence.wait();
+//         });
+//     }
+//     pub fn init(queues: &Queues) {
+//         let (sender, receiver) = std::sync::mpsc::channel::<CopyRegion>();
+//         let thread = if !Ctx::features().rebar {
+//             let pool;
+//             let queue = match (
+//                 &queues.graphics,
+//                 Ctx::gfx_queue_index() == Ctx::transfer_queue_index(),
+//             ) {
+//                 (QueueStrategie::Multiple(_), true) => {
+//                     let queue = Queue::new().unwrap();
+//                     pool = queue.create_pool();
+//                     TransferQueueStrategie::MultipleGfx(queue)
+//                 }
+//                 (QueueStrategie::Single(queue), true) => {
+//                     pool = queue.lock().unwrap().create_pool();
+//                     TransferQueueStrategie::SingleQueue(queue.clone())
+//                 }
+//                 (_, false) => {
+//                     let queue = Queue::new().unwrap();
+//                     pool = queue.create_pool();
+//                     TransferQueueStrategie::Transfer(queue)
+//                 }
+//             };
+//             let res = NonRebarResources {
+//                 queue,
+//                 cmd: pool.create_command_buffer(),
+//                 fence: Fence::new(),
+//                 pool,
+//                 staging: Buffer::new(STAGING_BUFFER_SIZE, true).unwrap(),
+//             };
 
-            std::thread::spawn(move || {
-                let _span = tracing::info_span!("Upload Thread").entered();
-                let mut staging_slice = res.staging.range(..);
-                let mut regions = Vec::new();
-                let mut need_send_back = Vec::new();
-                loop {
-                    let item = if let Ok(item) = receiver.recv_timeout(Duration::from_millis(1)) {
-                        item
-                    } else {
-                        if !regions.is_empty() {
-                            let len = regions.capacity();
-                            Self::flush(
-                                &res,
-                                std::mem::replace(&mut regions, Vec::with_capacity(len)),
-                            );
-                            for i in need_send_back.drain(..) {
-                                Self::send_back(i);
-                            }
-                        }
-                        receiver.recv().unwrap()
-                    };
-                    let mut src_remaining_bytes = item.src.len() as u64;
+//             std::thread::spawn(move || {
+//                 let _span = tracing::info_span!("Upload Thread").entered();
+//                 let mut staging_slice = res.staging.range(..);
+//                 let mut regions = Vec::new();
+//                 let mut need_send_back = Vec::new();
+//                 loop {
+//                     let item = if let Ok(item) = receiver.recv_timeout(Duration::from_millis(1)) {
+//                         item
+//                     } else {
+//                         if !regions.is_empty() {
+//                             let len = regions.capacity();
+//                             Self::flush(
+//                                 &res,
+//                                 std::mem::replace(&mut regions, Vec::with_capacity(len)),
+//                             );
+//                             for i in need_send_back.drain(..) {
+//                                 Self::send_back(i);
+//                             }
+//                         }
+//                         receiver.recv().unwrap()
+//                     };
+//                     let mut src_remaining_bytes = item.src.len() as u64;
 
-                    let mut flushed = false;
-                    while {
-                        let staging_remaining_bytes = staging_slice.size;
-                        let copy_size = src_remaining_bytes.min(staging_remaining_bytes) as usize;
-                        unsafe { staging_slice.ptr().copy_from(item.src.as_ptr(), copy_size) };
-                        regions.push((
-                            staging_slice.byte_range(
-                                (staging_slice.size - staging_remaining_bytes) as usize
-                                    ..(staging_slice.size
-                                        - (staging_remaining_bytes
-                                            .saturating_sub(copy_size as u64)))
-                                        as usize,
-                            ),
-                            match item.dst.as_ref().unwrap() {
-                                Dst::Buffer(buffer) => {
-                                    let slice = buffer.range(
-                                        (buffer.size() - src_remaining_bytes) as usize
-                                            ..(buffer.size()
-                                                - (src_remaining_bytes
-                                                    .saturating_sub(copy_size as u64)))
-                                                as usize,
-                                    );
-                                    DstRef::Buffer(unsafe { std::mem::transmute(slice) })
-                                }
-                                Dst::Image(image) => {
-                                    if item.src.len() > STAGING_BUFFER_SIZE {
-                                        todo!("KOPFSCHMERZEN")
-                                    }
-                                    DstRef::Image(unsafe { std::mem::transmute(image.whole()) })
-                                }
-                            },
-                        ));
-                        staging_slice = staging_slice.byte_range(copy_size..);
-                        src_remaining_bytes =
-                            src_remaining_bytes.saturating_sub(staging_remaining_bytes);
-                        staging_slice.size == 0
-                    } {
-                        let len = regions.capacity();
-                        flushed = true;
-                        Self::flush(
-                            &res,
-                            std::mem::replace(&mut regions, Vec::with_capacity(len)),
-                        );
-                        staging_slice = res.staging.range(..);
-                    }
-                    if flushed {
-                        Self::send_back(item);
-                        for i in need_send_back.drain(..) {
-                            Self::send_back(i);
-                        }
-                    } else {
-                        need_send_back.push(item);
-                    }
-                }
-            })
-        } else {
-            std::thread::spawn(move || {
-                let _span = tracing::info_span!("Upload Thread").entered();
-                for item in receiver.iter() {
-                    match item.dst.as_ref().unwrap() {
-                        Dst::Buffer(buff) => {
-                            buff.range(..).copy_from(item.src.as_slice());
-                        }
-                        Dst::Image(image) => {
-                            let regions = [raw_vulkan::MemoryToImageCopyEXT::default()
-                                .host_pointer(item.src.as_ptr().cast())
-                                .image_extent(image.extent)
-                                .image_offset(raw_vulkan::Offset3D { x: 0, y: 0, z: 0 })
-                                .image_subresource(image.view().subresource_layers())
-                                .memory_image_height(image.extent.height)
-                                .memory_row_length(image.extent.width)];
-                            let copy_memory_to_image_info =
-                                raw_vulkan::CopyMemoryToImageInfoEXT::default()
-                                    .dst_image(image.image)
-                                    .dst_image_layout(raw_vulkan::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                    .regions(&regions);
-                            unsafe {
-                                Functions::host_image_copy()
-                                    .copy_memory_to_image(&copy_memory_to_image_info)
-                                    .unwrap()
-                            };
-                        }
-                    }
-                    Self::send_back(item);
-                }
-            })
-        };
+//                     let mut flushed = false;
+//                     while {
+//                         let staging_remaining_bytes = staging_slice.size;
+//                         let copy_size = src_remaining_bytes.min(staging_remaining_bytes) as usize;
+//                         unsafe { staging_slice.ptr().copy_from(item.src.as_ptr(), copy_size) };
+//                         regions.push((
+//                             staging_slice.byte_range(
+//                                 (staging_slice.size - staging_remaining_bytes) as usize
+//                                     ..(staging_slice.size
+//                                         - (staging_remaining_bytes
+//                                             .saturating_sub(copy_size as u64)))
+//                                         as usize,
+//                             ),
+//                             match item.dst.as_ref().unwrap() {
+//                                 Dst::Buffer(buffer) => {
+//                                     let slice = buffer.range(
+//                                         (buffer.size() - src_remaining_bytes) as usize
+//                                             ..(buffer.size()
+//                                                 - (src_remaining_bytes
+//                                                     .saturating_sub(copy_size as u64)))
+//                                                 as usize,
+//                                     );
+//                                     DstRef::Buffer(unsafe { std::mem::transmute(slice) })
+//                                 }
+//                                 Dst::Image(image) => {
+//                                     if item.src.len() > STAGING_BUFFER_SIZE {
+//                                         todo!("KOPFSCHMERZEN")
+//                                     }
+//                                     DstRef::Image(unsafe { std::mem::transmute(image.whole()) })
+//                                 }
+//                             },
+//                         ));
+//                         staging_slice = staging_slice.byte_range(copy_size..);
+//                         src_remaining_bytes =
+//                             src_remaining_bytes.saturating_sub(staging_remaining_bytes);
+//                         staging_slice.size == 0
+//                     } {
+//                         let len = regions.capacity();
+//                         flushed = true;
+//                         Self::flush(
+//                             &res,
+//                             std::mem::replace(&mut regions, Vec::with_capacity(len)),
+//                         );
+//                         staging_slice = res.staging.range(..);
+//                     }
+//                     if flushed {
+//                         Self::send_back(item);
+//                         for i in need_send_back.drain(..) {
+//                             Self::send_back(i);
+//                         }
+//                     } else {
+//                         need_send_back.push(item);
+//                     }
+//                 }
+//             })
+//         } else {
+//             std::thread::spawn(move || {
+//                 let _span = tracing::info_span!("Upload Thread").entered();
+//                 for item in receiver.iter() {
+//                     match item.dst.as_ref().unwrap() {
+//                         Dst::Buffer(buff) => {
+//                             buff.range(..).copy_from(item.src.as_slice());
+//                         }
+//                         Dst::Image(image) => {
+//                             let regions = [raw_vulkan::MemoryToImageCopyEXT::default()
+//                                 .host_pointer(item.src.as_ptr().cast())
+//                                 .image_extent(image.extent)
+//                                 .image_offset(raw_vulkan::Offset3D { x: 0, y: 0, z: 0 })
+//                                 .image_subresource(image.view().subresource_layers())
+//                                 .memory_image_height(image.extent.height)
+//                                 .memory_row_length(image.extent.width)];
+//                             let copy_memory_to_image_info =
+//                                 raw_vulkan::CopyMemoryToImageInfoEXT::default()
+//                                     .dst_image(image.image)
+//                                     .dst_image_layout(raw_vulkan::ImageLayout::TRANSFER_DST_OPTIMAL)
+//                                     .regions(&regions);
+//                             unsafe {
+//                                 Functions::host_image_copy()
+//                                     .copy_memory_to_image(&copy_memory_to_image_info)
+//                                     .unwrap()
+//                             };
+//                         }
+//                     }
+//                     Self::send_back(item);
+//                 }
+//             })
+//         };
 
-        UPLOAD_QUEUE
-            .set(Self {
-                copy_queue: sender,
-                thread,
-            })
-            .unwrap();
-    }
+//         UPLOAD_QUEUE
+//             .set(Self {
+//                 copy_queue: sender,
+//                 thread,
+//             })
+//             .unwrap();
+//     }
 
-    pub fn push_buffer<T: Copy + Pod + Send + Sync + Debug>(
-        src: Vec<T>,
-        buffer: Buffer<T>,
-    ) -> oneshot::Receiver<Buffer<T>> {
-        let (sender, receiver) = oneshot::channel();
-        UPLOAD_QUEUE
-            .wait()
-            .copy_queue
-            .send(CopyRegion {
-                src: bytemuck::try_cast_vec(src).unwrap(),
-                dst: Some(Dst::Buffer(buffer.cast())),
-                send_back: Some(SendBack::Buffer(sender)),
-            })
-            .unwrap();
-        unsafe { std::mem::transmute(receiver) }
-    }
-    pub fn push_image<F: lava::image::format::Format, U: UsageSet>(
-        src: Vec<u8>,
-        image: Image<F, U>,
-    ) -> oneshot::Receiver<Image<F, U>> {
-        let (sender, receiver) = oneshot::channel();
-        UPLOAD_QUEUE
-            .wait()
-            .copy_queue
-            .send(CopyRegion {
-                src,
-                dst: Some(Dst::Image(image.cast())),
-                send_back: Some(SendBack::Image(sender)),
-            })
-            .unwrap();
-        unsafe { std::mem::transmute(receiver) }
-    }
-}
+//     pub fn push_buffer<T: Copy + Pod + Send + Sync + Debug>(
+//         src: Vec<T>,
+//         buffer: Buffer<T>,
+//     ) -> oneshot::Receiver<Buffer<T>> {
+//         let (sender, receiver) = oneshot::channel();
+//         UPLOAD_QUEUE
+//             .wait()
+//             .copy_queue
+//             .send(CopyRegion {
+//                 src: bytemuck::try_cast_vec(src).unwrap(),
+//                 dst: Some(Dst::Buffer(buffer.cast())),
+//                 send_back: Some(SendBack::Buffer(sender)),
+//             })
+//             .unwrap();
+//         unsafe { std::mem::transmute(receiver) }
+//     }
+//     pub fn push_image<F: lava::image::format::Format, U: UsageSet>(
+//         src: Vec<u8>,
+//         image: Image<F, U>,
+//     ) -> oneshot::Receiver<Image<F, U>> {
+//         let (sender, receiver) = oneshot::channel();
+//         UPLOAD_QUEUE
+//             .wait()
+//             .copy_queue
+//             .send(CopyRegion {
+//                 src,
+//                 dst: Some(Dst::Image(image.cast())),
+//                 send_back: Some(SendBack::Image(sender)),
+//             })
+//             .unwrap();
+//         unsafe { std::mem::transmute(receiver) }
+//     }
+// }
 
 pub(super) fn init_world(mut cmd: Commands) {
     cmd.insert_resource(InstanceManager {

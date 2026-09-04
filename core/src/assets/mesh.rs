@@ -267,7 +267,6 @@ impl AssetLoader for MeshLoader {
         let instance_materials = read_slice(reader, None).await?;
 
         let num_meshes = read_u64(reader).await?;
-        let mut futures = Vec::with_capacity(num_meshes as usize);
         let mut meshes = Vec::with_capacity(num_meshes as usize);
         for i in 0..num_meshes {
             let mut header = MeshHeader::zeroed();
@@ -278,11 +277,10 @@ impl AssetLoader for MeshLoader {
             let slice = buffer.range(..);
             let address = buffer.address;
 
-            let mut data = if Ctx::features().rebar {
-                Vec::with_capacity(header.cull_data_offset as usize)
-            } else {
-                Vec::with_capacity(len)
-            };
+            let mut data = Vec::with_capacity(header.cull_data_offset as usize);
+            // } else {
+            //     Vec::with_capacity(len)
+            // };
 
             let ptr = data.as_mut_ptr();
             reader
@@ -322,44 +320,43 @@ impl AssetLoader for MeshLoader {
                     + address;
             }
 
-            if Ctx::features().rebar {
-                read_slice_to_buffer(reader, slice.range(header.cull_data_offset as usize..))
-                    .await?;
-            }
+            // if Ctx::features().rebar {
+            read_slice_to_buffer(reader, slice.range(header.cull_data_offset as usize..)).await?;
+            // }
 
             let colission_bvh = read_slice(reader, Some(8)).await?;
 
-            if Ctx::features().rebar {
-                futures.push((async move || -> Result<(GpuMesh, u64), futures::channel::oneshot::Canceled> {
-                    Ok((
-                        GpuMesh {
-                            buffer: UploadQueue::push_buffer(data, buffer).await?,
-                            colission_bvh,
-                            header,
-                        },
-                        i,
-                    ))
-                })());
-            } else {
-                let handle = load_context.add_labeled_asset(
-                    format!("mesh_{}", i),
-                    GpuMesh {
-                        buffer,
-                        colission_bvh,
-                        header,
-                    },
-                );
-                meshes.push(handle);
-            }
+            // if Ctx::features().rebar {
+            // futures.push((async move || -> Result<(GpuMesh, u64), futures::channel::oneshot::Canceled> {
+            //         Ok((
+            //             GpuMesh {
+            //                 buffer: UploadQueue::push_buffer(data, buffer).await?,
+            //                 colission_bvh,
+            //                 header,
+            //             },
+            //             i,
+            //         ))
+            //     })());
+            // } else {
+            let handle = load_context.add_labeled_asset(
+                format!("mesh_{}", i),
+                GpuMesh {
+                    buffer,
+                    colission_bvh,
+                    header,
+                },
+            );
+            meshes.push(handle);
+            // }
         }
-        if !futures.is_empty() {
-            let iter = futures::future::join_all(futures).await;
-            for res in iter {
-                let (mesh, i) = res?;
-                let handle = load_context.add_labeled_asset(format!("mesh_{}", i), mesh);
-                meshes.push(handle);
-            }
-        }
+        // if !futures.is_empty() {
+        //     let iter = futures::future::join_all(futures).await;
+        //     for res in iter {
+        //         let (mesh, i) = res?;
+        //         let handle = load_context.add_labeled_asset(format!("mesh_{}", i), mesh);
+        //         meshes.push(handle);
+        //     }
+        // }
 
         Ok(Scene {
             instance_transforms,

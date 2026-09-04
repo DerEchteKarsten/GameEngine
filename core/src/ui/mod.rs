@@ -59,12 +59,12 @@ use bevy::{
     input::mouse::MouseButton,
     math::Rect,
 };
-use futures::executor::block_on;
+
 use glam::{UVec2, Vec2, Vec4};
 use itertools::Itertools;
 use lava::{
     buffer::Buffer,
-    image::{Image, format, usage},
+    image::{Image, format, slice::AsImage, usage},
 };
 use ron::ser::PrettyConfig;
 use serde::{Deserialize, Serialize};
@@ -330,7 +330,6 @@ impl UiContext {
         let font = self.font.take().unwrap();
         let pixels = (Self::FONT_SCALE * 4) as f32;
         let font_metrics = font.horizontal_line_metrics(pixels).unwrap();
-        log::info!("{:#?}, {:#?}", font_metrics, UiContext::ATLAS_CELL_SIZE);
 
         let mut atlas_data = vec![0u8; (Self::ATLAS_SIZE.x * Self::ATLAS_SIZE.y) as usize];
         for (c, _) in font.chars().iter() {
@@ -353,8 +352,7 @@ impl UiContext {
         }
         atlas_data[0] = 255;
         let font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y).unwrap();
-        let future = UploadQueue::push_image(atlas_data, font_atlas);
-        let font_atlas = block_on(future)?;
+        font_atlas.whole().copy_from(&atlas_data);
 
         Ok(UiResources {
             font_atlas,
@@ -369,7 +367,8 @@ impl UiContext {
 
     pub fn text_size(str: &str) -> Vec2 {
         Vec2::new(
-            UiContext::ATLAS_CELL_SIZE.x as f32 * str.len() as f32,
+            (UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32)
+                * str.len() as f32,
             UiContext::ATLAS_CELL_SIZE.y as f32,
         )
     }

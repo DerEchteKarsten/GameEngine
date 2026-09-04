@@ -14,20 +14,27 @@
         ),
         right: Node(
             split: Horizontal,
-            extend: 0.7570511,
+            extend: 0.66548663,
             left: Node(
                 split: Vertical,
                 extend: 0.58989465,
                 left: Leaf(
                     window: 4294967295,
                 ),
-                right: Leaf(
-                    window: 0,
+                right: Node(
+                    split: Horizontal,
+                    extend: 0.6828307,
+                    left: Leaf(
+                        window: 0,
+                    ),
+                    right: Leaf(
+                        window: 5,
+                    ),
                 ),
             ),
             right: Node(
                 split: Vertical,
-                extend: 0.17099872,
+                extend: 0.27323613,
                 left: Leaf(
                     window: 1,
                 ),
@@ -40,8 +47,8 @@
     windows: [
         (
             rect: (
-                min: (372.53256, 995.7422),
-                max: (2270.8135, 1688.0),
+                min: (259.09122, 1017.5683),
+                max: (1051.549, 1725.0),
             ),
             tabs: [
                 (
@@ -55,8 +62,8 @@
         ),
         (
             rect: (
-                min: (2270.8137, 0.0),
-                max: (2880.0, 288.64575),
+                min: (1419.6392, 0.0),
+                max: (2003.0, 471.3324),
             ),
             tabs: [
                 (
@@ -68,7 +75,7 @@
         (
             rect: (
                 min: (0.0, 0.0),
-                max: (372.5327, 915.20184),
+                max: (259.0913, 935.2626),
             ),
             tabs: [
                 (
@@ -79,8 +86,8 @@
         ),
         (
             rect: (
-                min: (2270.8137, 288.64584),
-                max: (2880.0, 1688.0),
+                min: (1419.6392, 471.3323),
+                max: (2003.0, 1725.0),
             ),
             tabs: [
                 (
@@ -91,12 +98,24 @@
         ),
         (
             rect: (
-                min: (0.0, 915.20184),
-                max: (372.5327, 1688.0),
+                min: (0.0, 935.2626),
+                max: (259.0913, 1725.0),
             ),
             tabs: [
                 (
                     label: "Render Settings",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (1051.549, 1017.5683),
+                max: (1419.6392, 1725.0),
+            ),
+            tabs: [
+                (
+                    label: "Inspect Log Entry",
                 ),
             ],
             active_tab: 0,

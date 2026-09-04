@@ -194,7 +194,7 @@ pub fn init_render(mut cmd: Commands) {
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
-    UploadQueue::init(&queues);
+    // UploadQueue::init(&queues);
     cmd.insert_resource(queues);
     cmd.insert_resource(CommandPools {
         pools,

@@ -144,7 +144,7 @@ fn draw_entity_node(
                 || dragndrop.drop_valid(),
                 |ui, cmd| {
                     ui.content_max = if has_children {
-                        ui.collapsable(&label, |ui| {
+                        ui.collapsable(true, this_entity, &label, |ui| {
                             let size = ui.content_max;
                             let Ok((_, _, _, children, _, _)) = instances.get(this_entity) else {
                                 return size;
