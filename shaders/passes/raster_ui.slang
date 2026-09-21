@@ -21,7 +21,7 @@ struct RasterMeshUiBindings {
 [[vk::push_constant]] RasterMeshUiBindings b;
 
 [shader("vertex")]
-VSOutput vertex(uint instance_index: SV_InstanceID, uint index : SV_VertexID)
+VSOutput raster_ui_vertex(uint instance_index: SV_InstanceID, uint index : SV_VertexID)
 {
     let vertex = b.verticies.val[index];
     VSOutput output;
@@ -36,7 +36,7 @@ struct PSOutput {
 };
 
 [shader("fragment")]
-PSOutput fragment(in VSOutput input)
+PSOutput raster_ui_fragment(in VSOutput input)
 {
     PSOutput output;
     output.color = float4(input.color.xyz, input.color.a * b.font_atlas.Sample(input.uv));

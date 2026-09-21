@@ -10,13 +10,13 @@ struct RasterOutlineBindings {
     float4x4 proj;
     Buf<float4x4> instance_transforms;
     Buf<InstancedMeshlet> meshlets;
-    Buf<uint> instance_flags; 
+    Buf<uint> instance_flags;
 }
 
 [[vk::push_constant]] RasterOutlineBindings b;
 
 [shader("vertex")]
-VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
+VSOutput raster_outline_vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
 {
     let instanced_meshlet = b.meshlets.val[instance_index];
     if ((b.instance_flags.val[instanced_meshlet.instance] & OUTLINE_BIT) == 0) {
@@ -42,6 +42,6 @@ VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_Verte
 }
 
 [shader("fragment")]
-void fragment()
+void raster_outline_fragment()
 {
 }

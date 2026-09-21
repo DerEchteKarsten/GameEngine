@@ -4,7 +4,7 @@
 #include "shapes.slang"
 struct VSOutput {
     float4 position : SV_Position;
-    float4 color; 
+    float4 color;
 };
 
 struct Gizzmo {
@@ -15,12 +15,12 @@ struct Gizzmo {
 struct GizzmosBindings {
     float4x4 world_to_clip;
     Buf<Gizzmo> gizzmos;
-} 
+}
 
 [[vk::push_constant]] GizzmosBindings b;
 
 [shader("vertex")]
-VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
+VSOutput aabb_vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
 {
     let aabb = b.gizzmos.val[instance_index];
     let index = BoxIndices[vertex_index];
@@ -38,7 +38,7 @@ struct PSOutput {
 };
 
 [shader("fragment")]
-PSOutput fragment(in VSOutput input)
+PSOutput aabb_fragment(in VSOutput input)
 {
     PSOutput output;
     output.color = input.color;

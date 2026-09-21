@@ -18,7 +18,7 @@ struct RasterBindings {
 [[vk::push_constant]] RasterBindings b;
 
 [shader("vertex")]
-VSOutput vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
+VSOutput raster_vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
 {
     let instanced_meshlet = b.meshlets.val[instance_index];
     let meshlet = *(instanced_meshlet.meshlet);
@@ -48,7 +48,7 @@ struct PSOutput {
 };
 
 [shader("fragment")]
-PSOutput fragment(in VSOutput input, uint2 frag_coord: SV_Position)
+PSOutput raster_fragment(in VSOutput input)
 {
     PSOutput output;
     output.color = float4(input.color.xyz / 3.0, 1.0);
