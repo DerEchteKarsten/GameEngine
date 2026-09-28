@@ -1,0 +1,6 @@
+
+[env]
+SLANG_DIR = { value = "lava/slang", relative = true}
+
+[build]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/home/karsten/code/GameEngine/lava/slang/lib"]

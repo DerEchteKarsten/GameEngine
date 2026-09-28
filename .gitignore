@@ -1,4 +1,5 @@
 /target
+/lava/slang
 /lava/src/bindings.rs
 /shaders/bin/*
 /game/assets
