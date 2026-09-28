@@ -74,5 +74,5 @@ pub fn ScenePlugin(app: &mut App) {
 
 #[derive(Resource)]
 pub struct Skybox {
-    image: Image<format::R8G8B8A8Srgb, usage::Sampled>,
+    image: Image<1, format::R8G8B8A8Srgb, usage::Sampled>,
 }

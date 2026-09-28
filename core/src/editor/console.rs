@@ -213,10 +213,12 @@ where
 
             let target = m.message.len();
 
-            if let Some(target) = m.target {
-                m.message.push_str(&target);
-            } else {
-                m.message.push_str(event.metadata().target());
+            if m.typ.is_none() {
+                if let Some(target) = m.target {
+                    m.message.push_str(&target);
+                } else {
+                    m.message.push_str(event.metadata().target());
+                }
             }
 
             let buffer = m.message.into_boxed_str();

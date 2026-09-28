@@ -63,7 +63,10 @@ use bevy::{
 use glam::{UVec2, Vec2, Vec4};
 use itertools::Itertools;
 use lava::{
-    buffer::Buffer,
+    buffer::{
+        Buffer,
+        usage::{StorageIndex, StorageIndirect},
+    },
     image::{Image, format, slice::AsImage, usage},
 };
 use ron::ser::PrettyConfig;
@@ -71,7 +74,6 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
-    bindings::UIVertex,
     render::{
         FRAMES_IN_FLIGHT, MainWorld, extract_param::Extract, render::FrameCount, world::UploadQueue,
     },
@@ -82,6 +84,7 @@ use crate::{
         window::{Tab, TabState, UiWindow},
     },
 };
+use lava::bindings::UIVertex;
 
 pub const fn hash_location(file: &str, line: u32, col: u32) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -210,9 +213,9 @@ impl UiWindows {
 
 #[derive(Resource)]
 pub struct UiResources {
-    pub font_atlas: Image<format::R8Unorm, usage::Sampled>,
+    pub font_atlas: Image<1, format::R8Unorm, usage::Sampled>,
     pub verticies: [Buffer<UIVertex>; FRAMES_IN_FLIGHT],
-    pub indicies: [Buffer<u32>; FRAMES_IN_FLIGHT],
+    pub indicies: [Buffer<u32, StorageIndex>; FRAMES_IN_FLIGHT],
     pub num_verticies: usize,
     pub num_indicies: usize,
     pub pending_verticies: Vec<UIVertex>,
@@ -352,7 +355,7 @@ impl UiContext {
         }
         atlas_data[0] = 255;
         let font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y).unwrap();
-        font_atlas.whole().copy_from(&atlas_data);
+        font_atlas.whole().copy_from(&atlas_data, 0);
 
         Ok(UiResources {
             font_atlas,

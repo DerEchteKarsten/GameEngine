@@ -21,14 +21,12 @@ use bevy::{
 };
 use glam::{Vec2, Vec4};
 use itertools::Itertools;
+use lava::bindings::UIVertex;
 
-use crate::{
-    bindings::UIVertex,
-    ui::{
-        Draggable, FocusedState, MultiInput, UiContext, UiWindows, from_pos_size,
-        scrollable::Scrollable,
-        window::{BorderSettings, DrawSettings, Drawable, Tab, TabState, TextDirection, UiWindow},
-    },
+use crate::ui::{
+    Draggable, FocusedState, MultiInput, UiContext, UiWindows, from_pos_size,
+    scrollable::Scrollable,
+    window::{BorderSettings, DrawSettings, Drawable, Tab, TabState, TextDirection, UiWindow},
 };
 
 #[derive(SystemParam)]

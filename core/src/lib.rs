@@ -23,7 +23,6 @@ use bevy::{
 use glam::Vec2;
 use tracing::Level;
 
-mod bindings;
 pub mod physics;
 
 use crate::{
@@ -47,7 +46,7 @@ pub const INITIAL_WINDOW_SIZE: Vec2 = Vec2::new(2000.0, 2000.0 * 9.0 / 16.0);
 pub fn CorePlugin(app: &mut App) {
     app.add_plugins((
         ConsolePlugin {
-            also_log_to_stderr: false,
+            also_log_to_stderr: true,
             level: Level::DEBUG,
             ..Default::default()
         },

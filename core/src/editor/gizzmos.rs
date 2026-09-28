@@ -1,10 +1,6 @@
 use std::ops::Range;
 
 use crate::{
-    bindings::{
-        DrawAabbs, DrawAabbsBindings, DrawArrows, DrawArrowsBindings, DrawSpheres,
-        DrawSpheresBindings, Gizzmo,
-    },
     editor::viewport::{ViewPort, ViewPortProxy},
     render::{
         FRAMES_IN_FLIGHT, MainWorld,
@@ -22,9 +18,10 @@ use bevy::{
     transform::components::GlobalTransform,
 };
 use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
+use lava::bindings::{DrawAabbs, DrawArrows, DrawSpheres, Gizzmo};
 use lava::{
     buffer::Buffer,
-    command_buffer::{CommandBuffer, RasterVertexDispatch, Scissor, Viewport},
+    command_buffer::{CommandBuffer, Scissor, Viewport},
 };
 
 const MAX_GIZZMOS: usize = 1_000_000;
@@ -350,21 +347,18 @@ impl GizzmoResources {
         frame_in_flight: usize,
     ) {
         if !self.aabb_range.is_empty() {
-            cmd.raster::<DrawAabbs>()
-                .bind(DrawAabbsBindings {
-                    world_to_clip: camera.camera.proj * camera.camera.view,
-                    gizzmos: self
-                        .gizzmos
-                        .range((MAX_GIZZMOS * frame_in_flight + self.aabb_range.start)..),
-                })
+            cmd.raster()
                 .color_attachment(swapchain.image(), None)
                 .backface_culling(false)
                 .draw_with_dynstates(
-                    RasterVertexDispatch::Draw {
-                        vertex_count: 36,
-                        instance_count: self.aabb_range.len() as u32,
-                    },
+                    DrawAabbs::new(
+                        camera.camera.proj * camera.camera.view,
+                        self.gizzmos
+                            .range((MAX_GIZZMOS * frame_in_flight + self.aabb_range.start)..),
+                    ),
                     swapchain.size,
+                    36,
+                    self.aabb_range.len() as u32,
                     &[Scissor {
                         extent: viewport.visible_rect.size().as_uvec2(),
                         offset: viewport.visible_rect.min.as_ivec2(),
@@ -376,21 +370,18 @@ impl GizzmoResources {
                 );
         }
         if !self.sphere_range.is_empty() {
-            cmd.raster::<DrawSpheres>()
-                .bind(DrawSpheresBindings {
-                    world_to_clip: camera.camera.proj * camera.camera.view,
-                    gizzmos: self
-                        .gizzmos
-                        .range((MAX_GIZZMOS * frame_in_flight + self.sphere_range.start)..),
-                })
+            cmd.raster()
                 .color_attachment(swapchain.image(), None)
                 .backface_culling(false)
                 .draw_with_dynstates(
-                    RasterVertexDispatch::Draw {
-                        vertex_count: 576,
-                        instance_count: self.sphere_range.len() as u32,
-                    },
+                    DrawSpheres::new(
+                        camera.camera.proj * camera.camera.view,
+                        self.gizzmos
+                            .range((MAX_GIZZMOS * frame_in_flight + self.sphere_range.start)..),
+                    ),
                     swapchain.size,
+                    576,
+                    self.sphere_range.len() as u32,
                     &[Scissor {
                         extent: viewport.visible_rect.size().as_uvec2(),
                         offset: viewport.visible_rect.min.as_ivec2(),
@@ -402,21 +393,18 @@ impl GizzmoResources {
                 );
         }
         if !self.arrow_range.is_empty() {
-            cmd.raster::<DrawArrows>()
-                .bind(DrawArrowsBindings {
-                    world_to_clip: camera.camera.proj * camera.camera.view,
-                    gizzmos: self
-                        .gizzmos
-                        .range((MAX_GIZZMOS * frame_in_flight + self.arrow_range.start)..),
-                })
+            cmd.raster()
                 .color_attachment(swapchain.image(), None)
                 .backface_culling(false)
                 .draw_with_dynstates(
-                    RasterVertexDispatch::Draw {
-                        vertex_count: 216,
-                        instance_count: self.arrow_range.len() as u32,
-                    },
+                    DrawArrows::new(
+                        camera.camera.proj * camera.camera.view,
+                        self.gizzmos
+                            .range((MAX_GIZZMOS * frame_in_flight + self.arrow_range.start)..),
+                    ),
                     swapchain.size,
+                    216,
+                    self.arrow_range.len() as u32,
                     &[Scissor {
                         extent: viewport.visible_rect.size().as_uvec2(),
                         offset: viewport.visible_rect.min.as_ivec2(),

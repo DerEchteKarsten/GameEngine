@@ -26,12 +26,12 @@ use tracing::debug_span;
 
 use crate::{
     assets::{material::Material, read_slice, read_slice_to_buffer, read_u64, write_slice},
-    bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex},
     physics::bvh::{
         ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
     },
     render::world::UploadQueue,
 };
+use lava::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 
@@ -296,8 +296,9 @@ impl AssetLoader for MeshLoader {
                     &mut data[i * size_of::<BvhNode>()..(i + 1) * size_of::<BvhNode>()],
                 );
                 for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
-                    let offset = aabb.offset();
-                    aabb.set_offset(
+                    let offset = aabb_ptr_offset(aabb);
+                    aabb_ptr_set_offset(
+                        aabb,
                         if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
                             offset * size_of::<BvhNode>() as u64 + address
                         } else {
@@ -371,52 +372,27 @@ impl AssetLoader for MeshLoader {
     }
 }
 
-impl Default for AabbPtr {
-    fn default() -> Self {
-        AabbPtr {
-            center_and_offset_high: Default::default(),
-            half_extent_and_offset_low: Default::default(),
-        }
-    }
+fn bvh_node_child_counts(node: &BvhNode, i: usize) -> u8 {
+    ((node.child_counts >> (i * 8)) & 0xFF) as u8
+}
+fn bvh_node_set_child_count(node: &mut BvhNode, i: usize, value: u8) {
+    let shift = i * 8;
+    let mask = !(0xFFu64 << shift);
+    node.child_counts = (node.child_counts & mask) | ((value as u64) << shift);
 }
 
-impl Default for BvhNode {
-    fn default() -> Self {
-        BvhNode {
-            aabb_and_offsets: Default::default(),
-            errors: Default::default(),
-            lod_bounds: Default::default(),
-            child_counts: Default::default(),
-            pad: Default::default(),
-        }
-    }
+fn aabb_ptr_offset(aabb: &AabbPtr) -> u64 {
+    (aabb.center_and_offset_high.w.to_bits() as u64) << 32
+        | aabb.half_extent_and_offset_low.w.to_bits() as u64
 }
-
-impl BvhNode {
-    pub fn child_counts(&self, i: usize) -> u8 {
-        ((self.child_counts >> (i * 8)) & 0xFF) as u8
-    }
-    pub fn set_child_count(&mut self, i: usize, value: u8) {
-        let shift = i * 8;
-        let mask = !(0xFFu64 << shift);
-        self.child_counts = (self.child_counts & mask) | ((value as u64) << shift);
-    }
+fn aabb_ptr_set_offset(aabb: &mut AabbPtr, value: u64) {
+    aabb.center_and_offset_high.w = f32::from_bits((value >> 32) as u32);
+    aabb.half_extent_and_offset_low.w = f32::from_bits(value as u32);
 }
-
-impl AabbPtr {
-    pub fn offset(&self) -> u64 {
-        (self.center_and_offset_high.w.to_bits() as u64) << 32
-            | self.half_extent_and_offset_low.w.to_bits() as u64
-    }
-    pub fn set_offset(&mut self, value: u64) {
-        self.center_and_offset_high.w = f32::from_bits((value >> 32) as u32);
-        self.half_extent_and_offset_low.w = f32::from_bits(value as u32);
-    }
-    pub fn new(aabb: Aabb3d, offset: u32) -> Self {
-        Self {
-            center_and_offset_high: aabb.center().extend(f32::from_bits(0)),
-            half_extent_and_offset_low: aabb.half_size().extend(f32::from_bits(offset)),
-        }
+fn aabb_ptr_new(aabb: Aabb3d, offset: u32) -> AabbPtr {
+    AabbPtr {
+        center_and_offset_high: aabb.center().extend(f32::from_bits(0)),
+        half_extent_and_offset_low: aabb.half_size().extend(f32::from_bits(offset)),
     }
 }
 
@@ -1202,7 +1178,7 @@ impl BvhBuilder {
                 out.aabb_and_offsets[i] = aabb_to_meshlet(group.aabb, group.meshlets[0]);
                 out.errors[i] = group.parent_error;
                 out.lod_bounds[i] = group.lod_bounds;
-                out.set_child_count(i, group.meshlets[1] as u8);
+                bvh_node_set_child_count(out, i, group.meshlets[1] as u8);
             } else {
                 let child_id = self.build_inner(groups, out, max_depth, child_id, depth + 1);
                 let child = &out[child_id as usize];
@@ -1210,7 +1186,7 @@ impl BvhBuilder {
                 let mut parent_error = 0.0f32;
                 let mut lod_bounds = Vec4::ZERO;
                 for i in 0..8 {
-                    if child.child_counts(i) == 0 {
+                    if bvh_node_child_counts(child, i) == 0 {
                         break;
                     }
 
@@ -1226,7 +1202,7 @@ impl BvhBuilder {
                 out.aabb_and_offsets[i] = aabb_to_meshlet(aabb, child_id);
                 out.errors[i] = parent_error;
                 out.lod_bounds[i] = lod_bounds;
-                out.set_child_count(i, u8::MAX);
+                bvh_node_set_child_count(out, i, u8::MAX);
             }
         }
 
@@ -1269,7 +1245,7 @@ impl BvhBuilder {
             o.aabb_and_offsets[0] = aabb_to_meshlet(group.aabb, group.meshlets[0]);
             o.errors[0] = group.parent_error;
             o.lod_bounds[0] = group.lod_bounds;
-            o.set_child_count(0, group.meshlets[1] as _);
+            bvh_node_set_child_count(&mut o, 0, group.meshlets[1] as _);
             out.push(o);
             aabb = group.aabb;
             max_depth = 1;
@@ -1280,7 +1256,7 @@ impl BvhBuilder {
 
             let root = &out[0];
             for i in 0..8 {
-                if root.child_counts(i) == 0 {
+                if bvh_node_child_counts(root, i) == 0 {
                     break;
                 }
 
@@ -1312,10 +1288,10 @@ fn verify_bvh(
     for i in 0..8 {
         let sphere = node.lod_bounds[i];
         let error = node.errors[i];
-        if node.child_counts(i) == u8::MAX {
-            let child = &out[node.aabb_and_offsets[i].offset() as usize];
+        if bvh_node_child_counts(node, i) == u8::MAX {
+            let child = &out[aabb_ptr_offset(&node.aabb_and_offsets[i]) as usize];
             for i in 0..8 {
-                if child.child_counts(i) == 0 {
+                if bvh_node_child_counts(child, i) == 0 {
                     break;
                 }
                 assert!(child.errors[i] <= error, "BVH errors are not monotonic");
@@ -1330,11 +1306,11 @@ fn verify_bvh(
                 out,
                 cull_data,
                 reachable,
-                node.aabb_and_offsets[i].offset() as u32,
+                aabb_ptr_offset(&node.aabb_and_offsets[i]) as u32,
             );
         } else {
-            for m in 0..node.child_counts(i) as u32 {
-                let mid = (m + node.aabb_and_offsets[i].offset() as u32) as usize;
+            for m in 0..bvh_node_child_counts(node, i) as u32 {
+                let mid = (m + aabb_ptr_offset(&node.aabb_and_offsets[i]) as u32) as usize;
                 let meshlet = &cull_data[mid];
                 assert!(
                     meshlet.error <= error || meshlet.error.is_infinite() || error.is_infinite(),
@@ -1362,5 +1338,5 @@ fn aabb_default() -> Aabb3d {
 }
 
 fn aabb_to_meshlet(aabb: Aabb3d, child_offset: u32) -> AabbPtr {
-    AabbPtr::new(aabb, child_offset)
+    aabb_ptr_new(aabb, child_offset)
 }

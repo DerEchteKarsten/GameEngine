@@ -1,5 +1,5 @@
 /target
-/core/src/bindings.rs
+/lava/src/bindings.rs
 /shaders/bin/*
 /game/assets
 /game/imported_assets

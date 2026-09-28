@@ -18,8 +18,11 @@ use bevy::{
 };
 use glam::{Mat4, Vec3, Vec4, Vec4Swizzles};
 use lava::{
-    buffer::Buffer,
-    command_buffer::{RasterVertexDispatch, ResourceHandle, ResourceState, Scissor, Viewport},
+    buffer::{
+        Buffer,
+        usage::{Index, Indirect},
+    },
+    command_buffer::{DrawIndirectCommand, Scissor, Viewport},
     image::{
         Image,
         format::{self, D32Sfloat},
@@ -29,18 +32,15 @@ use lava::{
     state::Ctx,
     vkobjects::{
         self,
-        queue::{Binary, CommandBufferMemory, CommandPool, Fence, Gfx, Present, Queue, Semaphore},
+        queue::{
+            Binary, CommandBufferMemory, CommandPool, Fence, Gfx, PendingAccesses, Present, Queue,
+            Semaphore,
+        },
     },
 };
 
 use crate::{
     INITIAL_WINDOW_SIZE,
-    bindings::{
-        BvhCull, BvhCullBindings, DrawOutline, DrawOutlineBindings, InstanceBvhRoot, InstanceCull,
-        InstanceCullBindings, InstanceMeshletIndex, InstancedMeshlet, Raster, RasterBindings,
-        RasterOutline, RasterOutlineBindings, RasterUi, RasterUiBindings, Skybox, SkyboxBindings,
-        TraversalVariables,
-    },
     editor::{gizzmos::GizzmoResources, viewport::ViewPort},
     id,
     render::{
@@ -51,6 +51,10 @@ use crate::{
     },
     scene::camera::Camera,
     ui::{UiResources, builder::UiBuilder},
+};
+use lava::bindings::{
+    BvhCull, DrawOutline, InstanceBvhRoot, InstanceCull, InstanceMeshletIndex, InstancedMeshlet,
+    Raster, RasterOutline, RasterUi, Skybox, TraversalVariables,
 };
 
 #[derive(Resource)]
@@ -201,7 +205,7 @@ pub fn init_render(mut cmd: Commands) {
         command_buffers,
     });
     cmd.insert_resource(ResourceStates {
-        resource_states: Some(HashMap::new()),
+        pending: Some(PendingAccesses::default()),
     });
     cmd.insert_resource(SynchronizationResources {
         fences: Default::default(),
@@ -212,11 +216,11 @@ pub fn init_render(mut cmd: Commands) {
 
 #[derive(Resource)]
 pub struct ResourceStates {
-    resource_states: Option<HashMap<ResourceHandle, ResourceState>>,
+    pending: Option<PendingAccesses>,
 }
 
 pub struct RenderResources {
-    depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
+    depth_attachment: Image<1, D32Sfloat, DepthAttachmentSampled>,
     meshlets: Buffer<InstancedMeshlet>,
     bvh_node_stack: Buffer<InstanceBvhRoot>,
     meshlet_batches: Buffer<u32>,
@@ -342,27 +346,28 @@ pub(super) fn render(
     let states = queues.graphics.with(|queue| {
         queue
             .execute_command(
-                resource_states.resource_states.take(),
+                resource_states.pending.take().unwrap(),
                 &cmds.command_buffers[frame.frame_in_flight()],
                 Some(&sync.fences[frame.frame_in_flight()]),
                 &[sync.image_available[frame.frame_in_flight()].info()],
                 &[sync.render_finished[swapchain.image_index as usize].info()],
                 |cmd| {
                     cmd.clear_image(swapchain.image(), [0.0; 4]);
-                    cmd.compute::<Skybox>()
-                        .bind(SkyboxBindings {
-                            out: swapchain.image().as_storage(),
-                            inverse_proj: camera.camera.proj_inv(),
-                            inverse_view: camera.camera.view_inv(),
-                            view_port_size: viewport.rect.size().as_uvec2(),
-                            view_port_offset: viewport.rect.min.as_ivec2(),
-                            swpachain_size: swapchain.size,
-                        })
-                        .dispatch(
+                    cmd.compute(
+                        Skybox::new(
+                            camera.camera.proj_inv(),
+                            camera.camera.view_inv(),
+                            swapchain.image(),
+                            viewport.rect.min.as_ivec2(),
+                            viewport.rect.size().as_uvec2(),
+                            swapchain.size,
+                        ),
+                        [
                             (viewport.visible_rect.width() as u32).div_ceil(8),
                             (viewport.visible_rect.height() as u32).div_ceil(8),
                             1,
-                        );
+                        ],
+                    );
 
                     // for i in resources.meshlets.range(0..10) {
                     //     log::info!("{:#?}", i);
@@ -391,68 +396,64 @@ pub(super) fn render(
                             },
                         );
                         let clip_from_world = (cull_proj * cull_view).transpose();
-                        cmd.compute::<InstanceCull>()
-                            .bind(InstanceCullBindings {
-                                clip_from_world,
-                                instance_transforms: instances
-                                    .transforms
-                                    .range(MAX_INSTANCES * frame_in_flight..),
-                                instance_aabbs: instances
-                                    .aabbs
-                                    .range(MAX_INSTANCES * frame_in_flight..),
-                                bvh_node_stack: resources.bvh_node_stack.range(..),
-                                instance_bvh_root_nodes: instances
+                        cmd.compute(
+                            InstanceCull::new(
+                                instances.instance_count as u64,
+                                instances
                                     .bvh_root_nodes
                                     .range(MAX_INSTANCES * frame_in_flight..),
-                                num_instances: instances.instance_count as u64,
-                                variables: resources.variables.range(..),
-                            })
-                            .dispatch(instances.instance_count.div_ceil(64) as u32, 1, 1);
-                        cmd.compute::<BvhCull>()
-                            .bind(BvhCullBindings {
-                                instance_headers: instances
-                                    .headers
+                                instances.aabbs.range(MAX_INSTANCES * frame_in_flight..),
+                                instances
+                                    .transforms
                                     .range(MAX_INSTANCES * frame_in_flight..),
-                                visible_meshlets: resources.meshlets.range(..),
-                                queue: resources.bvh_node_stack.range(..),
-                                queue_state: resources.variables.range(..),
-                                camera_pos: setting
+                                resources.bvh_node_stack.range(..),
+                                resources.variables.range(..),
+                                clip_from_world,
+                            ),
+                            [instances.instance_count.div_ceil(64) as u32, 1, 1],
+                        );
+                        cmd.compute(
+                            BvhCull::new(
+                                resources.bvh_node_stack.range(..),
+                                resources.variables.range(..),
+                                resources.meshlets.range(..),
+                                resources.candidate_meshlets.range(..),
+                                resources.meshlet_batches.range(..),
+                                instances
+                                    .transforms
+                                    .range(MAX_INSTANCES * frame_in_flight..),
+                                instances.headers.range(MAX_INSTANCES * frame_in_flight..),
+                                setting
                                     .freez_pos
                                     .unwrap_or(camera.transform.translation.extend(0.0)),
-                                proj: cull_proj,
-                                canidate_meshlets: resources.candidate_meshlets.range(..),
+                                cull_proj,
                                 clip_from_world,
-                                window_height: viewport.rect.height(),
-                                instance_transforms: instances
-                                    .transforms
-                                    .range(MAX_INSTANCES * frame_in_flight..),
-                                meshlet_batch_buffer: resources.meshlet_batches.range(..),
-                            })
-                            .dispatch(64, 1, 1);
-                        cmd.raster::<Raster>()
-                            .bind(RasterBindings {
-                                proj: camera.camera.proj,
-                                view: camera.camera.view,
-                                instance_transforms: instances
-                                    .transforms
-                                    .range(MAX_INSTANCES * frame_in_flight..),
-                                meshlets: resources.meshlets.range(..),
-                            })
+                                viewport.rect.height(),
+                            ),
+                            [64, 1, 1],
+                        );
+                        cmd.raster()
                             .color_attachment(swapchain.image(), None)
                             .depth_attachment(
-                                resources.depth_attachment.view(),
-                                Some([0.0; 4]),
+                                resources.depth_attachment.whole_view(),
+                                Some([0.0]),
                                 true,
                             )
                             .backface_culling(true)
-                            .draw_with_dynstates(
-                                RasterVertexDispatch::DrawIndirect {
-                                    buffer: resources
-                                        .variables
-                                        .byte_range(offset_of!(TraversalVariables, vertex_count)..)
-                                        .cast(),
-                                },
+                            .draw_indirect_with_dynstates(
+                                Raster::new(
+                                    camera.camera.view,
+                                    camera.camera.proj,
+                                    instances
+                                        .transforms
+                                        .range(MAX_INSTANCES * frame_in_flight..),
+                                    resources.meshlets.range(..),
+                                ),
                                 swapchain.size,
+                                resources
+                                    .variables
+                                    .byte_range(offset_of!(TraversalVariables, vertex_count)..)
+                                    .cast::<DrawIndirectCommand, Indirect>(),
                                 &[Scissor {
                                     extent: viewport.visible_rect.size().as_uvec2(),
                                     offset: viewport.visible_rect.min.as_ivec2(),
@@ -464,34 +465,28 @@ pub(super) fn render(
                             );
 
                         if instances.any_outlined {
-                            cmd.raster::<RasterOutline>()
-                                .bind(RasterOutlineBindings {
-                                    proj: camera.camera.proj,
-                                    view: camera.camera.view,
-                                    instance_transforms: instances
-                                        .transforms
-                                        .range(MAX_INSTANCES * frame_in_flight..),
-                                    instance_flags: instances
-                                        .flags
-                                        .range(MAX_INSTANCES * frame_in_flight..),
-                                    meshlets: resources.meshlets.range(..),
-                                })
+                            cmd.raster()
                                 .backface_culling(true)
                                 .depth_attachment(
-                                    resources.depth_attachment.view(),
-                                    Some([0.0; 4]),
+                                    resources.depth_attachment.whole_view(),
+                                    Some([0.0]),
                                     true,
                                 )
-                                .draw_with_dynstates(
-                                    RasterVertexDispatch::DrawIndirect {
-                                        buffer: resources
-                                            .variables
-                                            .byte_range(
-                                                offset_of!(TraversalVariables, vertex_count)..,
-                                            )
-                                            .cast(),
-                                    },
+                                .draw_indirect_with_dynstates(
+                                    RasterOutline::new(
+                                        camera.camera.view,
+                                        camera.camera.proj,
+                                        instances
+                                            .transforms
+                                            .range(MAX_INSTANCES * frame_in_flight..),
+                                        resources.meshlets.range(..),
+                                        instances.flags.range(MAX_INSTANCES * frame_in_flight..),
+                                    ),
                                     swapchain.size,
+                                    resources
+                                        .variables
+                                        .byte_range(offset_of!(TraversalVariables, vertex_count)..)
+                                        .cast::<DrawIndirectCommand, Indirect>(),
                                     &[Scissor {
                                         extent: viewport.visible_rect.size().as_uvec2(),
                                         offset: viewport.visible_rect.min.as_ivec2(),
@@ -502,42 +497,39 @@ pub(super) fn render(
                                     },
                                 );
 
-                            cmd.compute::<DrawOutline>()
-                                .bind(DrawOutlineBindings {
-                                    depth: resources.depth_attachment.view().as_sampled(),
-                                    out: swapchain.image().as_storage(),
-                                    view_port_size: viewport.visible_rect.size().as_uvec2(),
-                                    view_port_offset: viewport.visible_rect.min.as_ivec2(),
-                                    swpachain_size: swapchain.size,
-                                    outline_color_and_radius: setting
-                                        .outline_color
-                                        .extend(setting.outline_radius),
-                                })
-                                .dispatch(
+                            cmd.compute(
+                                DrawOutline::new(
+                                    resources.depth_attachment.whole_view(),
+                                    swapchain.image(),
+                                    setting.outline_color.extend(setting.outline_radius),
+                                    viewport.visible_rect.min.as_ivec2(),
+                                    viewport.visible_rect.size().as_uvec2(),
+                                    swapchain.size,
+                                ),
+                                [
                                     (viewport.visible_rect.width() as u32).div_ceil(8),
                                     (viewport.visible_rect.height() as u32).div_ceil(8),
                                     1,
-                                );
+                                ],
+                            );
                         }
                         if let Some(gizzmos) = gizzmos {
                             gizzmos.draw(cmd, &swapchain, &camera, &viewport, frame_in_flight);
                         }
                     }
 
-                    cmd.raster::<RasterUi>()
-                        .bind(RasterUiBindings {
-                            font_atlas: ui_resources.font_atlas.as_sampled(),
-                            verticies: ui_resources.verticies[frame.frame_in_flight()].range(..),
-                        })
+                    cmd.raster()
                         .backface_culling(false)
                         .color_attachment(swapchain.image(), None)
-                        .draw(
+                        .draw_indexed(
+                            RasterUi::new(
+                                ui_resources.verticies[frame.frame_in_flight()].range(..),
+                                ui_resources.font_atlas.whole_view(),
+                            ),
                             swapchain.size,
-                            RasterVertexDispatch::DrawIndexed {
-                                instance_count: 1,
-                                index_buffer: ui_resources.indicies[frame.frame_in_flight()]
-                                    .range(..ui_resources.num_indicies),
-                            },
+                            ui_resources.indicies[frame.frame_in_flight()]
+                                .range(..ui_resources.num_indicies),
+                            1,
                         );
                     // cmd.blit_image(
                     //     nui_resources.font_atlas.whole(),
@@ -553,7 +545,7 @@ pub(super) fn render(
             .unwrap()
     });
 
-    resource_states.resource_states = Some(states);
+    resource_states.pending = Some(states);
     if let Some(present) = &queues.present {
         present
             .present(

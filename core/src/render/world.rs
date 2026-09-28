@@ -23,19 +23,19 @@ use lava::buffer::Buffer;
 use lava::buffer::slice::BufferSlice;
 use lava::image::Image;
 use lava::image::slice::{AsImage, ImageSlice};
-use lava::image::usage::UsageSet;
+use lava::image::usage::ImageUsage;
 use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue, Transfer};
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
 
 use crate::assets::mesh::{GpuMesh, MeshHeader};
-use crate::bindings::{self, AabbError};
 use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
 use crate::render::extract_param::Extract;
 use crate::render::render::{FrameCount, QueueStrategie, Queues, extract_camera};
 use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderStartup, RenderSystems};
 use crate::scene::Instance;
+use lava::bindings::{self, AabbError};
 
 #[derive(Resource)]
 pub struct InstanceManager {

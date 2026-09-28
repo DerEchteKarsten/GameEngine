@@ -13,15 +13,13 @@ use bevy::{
 };
 use glam::{Vec2, Vec4};
 
-use crate::{
-    bindings::UIVertex,
-    ui::{
-        Draggable, FocusedState, MultiInput, UiContext,
-        builder::{UiWindowBuilder, UiWindowContext},
-        from_pos_size,
-        scrollable::Scrollable,
-    },
+use crate::ui::{
+    Draggable, FocusedState, MultiInput, UiContext,
+    builder::{UiWindowBuilder, UiWindowContext},
+    from_pos_size,
+    scrollable::Scrollable,
 };
+use lava::bindings::UIVertex;
 
 #[derive(Debug)]
 pub struct UiWindow {
