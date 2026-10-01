@@ -98,5 +98,15 @@ struct InstanceHeader {
     uint64_t cull_data_offset;
 }
 
+#define NO_TEXTURE 0xFFFFFFFFu
+
+struct Material {
+    float4 color;
+    float metalic_factor;
+    float roughness_factor;
+    uint texture;
+    uint pad;
+}
+
 
 #define OUTLINE_BIT 0b1  

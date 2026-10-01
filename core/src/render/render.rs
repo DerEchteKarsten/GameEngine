@@ -454,6 +454,7 @@ pub(super) fn render(
                                         .transforms
                                         .range(MAX_INSTANCES * frame_in_flight..),
                                     resources.meshlets.range(..),
+                                    instances.materials.range(MAX_INSTANCES * frame_in_flight..),
                                 ),
                                 swapchain.size.into(),
                                 resources

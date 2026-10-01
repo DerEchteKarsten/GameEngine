@@ -13,6 +13,7 @@ struct RasterBindings {
     float4x4 proj;
     Buf<float4x4> instance_transforms;
     Buf<InstancedMeshlet> meshlets;
+    Buf<Material> materials;
 }
 
 [[vk::push_constant]] RasterBindings b;
@@ -51,6 +52,12 @@ struct PSOutput {
 PSOutput raster_fragment(in VSOutput input)
 {
     PSOutput output;
-    output.color = float4(input.color.xyz / 3.0, 1.0);
+    let material = b.materials.val[input.instance];
+    var color = material.color;
+    if (material.texture != NO_TEXTURE) {
+        let texture = Tex2D<float4>(material.texture, NO_TEXTURE);
+        color *= texture.Sample(input.uv, 2);
+    }
+    output.color = float4(color.xyz, 1.0);
     return output;
 }

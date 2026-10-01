@@ -8,8 +8,9 @@ use bevy::{
 };
 use bytemuck::Pod;
 
-use crate::assets::mesh::{
-    GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer, Scene,
+use crate::assets::{
+    mesh::{GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer, Scene},
+    texture::GpuTexture,
 };
 
 use lava::buffer::slice::BufferSlice;
@@ -30,7 +31,8 @@ impl Plugin for MeshAssets {
             .register_asset_loader(MeshLoader)
             .init_asset::<Scene>()
             .init_asset::<GltfMesh>()
-            .init_asset::<GpuMesh>();
+            .init_asset::<GpuMesh>()
+            .init_asset::<GpuTexture>();
     }
 }
 

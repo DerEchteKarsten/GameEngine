@@ -28,7 +28,9 @@ use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue, Transfer};
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
 
+use crate::assets::material::Material;
 use crate::assets::mesh::{GpuMesh, MeshHeader};
+use crate::assets::texture::GpuTexture;
 use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
 use crate::render::extract_param::Extract;
@@ -36,6 +38,7 @@ use crate::render::render::{FrameCount, QueueStrategie, Queues, extract_camera};
 use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderStartup, RenderSystems};
 use crate::scene::Instance;
 use lava::bindings::{self, AabbError};
+use lava::bindless::NULL_HANDLE;
 
 #[derive(Resource)]
 pub struct InstanceManager {
@@ -44,6 +47,7 @@ pub struct InstanceManager {
     pub headers: Buffer<bindings::InstanceHeader>,
     pub aabbs: Buffer<AabbError>,
     pub flags: Buffer<u32>,
+    pub materials: Buffer<Material>,
     pub instance_count: usize,
     pub any_outlined: bool,
     pending_instances: Vec<TempInstance>,
@@ -78,6 +82,7 @@ impl std::ops::BitOr for InstanceFlags {
 #[derive(Clone, Copy)]
 struct TempInstance {
     flags: InstanceFlags,
+    material: Material,
     transform: Mat4,
     bvh_root: u64,
     header: MeshHeader,
@@ -405,7 +410,7 @@ pub(super) fn init_world(mut cmd: Commands) {
         aabbs: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         transforms: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         bvh_root_nodes: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
-        // materials: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
+        materials: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         instance_count: 0,
         any_outlined: false,
         flags: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
@@ -418,11 +423,19 @@ fn extract_meshlet_instances(
     mut instance_manager: ResMut<InstanceManager>,
     instances: Extract<Query<(&Instance, &GlobalTransform, Has<Selected>)>>,
     meshes: Extract<Res<Assets<GpuMesh>>>,
+    textures: Extract<Res<Assets<GpuTexture>>>,
 ) {
     instance_manager.any_outlined = false;
     for (instance, transform, selected) in &instances {
         if let Some(mesh) = meshes.get(&instance.mesh) {
             let mat = transform.to_matrix();
+            let mut material = instance.material;
+            material.texture = instance
+                .texture
+                .as_ref()
+                .and_then(|handle| textures.get(handle))
+                .map(GpuTexture::descriptor_index)
+                .unwrap_or(NULL_HANDLE);
             let flags = if selected {
                 instance.flags | InstanceFlags::OUTLINE
             } else {
@@ -433,6 +446,7 @@ fn extract_meshlet_instances(
                 bvh_root: mesh.buffer.address,
                 header: mesh.header,
                 transform: mat,
+                material,
                 flags,
             });
         }
@@ -454,6 +468,7 @@ fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res<FrameCount
             cull_data_offset: instance.header.cull_data_offset as u64 + instance.bvh_root,
         };
         instances.flags[slot + frame_in_flight * MAX_INSTANCES] = instance.flags.0;
+        instances.materials[slot + frame_in_flight * MAX_INSTANCES] = instance.material;
     }
     instances.instance_count = instances.pending_instances.len();
     instances.pending_instances.clear();
