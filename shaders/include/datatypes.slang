@@ -102,10 +102,16 @@ struct InstanceHeader {
 
 struct Material {
     float4 color;
+    float3 emissive;
     float metalic_factor;
     float roughness_factor;
-    uint texture;
-    uint pad;
+    float normal_scale;
+    float occlusion_strength;
+    uint color_texture;
+    uint metallic_roughness_texture;
+    uint normal_texture;
+    uint occlusion_texture;
+    uint emissive_texture;
 }
 
 

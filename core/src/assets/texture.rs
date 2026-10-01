@@ -1,22 +1,63 @@
+use anyhow::Result;
 use bevy::{asset::Asset, reflect::TypePath};
 use bytemuck::{Pod, Zeroable};
 use lava::{
     bindless::NULL_HANDLE,
-    image::{Image, format::R8G8B8A8Srgb, usage::Sampled},
+    image::{
+        Image,
+        format::{R8G8B8A8Srgb, R8G8B8A8Unorm},
+        slice::AsImage,
+        usage::Sampled,
+    },
 };
 
-/// A material texture on the GPU: RGBA8 sRGB with a full mip chain, registered in the bindless
-/// sampled image heap. Textures are labeled sub assets of a `Scene` (`texture_{i}`).
+/// A material texture on the GPU: RGBA8 with a full mip chain, registered in the bindless
+/// sampled image heap. Color data (base color, emissive) is stored as sRGB, everything else
+/// (metallic-roughness, normal, occlusion) as linear UNORM. Textures are labeled sub assets of a
+/// `Scene` (`texture_{i}`).
 #[derive(Asset, TypePath)]
 pub struct GpuTexture {
-    pub image: Image<1, R8G8B8A8Srgb, Sampled>,
+    image: TextureImage,
+}
+
+enum TextureImage {
+    Srgb(Image<1, R8G8B8A8Srgb, Sampled>),
+    Linear(Image<1, R8G8B8A8Unorm, Sampled>),
 }
 
 impl GpuTexture {
-    /// Index into the bindless sampled image heap, what `Material::texture` expects on the GPU.
+    /// Creates the mipmapped image and transitions it to GENERAL on the host. Fill it with
+    /// `upload_mip` for every level in the header.
+    pub fn new(header: &TextureHeader) -> Result<Self> {
+        let image = if header.srgb != 0 {
+            let image = Image::with_mip_levels(header.width, header.height, header.mip_levels)?;
+            image.set_layout_host()?;
+            TextureImage::Srgb(image)
+        } else {
+            let image = Image::with_mip_levels(header.width, header.height, header.mip_levels)?;
+            image.set_layout_host()?;
+            TextureImage::Linear(image)
+        };
+        Ok(Self { image })
+    }
+
+    /// Copies tightly packed RGBA8 texels of one mip level into the image (host image copy).
+    pub fn upload_mip(&self, level: u32, pixels: &[u8]) -> Result<()> {
+        match &self.image {
+            TextureImage::Srgb(image) => image.mip(level).copy_from(pixels, level)?,
+            TextureImage::Linear(image) => image.mip(level).copy_from(pixels, level)?,
+        }
+        Ok(())
+    }
+
+    /// Index into the bindless sampled image heap, what the `Material` texture fields expect on
+    /// the GPU.
     pub fn descriptor_index(&self) -> u32 {
-        self.image
-            .handle
+        let handle = match &self.image {
+            TextureImage::Srgb(image) => image.handle,
+            TextureImage::Linear(image) => image.handle,
+        };
+        handle
             .map(|handle| handle.descriptor_index_set0)
             .unwrap_or(NULL_HANDLE)
     }
@@ -28,23 +69,29 @@ pub struct TextureHeader {
     pub width: u32,
     pub height: u32,
     pub mip_levels: u32,
-    pub _pad: u32,
+    /// 1 if the color channels are sRGB encoded, 0 for linear data.
+    pub srgb: u32,
 }
 
-/// CPU side texture as stored in the processed scene file: RGBA8 sRGB, `mips[0]` is the base level.
+/// CPU side texture as stored in the processed scene file: RGBA8, `mips[0]` is the base level.
 pub struct TextureData {
     pub width: u32,
     pub height: u32,
+    pub srgb: bool,
     pub mips: Vec<Vec<u8>>,
 }
 
 impl TextureData {
     /// Converts a decoded glTF image to RGBA8 and generates the full mip chain down to 1x1.
-    pub fn from_gltf(image: &gltf::image::Data) -> Self {
+    /// `srgb` says whether the color channels are sRGB encoded (base color, emissive) or linear
+    /// data (metallic-roughness, normal, occlusion); it decides the GPU format and how mips are
+    /// filtered.
+    pub fn from_gltf(image: &gltf::image::Data, srgb: bool) -> Self {
         let mut mips = vec![to_rgba8(image)];
         let (mut width, mut height) = (image.width, image.height);
         while width > 1 || height > 1 {
-            let (next, next_width, next_height) = downsample(mips.last().unwrap(), width, height);
+            let (next, next_width, next_height) =
+                downsample(mips.last().unwrap(), width, height, srgb);
             mips.push(next);
             width = next_width;
             height = next_height;
@@ -52,6 +99,7 @@ impl TextureData {
         Self {
             width: image.width,
             height: image.height,
+            srgb,
             mips,
         }
     }
@@ -61,14 +109,29 @@ impl TextureData {
             width: self.width,
             height: self.height,
             mip_levels: self.mips.len() as u32,
-            _pad: 0,
+            srgb: self.srgb as u32,
         }
     }
 }
 
-/// 2x2 box filter in linear space (color channels are sRGB, alpha is linear). Odd edges clamp.
-fn downsample(src: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u32) {
+/// 2x2 box filter. sRGB color channels are averaged in linear space, linear data (and alpha)
+/// directly. Odd edges clamp.
+fn downsample(src: &[u8], width: u32, height: u32, srgb: bool) -> (Vec<u8>, u32, u32) {
     let srgb_to_linear = srgb_to_linear_lut();
+    let decode = |value: u8| {
+        if srgb {
+            srgb_to_linear[value as usize]
+        } else {
+            value as f32 / 255.0
+        }
+    };
+    let encode = |value: f32| {
+        if srgb {
+            linear_to_srgb(value)
+        } else {
+            (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+        }
+    };
     let (next_width, next_height) = ((width / 2).max(1), (height / 2).max(1));
     let mut dst = vec![0u8; (next_width * next_height * 4) as usize];
     for y in 0..next_height {
@@ -78,15 +141,15 @@ fn downsample(src: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u32) {
                 let sx = (x * 2 + dx).min(width - 1);
                 let sy = (y * 2 + dy).min(height - 1);
                 let p = ((sy * width + sx) * 4) as usize;
-                sum[0] += srgb_to_linear[src[p] as usize];
-                sum[1] += srgb_to_linear[src[p + 1] as usize];
-                sum[2] += srgb_to_linear[src[p + 2] as usize];
+                sum[0] += decode(src[p]);
+                sum[1] += decode(src[p + 1]);
+                sum[2] += decode(src[p + 2]);
                 sum[3] += src[p + 3] as f32 / 255.0;
             }
             let o = ((y * next_width + x) * 4) as usize;
-            dst[o] = linear_to_srgb(sum[0] * 0.25);
-            dst[o + 1] = linear_to_srgb(sum[1] * 0.25);
-            dst[o + 2] = linear_to_srgb(sum[2] * 0.25);
+            dst[o] = encode(sum[0] * 0.25);
+            dst[o + 1] = encode(sum[1] * 0.25);
+            dst[o + 2] = encode(sum[2] * 0.25);
             dst[o + 3] = (sum[3] * 0.25 * 255.0 + 0.5) as u8;
         }
     }

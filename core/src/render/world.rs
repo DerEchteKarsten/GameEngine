@@ -28,7 +28,7 @@ use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue, Transfer};
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
 
-use crate::assets::material::Material;
+use crate::assets::material::{Material, set_texture_indices};
 use crate::assets::mesh::{GpuMesh, MeshHeader};
 use crate::assets::texture::GpuTexture;
 use crate::editor::picking::Selected;
@@ -430,12 +430,16 @@ fn extract_meshlet_instances(
         if let Some(mesh) = meshes.get(&instance.mesh) {
             let mat = transform.to_matrix();
             let mut material = instance.material;
-            material.texture = instance
-                .texture
-                .as_ref()
-                .and_then(|handle| textures.get(handle))
-                .map(GpuTexture::descriptor_index)
-                .unwrap_or(NULL_HANDLE);
+            set_texture_indices(
+                &mut material,
+                instance.textures.each_ref().map(|handle| {
+                    handle
+                        .as_ref()
+                        .and_then(|handle| textures.get(handle))
+                        .map(GpuTexture::descriptor_index)
+                        .unwrap_or(NULL_HANDLE)
+                }),
+            );
             let flags = if selected {
                 instance.flags | InstanceFlags::OUTLINE
             } else {

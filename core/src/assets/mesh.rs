@@ -13,11 +13,7 @@ use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use glam::{Mat4, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
 use itertools::Itertools;
-use lava::{
-    buffer::Buffer,
-    image::{Image, format::R8G8B8A8Srgb, slice::AsImage, usage::Sampled},
-    state::Ctx,
-};
+use lava::{buffer::Buffer, state::Ctx};
 use meshopt::{
     SimplifyOptions, VertexDataAdapter, build_meshlets, generate_position_remap,
     simplify_with_attributes_and_locks,
@@ -185,9 +181,19 @@ impl AssetTransformer for MeshTransformer {
         let mut materials = vec![];
         let mut instance_materials = vec![];
         let mut instance_mesh = vec![];
-        // Only images referenced as a base color texture are imported, each one once.
+        // Only images referenced by a material are imported, each one once per color space.
         let mut textures: Vec<TextureData> = vec![];
-        let mut texture_remap: HashMap<usize, u32> = HashMap::new();
+        let mut texture_remap: HashMap<(usize, bool), u32> = HashMap::new();
+        let mut import_texture = |texture: Option<gltf::Texture>, srgb: bool| -> u32 {
+            let Some(texture) = texture else {
+                return NO_TEXTURE;
+            };
+            let image = texture.source().index();
+            *texture_remap.entry((image, srgb)).or_insert_with(|| {
+                textures.push(TextureData::from_gltf(&asset.images[image], srgb));
+                (textures.len() - 1) as u32
+            })
+        };
         for node in asset.document.nodes().filter(|n| n.mesh().is_some()) {
             let transform = node.transform().matrix();
             let gltf_mesh = node.mesh().unwrap();
@@ -196,22 +202,29 @@ impl AssetTransformer for MeshTransformer {
                 let material = materials.len();
                 let pmaterial = primitive.material();
                 let pbr = pmaterial.pbr_metallic_roughness();
-                let texture = pbr
-                    .base_color_texture()
-                    .map(|info| {
-                        let image = info.texture().source().index();
-                        *texture_remap.entry(image).or_insert_with(|| {
-                            textures.push(TextureData::from_gltf(&asset.images[image]));
-                            (textures.len() - 1) as u32
-                        })
-                    })
-                    .unwrap_or(NO_TEXTURE);
+                let normal = pmaterial.normal_texture();
+                let occlusion = pmaterial.occlusion_texture();
                 materials.push(Material {
                     color: Vec4::from_array(pbr.base_color_factor()),
+                    emissive: Vec3::from_array(pmaterial.emissive_factor()),
                     metalic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
-                    texture,
-                    pad: 0,
+                    normal_scale: normal.as_ref().map(|n| n.scale()).unwrap_or(1.0),
+                    occlusion_strength: occlusion.as_ref().map(|o| o.strength()).unwrap_or(1.0),
+                    color_texture: import_texture(
+                        pbr.base_color_texture().map(|i| i.texture()),
+                        true,
+                    ),
+                    metallic_roughness_texture: import_texture(
+                        pbr.metallic_roughness_texture().map(|i| i.texture()),
+                        false,
+                    ),
+                    normal_texture: import_texture(normal.map(|n| n.texture()), false),
+                    occlusion_texture: import_texture(occlusion.map(|o| o.texture()), false),
+                    emissive_texture: import_texture(
+                        pmaterial.emissive_texture().map(|i| i.texture()),
+                        true,
+                    ),
                 });
 
                 let Some(mesh) = remap.get(&(gltf_mesh.index(), primitive.index())) else {
@@ -300,18 +313,12 @@ impl AssetLoader for MeshLoader {
         for i in 0..num_textures {
             let mut header = TextureHeader::zeroed();
             reader.read_exact(bytes_of_mut(&mut header)).await?;
-            let image = Image::<1, R8G8B8A8Srgb, Sampled>::with_mip_levels(
-                header.width,
-                header.height,
-                header.mip_levels,
-            )?;
-            image.set_layout_host()?;
+            let texture = GpuTexture::new(&header)?;
             for level in 0..header.mip_levels {
                 let pixels: Vec<u8> = read_slice(reader, None).await?;
-                image.mip(level).copy_from(&pixels, level)?;
+                texture.upload_mip(level, &pixels)?;
             }
-            textures
-                .push(load_context.add_labeled_asset(format!("texture_{i}"), GpuTexture { image }));
+            textures.push(load_context.add_labeled_asset(format!("texture_{i}"), texture));
         }
 
         let num_meshes = read_u64(reader).await?;

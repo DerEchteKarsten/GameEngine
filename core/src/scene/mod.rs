@@ -15,7 +15,7 @@ use lava::image::{Image, format, usage};
 
 use crate::{
     assets::{
-        material::Material,
+        material::{Material, TEXTURE_SLOTS, texture_indices},
         mesh::{GpuMesh, Scene},
         texture::GpuTexture,
     },
@@ -35,11 +35,12 @@ pub struct SpawnScene {
 #[reflect(Component)]
 pub struct Instance {
     pub mesh: Handle<GpuMesh>,
-    /// `material.texture` is the index into the owning scene's textures (or `NO_TEXTURE`);
-    /// it is swapped for the bindless descriptor index when the instance is extracted.
+    /// The texture fields index the owning scene's textures (or `NO_TEXTURE`); they are swapped
+    /// for the bindless descriptor indices of `textures` when the instance is extracted.
     #[reflect(ignore)]
     pub material: Material,
-    pub texture: Option<Handle<GpuTexture>>,
+    /// One handle per `Material` texture slot, see `TEXTURE_SLOTS`.
+    pub textures: [Option<Handle<GpuTexture>>; TEXTURE_SLOTS],
     pub flags: InstanceFlags,
 }
 
@@ -59,12 +60,13 @@ fn add_sub_instances(
                 for instance in 0..scene.instance_transforms.len() {
                     let mesh = scene.meshes[scene.instance_mesh[instance] as usize].clone();
                     let material = scene.materials[scene.instance_materials[instance] as usize];
-                    let texture = scene.textures.get(material.texture as usize).cloned();
+                    let textures = texture_indices(&material)
+                        .map(|index| scene.textures.get(index as usize).cloned());
                     parent.spawn((
                         Instance {
                             mesh,
                             material,
-                            texture,
+                            textures,
                             flags: InstanceFlags::empty(),
                         },
                         Transform::from_matrix(scene.instance_transforms[instance]),
