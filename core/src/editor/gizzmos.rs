@@ -356,7 +356,7 @@ impl GizzmoResources {
                         self.gizzmos
                             .range((MAX_GIZZMOS * frame_in_flight + self.aabb_range.start)..),
                     ),
-                    swapchain.size,
+                    swapchain.size.into(),
                     36,
                     self.aabb_range.len() as u32,
                     &[Scissor {
@@ -379,7 +379,7 @@ impl GizzmoResources {
                         self.gizzmos
                             .range((MAX_GIZZMOS * frame_in_flight + self.sphere_range.start)..),
                     ),
-                    swapchain.size,
+                    swapchain.size.into(),
                     576,
                     self.sphere_range.len() as u32,
                     &[Scissor {
@@ -402,7 +402,7 @@ impl GizzmoResources {
                         self.gizzmos
                             .range((MAX_GIZZMOS * frame_in_flight + self.arrow_range.start)..),
                     ),
-                    swapchain.size,
+                    swapchain.size.into(),
                     216,
                     self.arrow_range.len() as u32,
                     &[Scissor {

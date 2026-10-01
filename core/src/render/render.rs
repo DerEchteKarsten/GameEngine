@@ -76,7 +76,7 @@ pub enum QueueStrategie {
 }
 
 impl QueueStrategie {
-    fn with<R, F: FnOnce(&Queue<Gfx>) -> R>(&self, f: F) -> R {
+    pub fn with<R, F: FnOnce(&Queue<Gfx>) -> R>(&self, f: F) -> R {
         match &self {
             QueueStrategie::Single(queue) => {
                 let q = queue.lock().unwrap();
@@ -128,10 +128,12 @@ pub fn wait_frames_in_flight(
 ) {
     frame.0 += 1;
     if frame.0 > FRAMES_IN_FLIGHT as u64 {
-        sync.fences[frame.frame_in_flight()].wait();
+        sync.fences[frame.frame_in_flight()].wait().unwrap();
     }
-    sync.fences[frame.frame_in_flight()].reset();
-    command_pools.pools[frame.frame_in_flight()].reset();
+    sync.fences[frame.frame_in_flight()].reset().unwrap();
+    command_pools.pools[frame.frame_in_flight()]
+        .reset()
+        .unwrap();
 }
 
 pub fn aquire_swapchain_image(
@@ -139,8 +141,9 @@ pub fn aquire_swapchain_image(
     frame: Res<FrameCount>,
     mut swapchain: ResMut<Swapchain>,
 ) {
-    swapchain.image_index =
-        swapchain.aquire_image(&sync.image_available[frame.frame_in_flight()], None);
+    swapchain.image_index = swapchain
+        .aquire_image(&sync.image_available[frame.frame_in_flight()], None)
+        .unwrap();
 }
 
 pub fn resize_swapchain(
@@ -148,9 +151,9 @@ pub fn resize_swapchain(
     window: Extract<Single<&Window, With<PrimaryWindow>>>,
 ) {
     let size = window.physical_size();
-    if size != swapchain.size {
+    if size.to_array() != swapchain.swpachain.size {
         info!("Resized Swapchain");
-        swapchain.swpachain.recreate(size);
+        swapchain.swpachain.recreate(size.to_array()).unwrap();
     }
 }
 
@@ -170,8 +173,11 @@ pub fn extract_camera(mut cmd: Commands, camera: Extract<Single<(&Camera, &Trans
 pub fn init_render(mut cmd: Commands) {
     let swapchain = Swapchain {
         image_index: 0,
-        swpachain: vkobjects::swapchain::Swapchain::new(None, Some(INITIAL_WINDOW_SIZE.as_uvec2()))
-            .unwrap(),
+        swpachain: vkobjects::swapchain::Swapchain::new(
+            None,
+            Some(INITIAL_WINDOW_SIZE.as_uvec2().to_array()),
+        )
+        .unwrap(),
     };
     let num_images = swapchain.images.len();
     let queues = Queues {
@@ -188,13 +194,13 @@ pub fn init_render(mut cmd: Commands) {
     };
     cmd.insert_resource(swapchain);
     let pools: [CommandPool; FRAMES_IN_FLIGHT] = (0..FRAMES_IN_FLIGHT)
-        .map(|_| queues.graphics.with(|queue| queue.create_pool()))
+        .map(|_| queues.graphics.with(|queue| queue.create_pool().unwrap()))
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
     let command_buffers: [CommandBufferMemory; FRAMES_IN_FLIGHT] = pools
         .iter()
-        .map(|p| p.create_command_buffer())
+        .map(|p| p.create_command_buffer().unwrap())
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
@@ -210,7 +216,7 @@ pub fn init_render(mut cmd: Commands) {
     cmd.insert_resource(SynchronizationResources {
         fences: Default::default(),
         image_available: Default::default(),
-        render_finished: (0..num_images).map(|_| Semaphore::new()).collect(),
+        render_finished: (0..num_images).map(|_| Semaphore::new().unwrap()).collect(),
     });
 }
 
@@ -360,7 +366,7 @@ pub(super) fn render(
                             swapchain.image(),
                             viewport.rect.min.as_ivec2(),
                             viewport.rect.size().as_uvec2(),
-                            swapchain.size,
+                            swapchain.size.into(),
                         ),
                         [
                             (viewport.visible_rect.width() as u32).div_ceil(8),
@@ -449,7 +455,7 @@ pub(super) fn render(
                                         .range(MAX_INSTANCES * frame_in_flight..),
                                     resources.meshlets.range(..),
                                 ),
-                                swapchain.size,
+                                swapchain.size.into(),
                                 resources
                                     .variables
                                     .byte_range(offset_of!(TraversalVariables, vertex_count)..)
@@ -482,7 +488,7 @@ pub(super) fn render(
                                         resources.meshlets.range(..),
                                         instances.flags.range(MAX_INSTANCES * frame_in_flight..),
                                     ),
-                                    swapchain.size,
+                                    swapchain.size.into(),
                                     resources
                                         .variables
                                         .byte_range(offset_of!(TraversalVariables, vertex_count)..)
@@ -504,7 +510,7 @@ pub(super) fn render(
                                     setting.outline_color.extend(setting.outline_radius),
                                     viewport.visible_rect.min.as_ivec2(),
                                     viewport.visible_rect.size().as_uvec2(),
-                                    swapchain.size,
+                                    swapchain.size.into(),
                                 ),
                                 [
                                     (viewport.visible_rect.width() as u32).div_ceil(8),
@@ -526,7 +532,7 @@ pub(super) fn render(
                                 ui_resources.verticies[frame.frame_in_flight()].range(..),
                                 ui_resources.font_atlas.whole_view(),
                             ),
-                            swapchain.size,
+                            swapchain.size.into(),
                             ui_resources.indicies[frame.frame_in_flight()]
                                 .range(..ui_resources.num_indicies),
                             1,

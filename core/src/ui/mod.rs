@@ -9,6 +9,7 @@ use crate::{
     render::{
         ExtractSchedule, Render, RenderApp,
         RenderSystems::{self},
+        render::Queues,
     },
     ui::update_windows::{draw_windows, update_windows},
 };
@@ -329,7 +330,7 @@ impl UiContext {
         ))
     }
 
-    pub(crate) fn build_ui_resources(&mut self) -> Result<UiResources> {
+    pub(crate) fn build_ui_resources(&mut self, queues: &Queues) -> Result<UiResources> {
         let font = self.font.take().unwrap();
         let pixels = (Self::FONT_SCALE * 4) as f32;
         let font_metrics = font.horizontal_line_metrics(pixels).unwrap();
@@ -354,8 +355,16 @@ impl UiContext {
             }
         }
         atlas_data[0] = 255;
-        let font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y).unwrap();
-        font_atlas.whole().copy_from(&atlas_data, 0);
+        let font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y)?;
+        queues.graphics.with(|q| -> Result<()> {
+            let fence = lava::vkobjects::queue::Fence::new()?;
+            let pool = q.create_pool()?;
+            let buffer = pool.create_command_buffer()?;
+            font_atlas.set_layout(&fence, q, &buffer)?;
+            fence.wait()?;
+            Ok(())
+        })?;
+        font_atlas.whole().copy_from(&atlas_data, 0)?;
 
         Ok(UiResources {
             font_atlas,
@@ -409,13 +418,14 @@ pub fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>)
 pub fn create_ui_resources(
     mut cmd: Commands,
     res: Option<Res<UiResources>>,
+    queues: Res<Queues>,
     mut world: ResMut<MainWorld>,
 ) {
     if res.is_some() {
         return;
     }
     let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
-    cmd.insert_resource(ctx.build_ui_resources().unwrap());
+    cmd.insert_resource(ctx.build_ui_resources(&queues).unwrap());
 }
 
 pub fn extract_ui(mut res: If<ResMut<UiResources>>, windows: Extract<Res<UiWindows>>) {
