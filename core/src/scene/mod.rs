@@ -14,7 +14,11 @@ use bevy::{
 use lava::image::{Image, format, usage};
 
 use crate::{
-    assets::mesh::{GpuMesh, Scene},
+    assets::{
+        material::{Material, TEXTURE_SLOTS, texture_indices},
+        mesh::{GpuMesh, Scene},
+        texture::GpuTexture,
+    },
     render::world::InstanceFlags,
     scene::camera::{Camera, update_camera},
 };
@@ -31,6 +35,12 @@ pub struct SpawnScene {
 #[reflect(Component)]
 pub struct Instance {
     pub mesh: Handle<GpuMesh>,
+    /// The texture fields index the owning scene's textures (or `NO_TEXTURE`); they are swapped
+    /// for the bindless descriptor indices of `textures` when the instance is extracted.
+    #[reflect(ignore)]
+    pub material: Material,
+    /// One handle per `Material` texture slot, see `TEXTURE_SLOTS`.
+    pub textures: [Option<Handle<GpuTexture>>; TEXTURE_SLOTS],
     pub flags: InstanceFlags,
 }
 
@@ -49,9 +59,14 @@ fn add_sub_instances(
             .with_children(|parent| {
                 for instance in 0..scene.instance_transforms.len() {
                     let mesh = scene.meshes[scene.instance_mesh[instance] as usize].clone();
+                    let material = scene.materials[scene.instance_materials[instance] as usize];
+                    let textures = texture_indices(&material)
+                        .map(|index| scene.textures.get(index as usize).cloned());
                     parent.spawn((
                         Instance {
                             mesh,
+                            material,
+                            textures,
                             flags: InstanceFlags::empty(),
                         },
                         Transform::from_matrix(scene.instance_transforms[instance]),

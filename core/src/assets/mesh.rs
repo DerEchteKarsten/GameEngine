@@ -25,7 +25,12 @@ use std::{collections::HashMap, ops::Range};
 use tracing::debug_span;
 
 use crate::{
-    assets::{material::Material, read_slice, read_slice_to_buffer, read_u64, write_slice},
+    assets::{
+        material::{Material, NO_TEXTURE},
+        read_slice, read_slice_to_buffer, read_u64,
+        texture::{GpuTexture, TextureData, TextureHeader},
+        write_slice,
+    },
     physics::bvh::{
         ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
     },
@@ -63,6 +68,7 @@ pub struct GpuMesh {
 #[derive(Asset, TypePath)]
 pub struct Scene {
     pub meshes: Vec<Handle<GpuMesh>>,
+    pub textures: Vec<Handle<GpuTexture>>,
     pub instance_transforms: Vec<Mat4>,
     pub materials: Vec<Material>,
     pub instance_materials: Vec<u32>,
@@ -72,6 +78,7 @@ pub struct Scene {
 #[derive(Asset, TypePath)]
 pub struct FileScene {
     pub meshes: Vec<MeshletMesh>,
+    pub textures: Vec<TextureData>,
     pub instance_transforms: Vec<Mat4>,
     pub materials: Vec<Material>,
     pub instance_materials: Vec<u32>,
@@ -82,7 +89,7 @@ pub struct FileScene {
 pub struct GltfMesh {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
-    _images: Vec<gltf::image::Data>,
+    images: Vec<gltf::image::Data>,
 }
 
 #[derive(TypePath)]
@@ -104,7 +111,7 @@ impl AssetLoader for GltfMeshLoader {
         gltf::Result::Ok(GltfMesh {
             document,
             buffers,
-            _images: images,
+            images,
         })
     }
 
@@ -174,6 +181,19 @@ impl AssetTransformer for MeshTransformer {
         let mut materials = vec![];
         let mut instance_materials = vec![];
         let mut instance_mesh = vec![];
+        // Only images referenced by a material are imported, each one once per color space.
+        let mut textures: Vec<TextureData> = vec![];
+        let mut texture_remap: HashMap<(usize, bool), u32> = HashMap::new();
+        let mut import_texture = |texture: Option<gltf::Texture>, srgb: bool| -> u32 {
+            let Some(texture) = texture else {
+                return NO_TEXTURE;
+            };
+            let image = texture.source().index();
+            *texture_remap.entry((image, srgb)).or_insert_with(|| {
+                textures.push(TextureData::from_gltf(&asset.images[image], srgb));
+                (textures.len() - 1) as u32
+            })
+        };
         for node in asset.document.nodes().filter(|n| n.mesh().is_some()) {
             let transform = node.transform().matrix();
             let gltf_mesh = node.mesh().unwrap();
@@ -182,18 +202,29 @@ impl AssetTransformer for MeshTransformer {
                 let material = materials.len();
                 let pmaterial = primitive.material();
                 let pbr = pmaterial.pbr_metallic_roughness();
+                let normal = pmaterial.normal_texture();
+                let occlusion = pmaterial.occlusion_texture();
                 materials.push(Material {
-                    color: [
-                        pbr.base_color_factor()[0],
-                        pbr.base_color_factor()[1],
-                        pbr.base_color_factor()[2],
-                    ],
+                    color: Vec4::from_array(pbr.base_color_factor()),
+                    emissive: Vec3::from_array(pmaterial.emissive_factor()),
                     metalic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
-                    texture_offset: pbr
-                        .base_color_texture()
-                        .map(|v| v.texture().index() as u32)
-                        .unwrap_or(!0u32),
+                    normal_scale: normal.as_ref().map(|n| n.scale()).unwrap_or(1.0),
+                    occlusion_strength: occlusion.as_ref().map(|o| o.strength()).unwrap_or(1.0),
+                    color_texture: import_texture(
+                        pbr.base_color_texture().map(|i| i.texture()),
+                        true,
+                    ),
+                    metallic_roughness_texture: import_texture(
+                        pbr.metallic_roughness_texture().map(|i| i.texture()),
+                        false,
+                    ),
+                    normal_texture: import_texture(normal.map(|n| n.texture()), false),
+                    occlusion_texture: import_texture(occlusion.map(|o| o.texture()), false),
+                    emissive_texture: import_texture(
+                        pmaterial.emissive_texture().map(|i| i.texture()),
+                        true,
+                    ),
                 });
 
                 let Some(mesh) = remap.get(&(gltf_mesh.index(), primitive.index())) else {
@@ -212,6 +243,7 @@ impl AssetTransformer for MeshTransformer {
             instance_mesh,
             materials,
             meshes,
+            textures,
         };
 
         let asset = asset.replace_asset(mesh);
@@ -237,6 +269,14 @@ impl AssetSaver for MeshSaver {
         write_slice(&mesh.materials, writer).await?;
         write_slice(&mesh.instance_mesh, writer).await?;
         write_slice(&mesh.instance_materials, writer).await?;
+        let num_textures = mesh.textures.len() as u64;
+        writer.write_all(&num_textures.to_le_bytes()).await?;
+        for texture in mesh.textures.iter() {
+            writer.write_all(bytes_of(&texture.header())).await?;
+            for mip in texture.mips.iter() {
+                write_slice(mip, writer).await?;
+            }
+        }
         let num_meshes = mesh.meshes.len() as u64;
         writer.write_all(&num_meshes.to_le_bytes()).await?;
         for mesh in mesh.meshes.iter() {
@@ -265,6 +305,21 @@ impl AssetLoader for MeshLoader {
         let materials = read_slice(reader, None).await?;
         let instance_mesh = read_slice(reader, None).await?;
         let instance_materials = read_slice(reader, None).await?;
+
+        // Textures go straight from the file into a mipmapped GPU image via host image copy,
+        // no staging buffer and no command buffer needed.
+        let num_textures = read_u64(reader).await?;
+        let mut textures = Vec::with_capacity(num_textures as usize);
+        for i in 0..num_textures {
+            let mut header = TextureHeader::zeroed();
+            reader.read_exact(bytes_of_mut(&mut header)).await?;
+            let texture = GpuTexture::new(&header)?;
+            for level in 0..header.mip_levels {
+                let pixels: Vec<u8> = read_slice(reader, None).await?;
+                texture.upload_mip(level, &pixels)?;
+            }
+            textures.push(load_context.add_labeled_asset(format!("texture_{i}"), texture));
+        }
 
         let num_meshes = read_u64(reader).await?;
         let mut meshes = Vec::with_capacity(num_meshes as usize);
@@ -365,6 +420,7 @@ impl AssetLoader for MeshLoader {
             instance_mesh,
             materials,
             meshes,
+            textures,
         })
     }
     fn extensions(&self) -> &[&str] {

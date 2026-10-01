@@ -450,10 +450,12 @@ pub(super) fn render(
                                 Raster::new(
                                     camera.camera.view,
                                     camera.camera.proj,
+                                    camera.transform.translation.extend(1.0),
                                     instances
                                         .transforms
                                         .range(MAX_INSTANCES * frame_in_flight..),
                                     resources.meshlets.range(..),
+                                    instances.materials.range(MAX_INSTANCES * frame_in_flight..),
                                 ),
                                 swapchain.size.into(),
                                 resources
