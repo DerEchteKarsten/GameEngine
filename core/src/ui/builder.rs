@@ -1,3 +1,4 @@
+//! Immediate-mode UI builder API: windows, layout and widgets like buttons, sliders, inputs.
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     num::NonZeroU64,

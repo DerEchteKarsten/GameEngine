@@ -1,3 +1,4 @@
+//! Per-frame UI window management: moving, resizing, docking, layering and drawing.
 use crate::ui::{
     Draggable,
     dock::DockingNode,

@@ -1,3 +1,4 @@
+//! Scrollable region state with scrollbar sizing, clamping and drawing.
 use bevy::math::Rect;
 use glam::Vec2;
 

@@ -1,4 +1,9 @@
-use core::{CorePlugin, editor::camera::EditorCamera, scene::camera::CameraBundle};
+//! Sample game binary: boots the engine and spawns an editor camera and glTF scene
+use core::{
+    CorePlugin,
+    editor::camera::EditorCamera,
+    scene::{SpawnScene, camera::CameraBundle},
+};
 
 use bevy::{
     app::{App, Startup, Update},
@@ -9,8 +14,8 @@ use bevy::{
 };
 use glam::Vec3;
 
-fn init(mut cmd: Commands, _asset_server: Res<AssetServer>) {
-    // let handle = asset_server.load("tower.glb");
+fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
+    let handle = asset_server.load("stanford_bunny.glb");
     let camera = CameraBundle::new(
         Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         65.0_f32.to_radians(),
@@ -18,11 +23,10 @@ fn init(mut cmd: Commands, _asset_server: Res<AssetServer>) {
         100.0,
     );
     cmd.spawn((camera, EditorCamera));
-    // cmd.spawn((
-    //     Transform::from_scale(Vec3::splat(0.1)),
-    //     MyModel,
-    //     SpawnScene { scene: handle },
-    // ));
+    cmd.spawn((
+        Transform::from_scale(Vec3::splat(0.1)),
+        SpawnScene { scene: handle },
+    ));
 }
 
 fn update_mesh(

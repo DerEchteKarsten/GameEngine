@@ -28,6 +28,6 @@ void skybox(uint2 dtid: SV_DispatchThreadID) {
     if (any(ndtid >= (bindings.view_port_offset + bindings.view_port_size)) || any(ndtid >= bindings.swpachain_size)){
         return;
     }
-    
-    bindings.out.Store(ndtid, float4(view_dir(dtid), 1.0));
+
+    bindings.out.Store(ndtid, float4(view_dir(ndtid), 1.0));
 }

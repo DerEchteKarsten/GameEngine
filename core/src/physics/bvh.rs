@@ -1,3 +1,4 @@
+//! Wide BVH construction and traversal for scene and mesh raycasts, with debug drawing.
 use bevy::{
     ecs::system::{SystemParam, lifetimeless::Read},
     math::bounding::{Aabb3d, BoundingVolume, RayCast3d},

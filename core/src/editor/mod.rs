@@ -1,3 +1,4 @@
+//! Editor plugin wiring up editor tools, panels and the frame-time histogram.
 use bevy::{
     app::{Plugin, PreUpdate, Update},
     asset::Handle,
@@ -27,7 +28,7 @@ use crate::{
     },
     physics::bvh::debug_draw_scene_bvh,
     render::{
-        ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems, render::RenderDebugUi,
+        ExtractSchedule, RenderApp, RenderStartup, RenderSystems, render::RenderDebugUi,
     },
     ui::builder::UiBuilder,
 };
@@ -139,7 +140,7 @@ impl Plugin for EditorPlugin {
         app.get_sub_app_mut(RenderApp)
             .unwrap()
             .add_systems(ExtractSchedule, extract_gizzmos)
-            .add_systems(Render, write_gizzmos.in_set(RenderSystems::PreRender))
+            .add_systems(RenderSystems::PreRender, write_gizzmos)
             .add_systems(RenderStartup, init_gizzmos);
 
         register_editor_views!(

@@ -55,7 +55,6 @@ float4 sample_texture(uint texture, float2 uv) {
     return Tex2D<float4>(texture, NO_TEXTURE).Sample(uv, 2);
 }
 
-// Tangent frame from screen space derivatives, so no vertex tangents are needed.
 float3 perturb_normal(float3 normal, float3 position, float2 uv, float3 tangent_normal) {
     let dp1 = ddx(position);
     let dp2 = ddy(position);
@@ -77,58 +76,58 @@ static const float3 AMBIENT = float3(0.03);
 [shader("fragment")]
 PSOutput raster_fragment(in VSOutput input)
 {
-    let material = b.materials.val[input.instance];
+    // let material = b.materials.val[input.instance];
 
-    var color = material.color;
-    if (material.color_texture != NO_TEXTURE) {
-        color *= sample_texture(material.color_texture, input.uv);
-    }
-    var metallic = material.metalic_factor;
-    var roughness = material.roughness_factor;
-    if (material.metallic_roughness_texture != NO_TEXTURE) {
-        let mr = sample_texture(material.metallic_roughness_texture, input.uv);
-        roughness *= mr.g;
-        metallic *= mr.b;
-    }
-    var occlusion = 1.0;
-    if (material.occlusion_texture != NO_TEXTURE) {
-        occlusion = lerp(1.0, sample_texture(material.occlusion_texture, input.uv).r, material.occlusion_strength);
-    }
-    var emissive = material.emissive;
-    if (material.emissive_texture != NO_TEXTURE) {
-        emissive *= sample_texture(material.emissive_texture, input.uv).rgb;
-    }
-    var normal = normalize(input.normal);
-    if (material.normal_texture != NO_TEXTURE) {
-        var tangent_normal = sample_texture(material.normal_texture, input.uv).xyz * 2.0 - 1.0;
-        tangent_normal.xy *= material.normal_scale;
-        normal = perturb_normal(normal, input.world_position, input.uv, tangent_normal);
-    }
+    // var color = material.color;
+    // if (material.color_texture != NO_TEXTURE) {
+    //     color *= sample_texture(material.color_texture, input.uv);
+    // }
+    // var metallic = material.metalic_factor;
+    // var roughness = material.roughness_factor;
+    // if (material.metallic_roughness_texture != NO_TEXTURE) {
+    //     let mr = sample_texture(material.metallic_roughness_texture, input.uv);
+    //     roughness *= mr.g;
+    //     metallic *= mr.b;
+    // }
+    // var occlusion = 1.0;
+    // if (material.occlusion_texture != NO_TEXTURE) {
+    //     occlusion = lerp(1.0, sample_texture(material.occlusion_texture, input.uv).r, material.occlusion_strength);
+    // }
+    // var emissive = material.emissive;
+    // if (material.emissive_texture != NO_TEXTURE) {
+    //     emissive *= sample_texture(material.emissive_texture, input.uv).rgb;
+    // }
+    // var normal = normalize(input.normal);
+    // if (material.normal_texture != NO_TEXTURE) {
+    //     var tangent_normal = sample_texture(material.normal_texture, input.uv).xyz * 2.0 - 1.0;
+    //     tangent_normal.xy *= material.normal_scale;
+    //     normal = perturb_normal(normal, input.world_position, input.uv, tangent_normal);
+    // }
 
-    // Single directional light, GGX + Lambert.
-    let view = normalize(b.camera_position.xyz - input.world_position);
-    let halfway = normalize(view + LIGHT_DIRECTION);
-    let ndotl = max(dot(normal, LIGHT_DIRECTION), 0.0);
-    let ndotv = max(dot(normal, view), 1e-4);
-    let ndoth = max(dot(normal, halfway), 0.0);
-    let vdoth = max(dot(view, halfway), 0.0);
+    // // Single directional light, GGX + Lambert.
+    // let view = normalize(b.camera_position.xyz - input.world_position);
+    // let halfway = normalize(view + LIGHT_DIRECTION);
+    // let ndotl = max(dot(normal, LIGHT_DIRECTION), 0.0);
+    // let ndotv = max(dot(normal, view), 1e-4);
+    // let ndoth = max(dot(normal, halfway), 0.0);
+    // let vdoth = max(dot(view, halfway), 0.0);
 
-    roughness = max(roughness, 0.02);
-    let a2 = roughness * roughness * roughness * roughness;
-    let denom = ndoth * ndoth * (a2 - 1.0) + 1.0;
-    let d = a2 * FRAC_1_PI / (denom * denom);
-    let k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
-    let g = (ndotv / (ndotv * (1.0 - k) + k)) * (ndotl / (ndotl * (1.0 - k) + k));
-    let f0 = lerp(float3(0.04), color.rgb, metallic);
-    let f = f0 + (1.0 - f0) * pow(1.0 - vdoth, 5.0);
-    let specular = d * g * f / (4.0 * ndotv * ndotl + 1e-4);
-    let diffuse = (1.0 - f) * (1.0 - metallic) * color.rgb * FRAC_1_PI;
+    // roughness = max(roughness, 0.02);
+    // let a2 = roughness * roughness * roughness * roughness;
+    // let denom = ndoth * ndoth * (a2 - 1.0) + 1.0;
+    // let d = a2 * FRAC_1_PI / (denom * denom);
+    // let k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+    // let g = (ndotv / (ndotv * (1.0 - k) + k)) * (ndotl / (ndotl * (1.0 - k) + k));
+    // let f0 = lerp(float3(0.04), color.rgb, metallic);
+    // let f = f0 + (1.0 - f0) * pow(1.0 - vdoth, 5.0);
+    // let specular = d * g * f / (4.0 * ndotv * ndotl + 1e-4);
+    // let diffuse = (1.0 - f) * (1.0 - metallic) * color.rgb * FRAC_1_PI;
 
-    let lit = (diffuse + specular) * ndotl * LIGHT_COLOR
-        + AMBIENT * color.rgb * occlusion
-        + emissive;
+    // let lit = (diffuse + specular) * ndotl * LIGHT_COLOR
+    //     + AMBIENT * color.rgb * occlusion
+    //     + emissive;
 
     PSOutput output;
-    output.color = float4(lit, 1.0);
+    output.color = float4(1.0, 0.0, 1.0, 1.0);
     return output;
 }

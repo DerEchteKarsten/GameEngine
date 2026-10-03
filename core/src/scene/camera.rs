@@ -1,3 +1,4 @@
+//! Scene camera component: view/projection matrices, ray generation and per-frame updates.
 use glam::{Mat4, Vec3};
 
 use bevy::prelude::*;

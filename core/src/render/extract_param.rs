@@ -1,3 +1,4 @@
+//! `Extract` system param for reading the main world from the render sub-app.
 use bevy::ecs::{
     change_detection::Tick,
     prelude::*,

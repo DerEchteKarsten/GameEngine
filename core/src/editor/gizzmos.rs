@@ -1,3 +1,4 @@
+//! Debug gizmos (boxes, spheres, arrows): click testing, extraction and GPU drawing.
 use std::ops::Range;
 
 use crate::{

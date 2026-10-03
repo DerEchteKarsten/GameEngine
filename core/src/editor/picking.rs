@@ -1,3 +1,4 @@
+//! Entity selection: viewport raycast picking, translate gizmo dragging and hierarchy panel.
 use crate::{
     assets::mesh::GpuMesh,
     editor::{

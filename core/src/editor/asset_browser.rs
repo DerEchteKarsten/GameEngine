@@ -1,3 +1,4 @@
+//! Editor asset browser window for navigating the game's asset directory.
 use std::path::PathBuf;
 
 use bevy::{

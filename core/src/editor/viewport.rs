@@ -1,3 +1,4 @@
+//! Editor 3D viewport rect from the dock layout and window-to-viewport coordinate helpers.
 use bevy::{
     ecs::{
         resource::Resource,

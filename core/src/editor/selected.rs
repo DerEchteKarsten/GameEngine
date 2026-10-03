@@ -1,3 +1,4 @@
+//! Reflection-driven inspector panel for editing components of the selected entity.
 use core::f32;
 use std::hash::{DefaultHasher, Hash, Hasher};
 

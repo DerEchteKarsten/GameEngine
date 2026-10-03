@@ -1,3 +1,4 @@
+//! UI windows and tabs plus the `Drawable` primitives for boxes, text and rounded rects.
 use std::{
     collections::{HashMap, HashSet},
     f32::consts::PI,

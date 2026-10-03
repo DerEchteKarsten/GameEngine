@@ -1,3 +1,4 @@
+//! Docking layout tree: splitting, docking/undocking and resizing of UI windows.
 use std::collections::HashMap;
 
 use bevy::{ecs::resource::Resource, math::Rect};

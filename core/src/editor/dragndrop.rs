@@ -1,3 +1,4 @@
+//! Typed drag-and-drop payload providers for assets and entities in editor UI.
 use std::{any::TypeId, sync::RwLock};
 
 use bevy::{

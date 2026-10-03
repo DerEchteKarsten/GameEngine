@@ -4,3 +4,4 @@
 /shaders/bin/*
 /game/assets
 /game/imported_assets
+/.claude/context

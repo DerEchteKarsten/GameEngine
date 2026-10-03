@@ -1,3 +1,4 @@
+//! glTF scene import: meshlet LOD building, BVH baking, serialization and GPU mesh loading.
 use bevy::{
     asset::{
         Asset, AssetLoader, Handle, LoadContext, saver::AssetSaver, transformer::AssetTransformer,
@@ -8,12 +9,13 @@ use bevy::{
     },
     reflect::TypePath,
     tasks::{AsyncComputeTaskPool, ParallelSlice},
+    transform::components::Transform,
 };
 use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use glam::{Mat4, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
 use itertools::Itertools;
-use lava::{buffer::Buffer, state::Ctx};
+use lava::{bindless::NULL_HANDLE, buffer::Buffer, state::Ctx};
 use meshopt::{
     SimplifyOptions, VertexDataAdapter, build_meshlets, generate_position_remap,
     simplify_with_attributes_and_locks,
@@ -34,7 +36,8 @@ use crate::{
     physics::bvh::{
         ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
     },
-    render::world::UploadQueue,
+    render::world::InstanceFlags,
+    scene::{Instance, MaterialSettings},
 };
 use lava::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
@@ -73,6 +76,41 @@ pub struct Scene {
     pub materials: Vec<Material>,
     pub instance_materials: Vec<u32>,
     pub instance_mesh: Vec<u32>,
+}
+
+impl Scene {
+    pub fn get_instance(&self, index: usize, flags: InstanceFlags) -> Instance {
+        let material = self.materials[self.instance_materials[index] as usize];
+
+        Instance {
+            flags,
+            mesh: self.meshes[index].clone(),
+            material: MaterialSettings {
+                color: material.color,
+                emissive: material.emissive,
+                metalic_factor: material.metalic_factor,
+                roughness_factor: material.roughness_factor,
+                normal_scale: material.normal_scale,
+                occlusion_strength: material.occlusion_strength,
+                color_texture: self.get_texture(material.color_texture),
+                metallic_roughness_texture: self.get_texture(material.metallic_roughness_texture),
+                normal_texture: self.get_texture(material.normal_texture),
+                occlusion_texture: self.get_texture(material.occlusion_texture),
+                emissive_texture: self.get_texture(material.emissive_texture),
+            },
+        }
+    }
+
+    fn get_texture(&self, index: u32) -> Option<Handle<GpuTexture>> {
+        if index == NULL_HANDLE {
+            return None;
+        }
+        Some(self.textures[index as usize].clone())
+    }
+
+    pub fn get_transform(&self, index: usize) -> Transform {
+        Transform::from_matrix(self.instance_transforms[index])
+    }
 }
 
 #[derive(Asset, TypePath)]
@@ -181,7 +219,6 @@ impl AssetTransformer for MeshTransformer {
         let mut materials = vec![];
         let mut instance_materials = vec![];
         let mut instance_mesh = vec![];
-        // Only images referenced by a material are imported, each one once per color space.
         let mut textures: Vec<TextureData> = vec![];
         let mut texture_remap: HashMap<(usize, bool), u32> = HashMap::new();
         let mut import_texture = |texture: Option<gltf::Texture>, srgb: bool| -> u32 {
@@ -306,14 +343,12 @@ impl AssetLoader for MeshLoader {
         let instance_mesh = read_slice(reader, None).await?;
         let instance_materials = read_slice(reader, None).await?;
 
-        // Textures go straight from the file into a mipmapped GPU image via host image copy,
-        // no staging buffer and no command buffer needed.
         let num_textures = read_u64(reader).await?;
         let mut textures = Vec::with_capacity(num_textures as usize);
         for i in 0..num_textures {
             let mut header = TextureHeader::zeroed();
             reader.read_exact(bytes_of_mut(&mut header)).await?;
-            let texture = GpuTexture::new(&header)?;
+            let mut texture = GpuTexture::new(&header)?;
             for level in 0..header.mip_levels {
                 let pixels: Vec<u8> = read_slice(reader, None).await?;
                 texture.upload_mip(level, &pixels)?;
@@ -376,24 +411,10 @@ impl AssetLoader for MeshLoader {
                     + address;
             }
 
-            // if Ctx::features().rebar {
             read_slice_to_buffer(reader, slice.range(header.cull_data_offset as usize..)).await?;
-            // }
 
             let colission_bvh = read_slice(reader, Some(8)).await?;
 
-            // if Ctx::features().rebar {
-            // futures.push((async move || -> Result<(GpuMesh, u64), futures::channel::oneshot::Canceled> {
-            //         Ok((
-            //             GpuMesh {
-            //                 buffer: UploadQueue::push_buffer(data, buffer).await?,
-            //                 colission_bvh,
-            //                 header,
-            //             },
-            //             i,
-            //         ))
-            //     })());
-            // } else {
             let handle = load_context.add_labeled_asset(
                 format!("mesh_{}", i),
                 GpuMesh {
@@ -403,16 +424,7 @@ impl AssetLoader for MeshLoader {
                 },
             );
             meshes.push(handle);
-            // }
         }
-        // if !futures.is_empty() {
-        //     let iter = futures::future::join_all(futures).await;
-        //     for res in iter {
-        //         let (mesh, i) = res?;
-        //         let handle = load_context.add_labeled_asset(format!("mesh_{}", i), mesh);
-        //         meshes.push(handle);
-        //     }
-        // }
 
         Ok(Scene {
             instance_transforms,

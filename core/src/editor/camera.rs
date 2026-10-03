@@ -1,3 +1,4 @@
+//! Editor fly camera: mouse/keyboard input handling and camera settings resource.
 use std::f32::consts::PI;
 
 use bevy::{

@@ -1,3 +1,4 @@
+//! Physics plugin that maintains the scene BVH used for raycasts.
 use bevy::app::{App, PreUpdate};
 
 use crate::physics::bvh::{SceneBvh, update_bvh};

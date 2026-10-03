@@ -1,3 +1,4 @@
+//! Engine core: assembles bevy, rendering, assets, scene, UI, editor and physics plugins.
 #![feature(integer_casts)]
 
 use bevy::{

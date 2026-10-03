@@ -1,3 +1,4 @@
+//! Pipelined render sub-app: schedules, main-world extraction and Vulkan initialization.
 use crate::render::{
     render::{RenderPassesPlugin, resize_swapchain},
     world::WorldPlugin,
@@ -29,14 +30,12 @@ pub mod world;
 
 pub const FRAMES_IN_FLIGHT: usize = 2;
 
-#[derive(SystemSet, Hash, Debug, PartialEq, Eq, Clone)]
+#[derive(SystemSet, ScheduleLabel, Hash, Debug, PartialEq, Eq, Clone)]
 pub enum RenderSystems {
     ApplyExtractCommands,
-    WaitFences,
     AquireSwapchainImage,
     PreRender,
     Render,
-    AfterFences,
 }
 
 #[derive(ScheduleLabel, PartialEq, Eq, Debug, Clone, Hash, Default)]
@@ -55,19 +54,9 @@ impl Render {
     pub fn base_schedule() -> Schedule {
         let mut schedule = Schedule::new(Self);
 
-        schedule.configure_sets((
-            (
-                RenderSystems::ApplyExtractCommands,
-                RenderSystems::WaitFences,
-                RenderSystems::AquireSwapchainImage,
-                RenderSystems::Render,
-            )
-                .chain(),
-            RenderSystems::PreRender
-                .after(RenderSystems::WaitFences)
-                .before(RenderSystems::Render),
-            RenderSystems::AfterFences.after(RenderSystems::WaitFences),
-        ));
+        schedule.configure_sets(
+            (RenderSystems::ApplyExtractCommands, RenderSystems::Render).chain(),
+        );
         schedule
     }
 }
@@ -295,6 +284,8 @@ impl Plugin for RenderPlugin {
         render_app
             .add_schedule(extract_schedule)
             .add_schedule(Render::base_schedule())
+            .init_schedule(RenderSystems::AquireSwapchainImage)
+            .init_schedule(RenderSystems::PreRender)
             .add_systems(ExtractSchedule, resize_swapchain)
             .add_systems(
                 Render,

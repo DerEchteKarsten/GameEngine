@@ -1,3 +1,4 @@
+//! Custom UI core: style constants, window state, input, GPU resources and the UI plugin.
 use bevy::{
     app::{App, PostUpdate, PreUpdate, Update},
     ecs::schedule::IntoScheduleConfigs,
@@ -7,7 +8,7 @@ use bevy::{
 use crate::{
     editor::viewport::ViewPort,
     render::{
-        ExtractSchedule, Render, RenderApp,
+        ExtractSchedule, RenderApp,
         RenderSystems::{self},
         render::Queues,
     },
@@ -75,9 +76,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
-    render::{
-        FRAMES_IN_FLIGHT, MainWorld, extract_param::Extract, render::FrameCount, world::UploadQueue,
-    },
+    render::{FRAMES_IN_FLIGHT, MainWorld, extract_param::Extract, render::FrameCount},
     ui::{
         builder::TextCursor,
         dock::DockingNode,
@@ -214,7 +213,7 @@ impl UiWindows {
 
 #[derive(Resource)]
 pub struct UiResources {
-    pub font_atlas: Image<1, format::R8Unorm, usage::Sampled>,
+    pub font_atlas: Image<format::R8Unorm, usage::Sampled>,
     pub verticies: [Buffer<UIVertex>; FRAMES_IN_FLIGHT],
     pub indicies: [Buffer<u32, StorageIndex>; FRAMES_IN_FLIGHT],
     pub num_verticies: usize,
@@ -355,16 +354,8 @@ impl UiContext {
             }
         }
         atlas_data[0] = 255;
-        let font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y)?;
-        queues.graphics.with(|q| -> Result<()> {
-            let fence = lava::vkobjects::queue::Fence::new()?;
-            let pool = q.create_pool()?;
-            let buffer = pool.create_command_buffer()?;
-            font_atlas.set_layout(&fence, q, &buffer)?;
-            fence.wait()?;
-            Ok(())
-        })?;
-        font_atlas.whole().copy_from(&atlas_data, 0)?;
+        let mut font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y)?;
+        font_atlas.copy_from(&atlas_data, 0)?;
 
         Ok(UiResources {
             font_atlas,
@@ -580,7 +571,7 @@ pub fn save_windows(
 pub fn UiPlugin(app: &mut App) {
     let sub_app = app.get_sub_app_mut(RenderApp).unwrap();
     sub_app
-        .add_systems(Render, write_ui_data.in_set(RenderSystems::PreRender))
+        .add_systems(RenderSystems::PreRender, write_ui_data)
         .add_systems(ExtractSchedule, (extract_ui, create_ui_resources));
     let (ctx, windows, dock) = UiContext::new().unwrap();
     app.add_systems(PreUpdate, update_windows.after(InputSystems))

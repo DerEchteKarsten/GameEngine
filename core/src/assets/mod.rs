@@ -1,3 +1,4 @@
+//! Asset plugin registering the glTF mesh processor/loaders, plus binary read/write helpers.
 use core::slice;
 use std::alloc::Layout;
 

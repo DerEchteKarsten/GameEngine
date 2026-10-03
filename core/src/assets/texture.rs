@@ -1,3 +1,4 @@
+//! GPU texture asset: sRGB/linear mipmapped sampled images and their serialized header.
 use anyhow::Result;
 use bevy::{asset::Asset, reflect::TypePath};
 use bytemuck::{Pod, Zeroable};
@@ -11,55 +12,41 @@ use lava::{
     },
 };
 
-/// A material texture on the GPU: RGBA8 with a full mip chain, registered in the bindless
-/// sampled image heap. Color data (base color, emissive) is stored as sRGB, everything else
-/// (metallic-roughness, normal, occlusion) as linear UNORM. Textures are labeled sub assets of a
-/// `Scene` (`texture_{i}`).
 #[derive(Asset, TypePath)]
 pub struct GpuTexture {
     image: TextureImage,
 }
 
 enum TextureImage {
-    Srgb(Image<1, R8G8B8A8Srgb, Sampled>),
-    Linear(Image<1, R8G8B8A8Unorm, Sampled>),
+    Srgb(Image<R8G8B8A8Srgb, Sampled>),
+    Linear(Image<R8G8B8A8Unorm, Sampled>),
 }
 
 impl GpuTexture {
-    /// Creates the mipmapped image and transitions it to GENERAL on the host. Fill it with
-    /// `upload_mip` for every level in the header.
     pub fn new(header: &TextureHeader) -> Result<Self> {
         let image = if header.srgb != 0 {
             let image = Image::with_mip_levels(header.width, header.height, header.mip_levels)?;
-            image.set_layout_host()?;
             TextureImage::Srgb(image)
         } else {
             let image = Image::with_mip_levels(header.width, header.height, header.mip_levels)?;
-            image.set_layout_host()?;
             TextureImage::Linear(image)
         };
         Ok(Self { image })
     }
 
-    /// Copies tightly packed RGBA8 texels of one mip level into the image (host image copy).
-    pub fn upload_mip(&self, level: u32, pixels: &[u8]) -> Result<()> {
-        match &self.image {
-            TextureImage::Srgb(image) => image.mip(level).copy_from(pixels, level)?,
-            TextureImage::Linear(image) => image.mip(level).copy_from(pixels, level)?,
+    pub fn upload_mip(&mut self, level: u32, pixels: &[u8]) -> Result<()> {
+        match &mut self.image {
+            TextureImage::Srgb(image) => image.copy_from(pixels, level)?,
+            TextureImage::Linear(image) => image.copy_from(pixels, level)?,
         }
         Ok(())
     }
 
-    /// Index into the bindless sampled image heap, what the `Material` texture fields expect on
-    /// the GPU.
     pub fn descriptor_index(&self) -> u32 {
-        let handle = match &self.image {
-            TextureImage::Srgb(image) => image.handle,
-            TextureImage::Linear(image) => image.handle,
-        };
-        handle
-            .map(|handle| handle.descriptor_index_set0)
-            .unwrap_or(NULL_HANDLE)
+        match &self.image {
+            TextureImage::Srgb(image) => image.handle.descriptor_index_set0,
+            TextureImage::Linear(image) => image.handle.descriptor_index_set0,
+        }
     }
 }
 
@@ -69,11 +56,9 @@ pub struct TextureHeader {
     pub width: u32,
     pub height: u32,
     pub mip_levels: u32,
-    /// 1 if the color channels are sRGB encoded, 0 for linear data.
     pub srgb: u32,
 }
 
-/// CPU side texture as stored in the processed scene file: RGBA8, `mips[0]` is the base level.
 pub struct TextureData {
     pub width: u32,
     pub height: u32,
@@ -82,10 +67,6 @@ pub struct TextureData {
 }
 
 impl TextureData {
-    /// Converts a decoded glTF image to RGBA8 and generates the full mip chain down to 1x1.
-    /// `srgb` says whether the color channels are sRGB encoded (base color, emissive) or linear
-    /// data (metallic-roughness, normal, occlusion); it decides the GPU format and how mips are
-    /// filtered.
     pub fn from_gltf(image: &gltf::image::Data, srgb: bool) -> Self {
         let mut mips = vec![to_rgba8(image)];
         let (mut width, mut height) = (image.width, image.height);
@@ -114,8 +95,6 @@ impl TextureData {
     }
 }
 
-/// 2x2 box filter. sRGB color channels are averaged in linear space, linear data (and alpha)
-/// directly. Odd edges clamp.
 fn downsample(src: &[u8], width: u32, height: u32, srgb: bool) -> (Vec<u8>, u32, u32) {
     let srgb_to_linear = srgb_to_linear_lut();
     let decode = |value: u8| {
@@ -179,8 +158,6 @@ fn linear_to_srgb(c: f32) -> u8 {
     (c * 255.0 + 0.5) as u8
 }
 
-/// Expands any glTF pixel format to 8 bit RGBA. Missing channels become 0 (alpha 255),
-/// single channel images are broadcast to gray.
 fn to_rgba8(image: &gltf::image::Data) -> Vec<u8> {
     use gltf::image::Format::*;
     let texels = (image.width * image.height) as usize;

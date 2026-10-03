@@ -1,3 +1,4 @@
+//! Scene entities: mesh instances with material settings and spawning of imported scenes.
 use bevy::{
     app::{App, PostUpdate, Update},
     asset::{Assets, Handle},
@@ -7,11 +8,15 @@ use bevy::{
         resource::Resource,
         system::{Commands, Query, Res},
     },
-    reflect::Reflect,
+    reflect::{Reflect, TypeRegistry},
     transform::components::Transform,
 };
 
-use lava::image::{Image, format, usage};
+use glam::{Vec3, Vec4};
+use lava::{
+    bindless::NULL_HANDLE,
+    image::{Image, format, usage},
+};
 
 use crate::{
     assets::{
@@ -19,8 +24,10 @@ use crate::{
         mesh::{GpuMesh, Scene},
         texture::GpuTexture,
     },
+    editor::selected::EditorView,
     render::world::InstanceFlags,
     scene::camera::{Camera, update_camera},
+    ui::builder::UiWindowBuilder,
 };
 use bevy::prelude::ReflectComponent;
 pub mod camera;
@@ -33,14 +40,63 @@ pub struct SpawnScene {
 
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+pub struct MaterialSettings {
+    pub color: Vec4,
+    pub emissive: Vec3,
+    pub metalic_factor: f32,
+    pub roughness_factor: f32,
+    pub normal_scale: f32,
+    pub occlusion_strength: f32,
+    pub color_texture: Option<Handle<GpuTexture>>,
+    pub metallic_roughness_texture: Option<Handle<GpuTexture>>,
+    pub normal_texture: Option<Handle<GpuTexture>>,
+    pub occlusion_texture: Option<Handle<GpuTexture>>,
+    pub emissive_texture: Option<Handle<GpuTexture>>,
+}
+
+impl MaterialSettings {
+    pub(crate) fn into_material(&self, textures: &Assets<GpuTexture>) -> Material {
+        Material {
+            color: self.color,
+            emissive: self.emissive,
+            metalic_factor: self.metalic_factor,
+            roughness_factor: self.roughness_factor,
+            normal_scale: self.normal_scale,
+            occlusion_strength: self.occlusion_strength,
+            color_texture: self
+                .color_texture
+                .as_ref()
+                .map(|t| textures.get(t).unwrap().descriptor_index())
+                .unwrap_or(NULL_HANDLE),
+            metallic_roughness_texture: self
+                .metallic_roughness_texture
+                .as_ref()
+                .map(|t| textures.get(t).unwrap().descriptor_index())
+                .unwrap_or(NULL_HANDLE),
+            normal_texture: self
+                .normal_texture
+                .as_ref()
+                .map(|t| textures.get(t).unwrap().descriptor_index())
+                .unwrap_or(NULL_HANDLE),
+            occlusion_texture: self
+                .occlusion_texture
+                .as_ref()
+                .map(|t| textures.get(t).unwrap().descriptor_index())
+                .unwrap_or(NULL_HANDLE),
+            emissive_texture: self
+                .emissive_texture
+                .as_ref()
+                .map(|t| textures.get(t).unwrap().descriptor_index())
+                .unwrap_or(NULL_HANDLE),
+        }
+    }
+}
+
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct Instance {
     pub mesh: Handle<GpuMesh>,
-    /// The texture fields index the owning scene's textures (or `NO_TEXTURE`); they are swapped
-    /// for the bindless descriptor indices of `textures` when the instance is extracted.
-    #[reflect(ignore)]
-    pub material: Material,
-    /// One handle per `Material` texture slot, see `TEXTURE_SLOTS`.
-    pub textures: [Option<Handle<GpuTexture>>; TEXTURE_SLOTS],
+    pub material: MaterialSettings,
     pub flags: InstanceFlags,
 }
 
@@ -58,18 +114,9 @@ fn add_sub_instances(
             .entity(entity)
             .with_children(|parent| {
                 for instance in 0..scene.instance_transforms.len() {
-                    let mesh = scene.meshes[scene.instance_mesh[instance] as usize].clone();
-                    let material = scene.materials[scene.instance_materials[instance] as usize];
-                    let textures = texture_indices(&material)
-                        .map(|index| scene.textures.get(index as usize).cloned());
                     parent.spawn((
-                        Instance {
-                            mesh,
-                            material,
-                            textures,
-                            flags: InstanceFlags::empty(),
-                        },
-                        Transform::from_matrix(scene.instance_transforms[instance]),
+                        scene.get_instance(instance, InstanceFlags::empty()),
+                        scene.get_transform(instance),
                     ));
                 }
             })
@@ -82,6 +129,7 @@ pub fn ScenePlugin(app: &mut App) {
     app.add_systems(PostUpdate, update_camera)
         .add_systems(Update, add_sub_instances)
         .register_type::<Instance>()
+        .register_type::<MaterialSettings>()
         .register_type::<InstanceFlags>()
         .register_type::<SpawnScene>()
         .register_type::<Camera>();
@@ -89,5 +137,5 @@ pub fn ScenePlugin(app: &mut App) {
 
 #[derive(Resource)]
 pub struct Skybox {
-    image: Image<1, format::R8G8B8A8Srgb, usage::Sampled>,
+    image: Handle<GpuTexture>,
 }

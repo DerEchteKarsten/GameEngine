@@ -1,3 +1,4 @@
+//! Render-world instance management: extracting scene instances into per-frame GPU buffers.
 use std::fmt::Debug;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -8,7 +9,6 @@ use bevy::app::App;
 use bevy::asset::Assets;
 use bevy::ecs::query::Has;
 use bevy::ecs::resource::Resource;
-use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::{Commands, Query, Res, ResMut, Single};
 use bevy::math::Rect;
 use bevy::reflect::Reflect;
@@ -35,7 +35,7 @@ use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
 use crate::render::extract_param::Extract;
 use crate::render::render::{FrameCount, QueueStrategie, Queues, extract_camera};
-use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, Render, RenderStartup, RenderSystems};
+use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, RenderStartup, RenderSystems};
 use crate::scene::Instance;
 use lava::bindings::{self, AabbError};
 use lava::bindless::NULL_HANDLE;
@@ -90,65 +90,65 @@ struct TempInstance {
 
 pub const MAX_INSTANCES: usize = 8 * 1024;
 
-const STAGING_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+// const STAGING_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
-enum Dst {
-    Buffer(Buffer<u8>),
-    Image(Image),
-}
+// enum Dst {
+//     Buffer(Buffer<u8>),
+//     Image(Image),
+// }
 
-enum DstRef<'a> {
-    Buffer(BufferSlice<'a, u8>),
-    Image(ImageSlice<'a>),
-}
+// enum DstRef<'a> {
+//     Buffer(BufferSlice<'a, u8>),
+//     Image(ImageSlice<'a>),
+// }
 
-enum SendBack {
-    Buffer(oneshot::Sender<Buffer<u8>>),
-    Image(oneshot::Sender<Image>),
-}
+// enum SendBack {
+//     Buffer(oneshot::Sender<Buffer<u8>>),
+//     Image(oneshot::Sender<Image>),
+// }
 
-struct CopyRegion {
-    src: Vec<u8>,
-    dst: Option<Dst>,
-    send_back: Option<SendBack>,
-}
+// struct CopyRegion {
+//     src: Vec<u8>,
+//     dst: Option<Dst>,
+//     send_back: Option<SendBack>,
+// }
 
-#[derive(Debug)]
-enum TransferQueueStrategie {
-    SingleQueue(Arc<Mutex<Queue<Gfx>>>),
-    MultipleGfx(Queue<Gfx>),
-    Transfer(Queue<Transfer>),
-}
+// #[derive(Debug)]
+// enum TransferQueueStrategie {
+//     SingleQueue(Arc<Mutex<Queue<Gfx>>>),
+//     MultipleGfx(Queue<Gfx>),
+//     Transfer(Queue<Transfer>),
+// }
 
-impl TransferQueueStrategie {
-    fn with<R, F: FnOnce(&Queue<Transfer>) -> R>(&self, f: F) -> R {
-        match &self {
-            TransferQueueStrategie::SingleQueue(queue) => {
-                let q = queue.lock().unwrap();
-                let queue = &*q;
-                f(unsafe { std::mem::transmute(queue) })
-            }
-            TransferQueueStrategie::MultipleGfx(queue) => f(unsafe { std::mem::transmute(queue) }),
-            TransferQueueStrategie::Transfer(queue) => f(queue),
-        }
-    }
-}
+// impl TransferQueueStrategie {
+//     fn with<R, F: FnOnce(&Queue<Transfer>) -> R>(&self, f: F) -> R {
+//         match &self {
+//             TransferQueueStrategie::SingleQueue(queue) => {
+//                 let q = queue.lock().unwrap();
+//                 let queue = &*q;
+//                 f(unsafe { std::mem::transmute(queue) })
+//             }
+//             TransferQueueStrategie::MultipleGfx(queue) => f(unsafe { std::mem::transmute(queue) }),
+//             TransferQueueStrategie::Transfer(queue) => f(queue),
+//         }
+//     }
+// }
 
-struct NonRebarResources {
-    pool: CommandPool,
-    fence: Fence,
-    cmd: CommandBufferMemory,
-    staging: Buffer<u8>,
-    queue: TransferQueueStrategie,
-}
+// struct NonRebarResources {
+//     pool: CommandPool,
+//     fence: Fence,
+//     cmd: CommandBufferMemory,
+//     staging: Buffer<u8>,
+//     queue: TransferQueueStrategie,
+// }
 
-#[derive(Debug)]
-pub struct UploadQueue {
-    copy_queue: Sender<CopyRegion>,
-    thread: JoinHandle<()>,
-}
+// #[derive(Debug)]
+// pub struct UploadQueue {
+//     copy_queue: Sender<CopyRegion>,
+//     thread: JoinHandle<()>,
+// }
 
-static UPLOAD_QUEUE: OnceLock<UploadQueue> = OnceLock::new();
+// static UPLOAD_QUEUE: OnceLock<UploadQueue> = OnceLock::new();
 
 // impl UploadQueue {
 //     fn send_back(mut item: CopyRegion) {
@@ -429,17 +429,6 @@ fn extract_meshlet_instances(
     for (instance, transform, selected) in &instances {
         if let Some(mesh) = meshes.get(&instance.mesh) {
             let mat = transform.to_matrix();
-            let mut material = instance.material;
-            set_texture_indices(
-                &mut material,
-                instance.textures.each_ref().map(|handle| {
-                    handle
-                        .as_ref()
-                        .and_then(|handle| textures.get(handle))
-                        .map(GpuTexture::descriptor_index)
-                        .unwrap_or(NULL_HANDLE)
-                }),
-            );
             let flags = if selected {
                 instance.flags | InstanceFlags::OUTLINE
             } else {
@@ -450,7 +439,7 @@ fn extract_meshlet_instances(
                 bvh_root: mesh.buffer.address,
                 header: mesh.header,
                 transform: mat,
-                material,
+                material: instance.material.into_material(&textures),
                 flags,
             });
         }
@@ -497,5 +486,5 @@ pub fn WorldPlugin(app: &mut App) {
             ExtractSchedule,
             (extract_meshlet_instances, extract_camera, extract_view_port),
         )
-        .add_systems(Render, (wirte_instances).in_set(RenderSystems::PreRender));
+        .add_systems(RenderSystems::PreRender, wirte_instances);
 }

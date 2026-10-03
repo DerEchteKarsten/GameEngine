@@ -1,3 +1,4 @@
+//! Editor log console: tracing/Vulkan validation capture layer, Tracy setup and console UI.
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::sync::Arc;
