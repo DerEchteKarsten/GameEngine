@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && cargo run -q --release -p tools --target-dir target/tools -- --print",
+            "timeout": 180
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Read(./target/**)",
+      "Read(./shaders/bin/**)",
+      "Read(./**/*.glb)",
+      "Read(./**/*.spv)",
+      "Read(./vulkaninfo.html)",
+      "Read(./Cargo.lock)",
+      "Read(./editor_font.ttf)"
+    ]
+  }
+}
