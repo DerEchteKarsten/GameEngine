@@ -11,6 +11,7 @@ use bevy::{
 use glam::{UVec2, Vec2, Vec4};
 use lava::bindless::BindlessHandle;
 
+use crate::render::headless::HeadlessSize;
 use crate::ui::{UiWindows, builder::UiBuilder, window::Drawable};
 
 #[derive(Resource, Debug)]
@@ -59,33 +60,36 @@ pub(crate) fn viewport_ui(
     vp.focused = focused || (vp.hovered && mouse.pressed(MouseButton::Right));
 }
 
+/// Size and cursor of whatever the scene is shown in: the viewport tab, else the headless
+/// render target, else the whole window.
 #[derive(SystemParam)]
 pub struct ViewPortProxy<'s, 'w> {
-    window: Single<'w, 's, lifetimeless::Read<Window>>,
+    window: Option<Single<'w, 's, lifetimeless::Read<Window>>>,
+    headless: Option<Res<'w, HeadlessSize>>,
     pub view_port: Option<Res<'w, ViewPort>>,
 }
 
 impl<'s, 'w> ViewPortProxy<'s, 'w> {
     pub fn width(&self) -> u32 {
-        self.view_port
-            .as_ref()
-            .map(|vp| vp.rect.width() as u32)
-            .unwrap_or(self.window.physical_width())
+        self.size().x
     }
     pub fn height(&self) -> u32 {
-        self.view_port
-            .as_ref()
-            .map(|vp| vp.rect.height() as u32)
-            .unwrap_or(self.window.physical_height())
+        self.size().y
     }
     pub fn size(&self) -> UVec2 {
-        self.view_port
-            .as_ref()
-            .map(|vp| vp.rect.size().as_uvec2())
-            .unwrap_or(self.window.physical_size())
+        if let Some(vp) = &self.view_port {
+            vp.rect.size().as_uvec2()
+        } else if let Some(headless) = &self.headless {
+            headless.0
+        } else {
+            self.window
+                .as_ref()
+                .map(|window| window.physical_size())
+                .unwrap_or(UVec2::ONE)
+        }
     }
     pub fn cursor_position(&self) -> Option<Vec2> {
-        let cp = self.window.cursor_position();
+        let cp = self.window.as_ref()?.cursor_position();
         cp.and_then(|pos| self.to_viewport_pos(pos))
     }
 

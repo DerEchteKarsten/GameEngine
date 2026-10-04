@@ -22,12 +22,7 @@ use bevy::{
 };
 use glam::{Vec2, Vec3};
 
-#[derive(Resource)]
-struct LoadingScene(Handle<Scene>);
-
 fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
-    let handle = asset_server.load("sponza.glb");
-    cmd.insert_resource(LoadingScene(handle.clone()));
     let camera = CameraBundle::new(
         Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         65.0_f32.to_radians(),
@@ -35,7 +30,7 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
         100.0,
     );
     cmd.spawn((camera, EditorCamera));
-    cmd.spawn((Transform::default(), SpawnScene { scene: handle }));
+    // cmd.spawn((Transform::default(), SpawnScene { scene: handle }));
 }
 
 // fn loading_window(

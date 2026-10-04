@@ -1,4 +1,4 @@
-//! Drag-and-drop payload store: one type-erased payload shared by all UI windows.
+//! Drag-and-drop payload store: one type-erased payload shared by all UI windows, and lazily loaded asset payloads.
 use std::{
     any::{Any, TypeId},
     sync::Mutex,
@@ -54,20 +54,43 @@ impl DragDrop {
         }
     }
 
-    /// Whether the payload is an `UntypedHandle` to an `A`.
+    /// Whether the payload is an `AssetDrag` of an `A`.
     pub fn accepts_asset<A: Asset>(&self) -> bool {
-        self.accepts(is_handle_of::<A>)
+        self.accepts(AssetDrag::is::<A>)
     }
 
-    /// Takes the payload if it is an `UntypedHandle` to an `A`.
+    /// Takes the payload if it is an `AssetDrag` of an `A`, and loads the asset.
     pub fn take_asset<A: Asset>(&self) -> Option<Handle<A>> {
-        self.take(is_handle_of::<A>)
-            .and_then(|handle| handle.try_typed::<A>().ok())
+        self.take(AssetDrag::is::<A>).and_then(AssetDrag::load)
     }
 }
 
-pub(crate) fn is_handle_of<A: Asset>(handle: &UntypedHandle) -> bool {
-    UntypedHandle::type_id(handle) == TypeId::of::<A>()
+/// A dragged asset that is not loaded yet: `load` only runs once a target takes the drop, so
+/// dragging something around costs nothing.
+pub struct AssetDrag {
+    type_id: TypeId,
+    load: Box<dyn FnOnce() -> UntypedHandle + Send + Sync>,
+}
+
+impl AssetDrag {
+    /// `load` has to return a handle to an asset of type `type_id`.
+    pub fn new(
+        type_id: TypeId,
+        load: impl FnOnce() -> UntypedHandle + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            type_id,
+            load: Box::new(load),
+        }
+    }
+
+    pub fn is<A: Asset>(&self) -> bool {
+        self.type_id == TypeId::of::<A>()
+    }
+
+    pub fn load<A: Asset>(self) -> Option<Handle<A>> {
+        (self.load)().try_typed::<A>().ok()
+    }
 }
 
 /// Clears the payload once the primary button/touch is no longer held. Runs in `PostUpdate`,
@@ -80,6 +103,8 @@ pub fn end_drag(dnd: Res<DragDrop>, mouse: Res<ButtonInput<MouseButton>>, touch:
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use bevy::{asset::Asset, reflect::TypePath};
 
     use super::*;
@@ -139,14 +164,24 @@ mod tests {
     }
 
     #[test]
-    fn asset_handles_match_on_asset_type() {
+    fn dragged_assets_match_on_type_and_load_when_taken() {
+        static LOADS: AtomicUsize = AtomicUsize::new(0);
         let dnd = DragDrop::default();
-        dnd.begin(Handle::<Apple>::default().untyped());
+        dnd.begin(AssetDrag::new(TypeId::of::<Apple>(), || {
+            LOADS.fetch_add(1, Ordering::Relaxed);
+            Handle::<Apple>::default().untyped()
+        }));
         assert!(dnd.accepts_asset::<Apple>());
         assert!(!dnd.accepts_asset::<Pear>());
         assert!(dnd.take_asset::<Pear>().is_none());
         assert!(dnd.active());
+        assert_eq!(
+            LOADS.load(Ordering::Relaxed),
+            0,
+            "nothing took the drop yet"
+        );
         assert_eq!(dnd.take_asset::<Apple>(), Some(Handle::<Apple>::default()));
+        assert_eq!(LOADS.load(Ordering::Relaxed), 1);
         assert!(!dnd.active());
     }
 }

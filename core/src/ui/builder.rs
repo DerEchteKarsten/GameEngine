@@ -8,7 +8,7 @@ use std::{
 };
 
 use bevy::{
-    asset::{Asset, Handle, UntypedHandle},
+    asset::{Asset, Handle},
     ecs::{
         message::MessageReader,
         system::{Res, Single, SystemParam, lifetimeless},
@@ -29,7 +29,7 @@ use lava::{bindings::UIVertex, bindless::BindlessHandle};
 
 use crate::ui::{
     Draggable, FocusedState, MultiInput, UiContext, UiWindows, WindowCommand,
-    dragdrop::{DragDrop, is_handle_of},
+    dragdrop::{AssetDrag, DragDrop},
     from_pos_size,
     scrollable::Scrollable,
     window::{
@@ -602,25 +602,13 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         self.content_max = self.content_max.max(content_max);
     }
 
-    /// `drag_source` for an asset handle. `handle` is only called when the drag starts, so it
-    /// can load the asset lazily.
-    pub fn asset_drag_source<A: Asset>(
-        &mut self,
-        id: impl Hash,
-        handle: impl FnOnce() -> Handle<A>,
-        children: impl FnOnce(&mut Self),
-        drag_icon: impl FnOnce(&mut Self),
-    ) {
-        self.drag_source(id, || handle().untyped(), children, drag_icon);
-    }
-
-    /// `drop_target` that only accepts handles to an `A`.
+    /// `drop_target` that only accepts a dragged `A`, which is loaded when it is dropped.
     pub fn asset_drop_target<A: Asset>(
         &mut self,
         children: impl FnOnce(&mut Self),
     ) -> Option<Handle<A>> {
-        self.drop_target::<UntypedHandle>(is_handle_of::<A>, children)
-            .and_then(|handle| handle.try_typed::<A>().ok())
+        self.drop_target(AssetDrag::is::<A>, children)
+            .and_then(AssetDrag::load)
     }
 
     fn render_drag_icon(&mut self, drag_icon: impl FnOnce(&mut Self)) {

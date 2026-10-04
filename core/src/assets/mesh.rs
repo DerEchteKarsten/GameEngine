@@ -1,7 +1,7 @@
-//! glTF scene import: meshlet LOD building, BVH baking, serialization and GPU mesh loading.
+//! glTF scene import: meshlet LOD building, BVH baking, the baked scene file (with names and browser previews) and GPU mesh loading.
 use bevy::{
     asset::{
-        Asset, AssetLoader, AssetPath, Handle, LoadContext, saver::AssetSaver,
+        Asset, AssetLoader, AssetPath, Handle, LoadContext, io::Reader, saver::AssetSaver,
         transformer::AssetTransformer,
     },
     ecs::resource::Resource,
@@ -14,7 +14,7 @@ use bevy::{
     transform::components::Transform,
 };
 use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
-use futures::{AsyncReadExt, AsyncWriteExt};
+use futures::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use glam::{Mat4, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
 use itertools::Itertools;
 use lava::{bindless::NULL_HANDLE, buffer::Buffer, state::Ctx};
@@ -25,15 +25,15 @@ use meshopt::{
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
 use std::sync::{Arc, Mutex};
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, io::SeekFrom, ops::Range};
 use tracing::debug_span;
 
 use crate::{
     assets::{
         material::{Material, NO_TEXTURE},
-        read_slice, read_slice_to_buffer, read_u64,
-        texture::{GpuTexture, TextureData, TextureHeader},
-        write_slice,
+        read_names, read_slice, read_slice_to_buffer, read_u64, slice_bytes,
+        texture::{GpuTexture, PREVIEW_BYTES, TextureData, TextureHeader},
+        write_name, write_slice,
     },
     physics::bvh::{
         ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
@@ -78,6 +78,10 @@ pub struct Scene {
     pub materials: Vec<Material>,
     pub instance_materials: Vec<u32>,
     pub instance_mesh: Vec<u32>,
+    /// glTF names, empty where the file has none. Kept apart from the per-instance data above.
+    pub instance_names: Vec<String>,
+    pub mesh_names: Vec<String>,
+    pub texture_names: Vec<String>,
 }
 
 impl Scene {
@@ -94,6 +98,7 @@ impl Scene {
                 roughness_factor: material.roughness_factor,
                 normal_scale: material.normal_scale,
                 occlusion_strength: material.occlusion_strength,
+                alpha_cutoff: material.alpha_cutoff,
                 color_texture: self.get_texture(material.color_texture),
                 metallic_roughness_texture: self.get_texture(material.metallic_roughness_texture),
                 normal_texture: self.get_texture(material.normal_texture),
@@ -123,6 +128,34 @@ pub struct FileScene {
     pub materials: Vec<Material>,
     pub instance_materials: Vec<u32>,
     pub instance_mesh: Vec<u32>,
+    pub instance_names: Vec<String>,
+    pub mesh_names: Vec<String>,
+    pub texture_names: Vec<String>,
+}
+
+/// glTF's default `alphaCutoff`.
+const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
+
+/// The alpha below which fragments of a material are discarded; 0 draws everything. There
+/// is no blending, so blended materials are cut out at the default cutoff instead of being
+/// drawn opaque. So are masked ones with a cutoff of 0: a mask that cuts nothing is how some
+/// exporters write blended decals.
+fn alpha_cutoff(mode: gltf::material::AlphaMode, cutoff: Option<f32>) -> f32 {
+    use gltf::material::AlphaMode;
+    match (mode, cutoff) {
+        (AlphaMode::Opaque, _) => 0.0,
+        (AlphaMode::Mask, Some(cutoff)) if cutoff > 0.0 => cutoff,
+        (AlphaMode::Mask | AlphaMode::Blend, _) => DEFAULT_ALPHA_CUTOFF,
+    }
+}
+
+/// `name`, told apart by primitive when the glTF mesh has several: primitives have no names.
+fn primitive_name(name: Option<&str>, primitive: usize, primitives: usize) -> String {
+    match name {
+        Some(name) if primitives > 1 => format!("{name}.{primitive}"),
+        Some(name) => name.to_string(),
+        None => String::new(),
+    }
 }
 
 #[derive(Asset, TypePath)]
@@ -177,7 +210,9 @@ impl AssetTransformer for MeshTransformer {
     > {
         let mut remap = HashMap::new();
         let mut meshes = Vec::new();
+        let mut mesh_names = Vec::new();
         for mesh in asset.document.meshes() {
+            let primitives = mesh.primitives().len();
             for primitive in mesh.primitives() {
                 let index = (mesh.index(), primitive.index());
                 if remap.get(&index).is_some() {
@@ -216,6 +251,7 @@ impl AssetTransformer for MeshTransformer {
                 }
 
                 remap.insert(index, meshes.len() as u32);
+                mesh_names.push(primitive_name(mesh.name(), primitive.index(), primitives));
 
                 let mesh = MeshletMesh::new(&indicies, &verticies, &normals, &uvs);
                 meshes.push(mesh);
@@ -226,20 +262,23 @@ impl AssetTransformer for MeshTransformer {
         let mut materials = vec![];
         let mut instance_materials = vec![];
         let mut instance_mesh = vec![];
+        let mut instance_names = vec![];
         let mut textures: Vec<TextureData> = vec![];
+        let mut texture_names = vec![];
         let mut texture_remap: HashMap<(usize, bool), u32> = HashMap::new();
         let mut import_texture = |texture: Option<gltf::Texture>, srgb: bool| -> u32 {
             let Some(texture) = texture else {
                 return NO_TEXTURE;
             };
-            let image = texture.source().index();
+            let source = texture.source();
+            let image = source.index();
             *texture_remap.entry((image, srgb)).or_insert_with(|| {
+                let name = source.name().or(texture.name()).unwrap_or_default();
+                texture_names.push(name.to_string());
                 textures.push(TextureData::from_gltf(&asset.images[image], srgb));
                 (textures.len() - 1) as u32
             })
         };
-        // A node's transform is relative to its parent, so walk the hierarchy and accumulate.
-        // Exporters often put the unit conversion (e.g. cm to m) on a parent node.
         let mut world_nodes = Vec::new();
         let mut stack: Vec<(gltf::Node, Mat4)> = asset
             .document
@@ -257,6 +296,7 @@ impl AssetTransformer for MeshTransformer {
                 continue;
             };
 
+            let primitives = gltf_mesh.primitives().len();
             for primitive in gltf_mesh.primitives() {
                 let material = materials.len();
                 let pmaterial = primitive.material();
@@ -270,6 +310,7 @@ impl AssetTransformer for MeshTransformer {
                     roughness_factor: pbr.roughness_factor(),
                     normal_scale: normal.as_ref().map(|n| n.scale()).unwrap_or(1.0),
                     occlusion_strength: occlusion.as_ref().map(|o| o.strength()).unwrap_or(1.0),
+                    alpha_cutoff: alpha_cutoff(pmaterial.alpha_mode(), pmaterial.alpha_cutoff()),
                     color_texture: import_texture(
                         pbr.base_color_texture().map(|i| i.texture()),
                         true,
@@ -284,6 +325,7 @@ impl AssetTransformer for MeshTransformer {
                         pmaterial.emissive_texture().map(|i| i.texture()),
                         true,
                     ),
+                    pad: Vec3::ZERO,
                 });
 
                 let Some(mesh) = remap.get(&(gltf_mesh.index(), primitive.index())) else {
@@ -293,6 +335,7 @@ impl AssetTransformer for MeshTransformer {
                 instance_materials.push(material as u32);
                 instance_mesh.push(*mesh);
                 instance_transforms.push(*transform);
+                instance_names.push(primitive_name(node.name(), primitive.index(), primitives));
             }
         }
 
@@ -303,6 +346,9 @@ impl AssetTransformer for MeshTransformer {
             materials,
             meshes,
             textures,
+            instance_names,
+            mesh_names,
+            texture_names,
         };
 
         let asset = asset.replace_asset(mesh);
@@ -323,29 +369,145 @@ impl AssetSaver for MeshSaver {
         asset: bevy::asset::saver::SavedAsset<'_, Self::Asset>,
         _settings: &Self::Settings,
     ) -> std::result::Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
-        let mesh = asset.get();
-        write_slice(&mesh.instance_transforms, writer).await?;
-        write_slice(&mesh.materials, writer).await?;
-        write_slice(&mesh.instance_mesh, writer).await?;
-        write_slice(&mesh.instance_materials, writer).await?;
-        let num_textures = mesh.textures.len() as u64;
-        writer.write_all(&num_textures.to_le_bytes()).await?;
-        for texture in mesh.textures.iter() {
-            writer.write_all(bytes_of(&texture.header())).await?;
-            for mip in texture.mips.iter() {
-                write_slice(mip, writer).await?;
-            }
-        }
-        let num_meshes = mesh.meshes.len() as u64;
-        writer.write_all(&num_meshes.to_le_bytes()).await?;
-        for mesh in mesh.meshes.iter() {
-            writer.write_all(bytes_of(&mesh.header)).await?;
-            write_slice(&mesh.data, writer).await?;
-            write_slice(&mesh.colission_bvh, writer).await?;
-        }
-
-        Ok(())
+        write_scene(asset.get(), writer).await
     }
+}
+
+/// Offset of the preview block: everything `write_scene` writes before it.
+fn preview_offset(scene: &FileScene) -> u64 {
+    let count = size_of::<u64>() as u64;
+    let textures: u64 = scene
+        .textures
+        .iter()
+        .map(|texture| {
+            size_of::<TextureHeader>() as u64
+                + texture.mips.iter().map(|mip| slice_bytes(mip)).sum::<u64>()
+        })
+        .sum();
+    let meshes: u64 = scene
+        .meshes
+        .iter()
+        .map(|mesh| {
+            size_of::<MeshHeader>() as u64
+                + slice_bytes(&mesh.data)
+                + slice_bytes(&mesh.colission_bvh)
+        })
+        .sum();
+    let instance_names: u64 = scene
+        .instance_names
+        .iter()
+        .map(|name| slice_bytes(name.as_bytes()))
+        .sum();
+    count
+        + slice_bytes(&scene.instance_transforms)
+        + slice_bytes(&scene.materials)
+        + slice_bytes(&scene.instance_mesh)
+        + slice_bytes(&scene.instance_materials)
+        + count
+        + textures
+        + count
+        + meshes
+        + instance_names
+}
+
+/// Writes the baked scene file:
+///
+/// ```text
+/// u64 preview offset
+/// instance transforms, materials, instance meshes, instance materials
+/// textures (header + mips), meshes (header + data + collision BVH)
+/// one name per instance
+/// --- preview offset: all the asset browser reads
+/// mesh count, one name per mesh
+/// texture count, one name per texture
+/// one `PREVIEW_BYTES` preview per texture
+/// ```
+async fn write_scene(
+    scene: &FileScene,
+    writer: &mut bevy::asset::io::Writer,
+) -> anyhow::Result<()> {
+    assert_eq!(scene.instance_names.len(), scene.instance_transforms.len());
+    assert_eq!(scene.mesh_names.len(), scene.meshes.len());
+    assert_eq!(scene.texture_names.len(), scene.textures.len());
+
+    writer
+        .write_all(&preview_offset(scene).to_le_bytes())
+        .await?;
+    write_slice(&scene.instance_transforms, writer).await?;
+    write_slice(&scene.materials, writer).await?;
+    write_slice(&scene.instance_mesh, writer).await?;
+    write_slice(&scene.instance_materials, writer).await?;
+    let num_textures = scene.textures.len() as u64;
+    writer.write_all(&num_textures.to_le_bytes()).await?;
+    for texture in scene.textures.iter() {
+        writer.write_all(bytes_of(&texture.header())).await?;
+        for mip in texture.mips.iter() {
+            write_slice(mip, writer).await?;
+        }
+    }
+    let num_meshes = scene.meshes.len() as u64;
+    writer.write_all(&num_meshes.to_le_bytes()).await?;
+    for mesh in scene.meshes.iter() {
+        writer.write_all(bytes_of(&mesh.header)).await?;
+        write_slice(&mesh.data, writer).await?;
+        write_slice(&mesh.colission_bvh, writer).await?;
+    }
+    for name in scene.instance_names.iter() {
+        write_name(name, writer).await?;
+    }
+
+    writer.write_all(&num_meshes.to_le_bytes()).await?;
+    for name in scene.mesh_names.iter() {
+        write_name(name, writer).await?;
+    }
+    writer.write_all(&num_textures.to_le_bytes()).await?;
+    for name in scene.texture_names.iter() {
+        write_name(name, writer).await?;
+    }
+    for texture in scene.textures.iter() {
+        assert_eq!(texture.preview.len(), PREVIEW_BYTES);
+        writer.write_all(&texture.preview).await?;
+    }
+    Ok(())
+}
+
+/// What the asset browser reads of a baked scene file: the names, and where the previews are.
+pub struct BrowseInfo {
+    pub mesh_names: Vec<String>,
+    pub texture_names: Vec<String>,
+    /// File offset of the first texture preview.
+    previews_start: u64,
+}
+
+/// Reads the names of the preview block, skipping everything in front of it.
+pub async fn read_browse_info(reader: &mut dyn Reader) -> anyhow::Result<BrowseInfo> {
+    let preview_offset = read_u64(reader).await?;
+    let reader = reader.seekable()?;
+    reader.seek(SeekFrom::Start(preview_offset)).await?;
+    let num_meshes = read_u64(reader).await? as usize;
+    let mesh_names = read_names(reader, num_meshes).await?;
+    let num_textures = read_u64(reader).await? as usize;
+    let texture_names = read_names(reader, num_textures).await?;
+    Ok(BrowseInfo {
+        mesh_names,
+        texture_names,
+        previews_start: reader.stream_position().await?,
+    })
+}
+
+/// Reads the preview of texture `index`: `PREVIEW_SIZE`² RGBA8 texels.
+pub async fn read_preview(
+    reader: &mut dyn Reader,
+    info: &BrowseInfo,
+    index: usize,
+) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(index < info.texture_names.len(), "no texture {index}");
+    let reader = reader.seekable()?;
+    let offset = info.previews_start + (index * PREVIEW_BYTES) as u64;
+    reader.seek(SeekFrom::Start(offset)).await?;
+    let mut preview = vec![0u8; PREVIEW_BYTES];
+    reader.read_exact(&mut preview).await?;
+    Ok(preview)
 }
 
 #[derive(TypePath, Default)]
@@ -360,7 +522,9 @@ impl AssetLoader for MeshLoader {
         _settings: &Self::Settings,
         load_context: &mut LoadContext<'_>,
     ) -> std::result::Result<Self::Asset, Self::Error> {
-        let instance_transforms = read_slice(reader, None).await?;
+        // The preview offset: only the asset browser skips ahead.
+        read_u64(reader).await?;
+        let instance_transforms: Vec<Mat4> = read_slice(reader, None).await?;
         let materials = read_slice(reader, None).await?;
         let instance_mesh = read_slice(reader, None).await?;
         let instance_materials = read_slice(reader, None).await?;
@@ -438,7 +602,18 @@ impl AssetLoader for MeshLoader {
             );
             meshes.push(handle);
         }
+
+        let instance_names = read_names(reader, instance_transforms.len()).await?;
+        let num_mesh_names = read_u64(reader).await? as usize;
+        let mesh_names = read_names(reader, num_mesh_names).await?;
+        let num_texture_names = read_u64(reader).await? as usize;
+        let texture_names = read_names(reader, num_texture_names).await?;
+        // The texture previews that follow are for the asset browser.
+
         Ok(Scene {
+            instance_names,
+            mesh_names,
+            texture_names,
             instance_transforms,
             instance_materials,
             instance_mesh,
@@ -1452,6 +1627,115 @@ mod tests {
         // A zero-radius sphere outside the other one still has to be enclosed.
         let point = Vec4::new(10.0, 0.0, 0.0, 0.0);
         assert_eq!(merge_spheres(a, point), Vec4::new(3.5, 0.0, 0.0, 6.5));
+    }
+
+    fn file_scene() -> FileScene {
+        let texture = |fill: u8| TextureData {
+            width: 2,
+            height: 1,
+            srgb: true,
+            mips: vec![vec![fill; 8], vec![fill; 4]],
+            preview: vec![fill; PREVIEW_BYTES],
+        };
+        let mesh = |fill: u8| MeshletMesh {
+            header: MeshHeader::zeroed(),
+            data: vec![fill; 13],
+            colission_bvh: vec![fill; 16],
+        };
+        FileScene {
+            meshes: vec![mesh(1), mesh(2)],
+            textures: vec![texture(10), texture(20), texture(30)],
+            instance_transforms: vec![Mat4::IDENTITY; 3],
+            materials: vec![Material::zeroed(); 3],
+            instance_materials: vec![0, 1, 2],
+            instance_mesh: vec![0, 1, 1],
+            instance_names: vec!["floor".into(), String::new(), "lamp.1".into()],
+            mesh_names: vec!["Plane".into(), String::new()],
+            texture_names: vec![String::new(), "bricks".into(), "wood".into()],
+        }
+    }
+
+    fn written(scene: &FileScene) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bevy::tasks::block_on(write_scene(scene, &mut bytes)).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn preview_offset_points_at_the_mesh_names() {
+        let scene = file_scene();
+        let bytes = written(&scene);
+        let offset = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
+        assert_eq!(offset as u64, preview_offset(&scene));
+
+        let block = &bytes[offset..];
+        assert_eq!(block[..8], 2u64.to_le_bytes(), "mesh count");
+        assert_eq!(block[8..16], 5u64.to_le_bytes(), "length of the first name");
+        assert_eq!(&block[16..21], b"Plane");
+        // The last instance name ends right in front of the block.
+        assert_eq!(&bytes[offset - 6..offset], b"lamp.1");
+        // The previews are the tail of the file.
+        let previews = &bytes[bytes.len() - 3 * PREVIEW_BYTES..];
+        assert!(previews[..PREVIEW_BYTES].iter().all(|b| *b == 10));
+        assert!(previews[2 * PREVIEW_BYTES..].iter().all(|b| *b == 30));
+    }
+
+    #[test]
+    fn browse_info_reads_names_and_previews() {
+        use bevy::asset::io::VecReader;
+
+        let scene = file_scene();
+        let mut reader = VecReader::new(written(&scene));
+        bevy::tasks::block_on(async {
+            let info = read_browse_info(&mut reader).await.unwrap();
+            assert_eq!(info.mesh_names, scene.mesh_names);
+            assert_eq!(info.texture_names, scene.texture_names);
+            // In any order: every read seeks.
+            for index in [2, 0, 1] {
+                let preview = read_preview(&mut reader, &info, index).await.unwrap();
+                assert!(preview == scene.textures[index].preview, "preview {index}");
+            }
+            assert!(read_preview(&mut reader, &info, 3).await.is_err());
+        });
+    }
+
+    #[test]
+    fn browse_info_of_an_empty_scene() {
+        use bevy::asset::io::VecReader;
+
+        let scene = FileScene {
+            meshes: vec![],
+            textures: vec![],
+            instance_transforms: vec![],
+            materials: vec![],
+            instance_materials: vec![],
+            instance_mesh: vec![],
+            instance_names: vec![],
+            mesh_names: vec![],
+            texture_names: vec![],
+        };
+        let bytes = written(&scene);
+        assert_eq!(bytes.len() as u64, preview_offset(&scene) + 16);
+        let mut reader = VecReader::new(bytes);
+        let info = bevy::tasks::block_on(read_browse_info(&mut reader)).unwrap();
+        assert!(info.mesh_names.is_empty() && info.texture_names.is_empty());
+    }
+
+    #[test]
+    fn alpha_cutoff_follows_the_alpha_mode() {
+        use gltf::material::AlphaMode;
+        assert_eq!(alpha_cutoff(AlphaMode::Opaque, Some(0.7)), 0.0);
+        assert_eq!(alpha_cutoff(AlphaMode::Mask, Some(0.7)), 0.7);
+        assert_eq!(alpha_cutoff(AlphaMode::Mask, None), 0.5);
+        assert_eq!(alpha_cutoff(AlphaMode::Mask, Some(0.0)), 0.5);
+        assert_eq!(alpha_cutoff(AlphaMode::Blend, None), 0.5);
+    }
+
+    #[test]
+    fn primitives_share_the_name_of_their_mesh() {
+        assert_eq!(primitive_name(Some("Cube"), 0, 1), "Cube");
+        assert_eq!(primitive_name(Some("Cube"), 1, 3), "Cube.1");
+        assert_eq!(primitive_name(None, 1, 3), "");
     }
 
     /// Builds the full LOD chain for a bumpy grid; `BvhBuilder::build` verifies the result.

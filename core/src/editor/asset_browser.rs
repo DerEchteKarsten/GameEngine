@@ -1,14 +1,15 @@
-//! Editor asset browser: directory grid with draggable assets, and dropping them into the viewport.
+//! Editor asset browser: directory grid with draggable assets that load when dropped, and dropping them into the viewport.
 use std::{
+    any::TypeId,
     borrow::Cow,
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use bevy::{
-    asset::{AssetServer, Assets, Handle, LoadState, UntypedHandle},
+    asset::{Asset, AssetPath, AssetServer, UntypedHandle},
     ecs::{
         entity::Entity,
         name::Name,
@@ -21,22 +22,25 @@ use bevy::{
     window::Window,
 };
 use glam::{Vec2, Vec4};
-use lava::bindless::BindlessHandle;
 
 use crate::{
     ASSET_DIR,
     assets::{
-        mesh::{GpuMesh, Scene},
+        mesh::{BrowseInfo, GpuMesh, Scene},
         texture::GpuTexture,
     },
-    editor::{picking::Selected, viewport::ViewPort},
+    editor::{
+        asset_preview::{AtlasCell, FileState, Previews},
+        picking::Selected,
+        viewport::ViewPort,
+    },
     physics::bvh::Raycast,
     render::world::InstanceFlags,
     scene::{Instance, MaterialSettings, SpawnScene, camera::Camera},
     ui::{
         MultiInput, UiContext,
         builder::{UiBuilder, UiWindowBuilder},
-        dragdrop::DragDrop,
+        dragdrop::{AssetDrag, DragDrop},
         from_pos_size,
         window::{BorderSettings, DrawSettings, Drawable},
     },
@@ -54,11 +58,34 @@ const SCENE_COLOR: Vec4 = Vec4::new(0.118, 0.565, 0.831, 1.0);
 const MESH_COLOR: Vec4 = Vec4::new(0.557, 0.753, 0.486, 1.0);
 const TEXTURE_COLOR: Vec4 = Vec4::new(0.827, 0.525, 0.608, 1.0);
 
+/// How to load a dragged asset once it is dropped: the type drop targets match on, and the
+/// typed load itself.
+#[derive(Clone, Copy)]
+struct AssetType {
+    id: fn() -> TypeId,
+    load: fn(&AssetServer, AssetPath<'static>) -> UntypedHandle,
+}
+
+impl AssetType {
+    const fn of<A: Asset>() -> Self {
+        Self {
+            id: TypeId::of::<A>,
+            load: |server, path| server.load::<A>(path).untyped(),
+        }
+    }
+
+    /// The drag payload for the asset at `path`. Nothing is loaded until it is dropped.
+    fn drag(self, server: &AssetServer, path: AssetPath<'static>) -> AssetDrag {
+        let server = server.clone();
+        AssetDrag::new((self.id)(), move || (self.load)(&server, path))
+    }
+}
+
 struct AssetKind {
     extension: &'static str,
     badge: &'static str,
     color: Vec4,
-    load: fn(&AssetServer, &Path) -> UntypedHandle,
+    asset: AssetType,
     container: bool,
 }
 
@@ -66,7 +93,7 @@ const ASSET_KINDS: &[AssetKind] = &[AssetKind {
     extension: "glb",
     badge: "GLB",
     color: SCENE_COLOR,
-    load: |server, path| server.load::<Scene>(path.to_path_buf()).untyped(),
+    asset: AssetType::of::<Scene>(),
     container: true,
 }];
 
@@ -101,8 +128,8 @@ pub(crate) struct BrowserState {
     history: Vec<Location>,
     entries: Vec<DirEntry>,
     last_read: Option<Instant>,
-    /// Strong handles of everything opened or dragged, so repeated drops don't reload.
-    handles: HashMap<PathBuf, UntypedHandle>,
+    previews: Previews,
+    /// The `Tile::id` of the selected tile.
     selected: Option<String>,
     last_click: Option<(Instant, String)>,
 }
@@ -113,7 +140,7 @@ impl BrowserState {
         self.entries = read_entries(&Path::new(ASSET_DIR).join(&self.location.dir));
     }
 
-    fn navigate(&mut self, nav: Nav, asset_server: &AssetServer) {
+    fn navigate(&mut self, nav: Nav) {
         match nav {
             Nav::Back => {
                 let Some(location) = self.history.pop() else {
@@ -129,52 +156,54 @@ impl BrowserState {
                 self.history.push(previous);
             }
         }
-        if let Some(scene) = &self.location.scene
-            && let Some(kind) = scene.to_str().and_then(kind_of)
-        {
-            self.handles
-                .entry(scene.clone())
-                .or_insert_with(|| (kind.load)(asset_server, scene));
-        }
         self.selected = None;
         self.last_click = None;
         self.refresh();
     }
 
     /// The tiles of the current location, or a status line when there is nothing to show.
-    fn tiles(
-        &self,
-        asset_server: &AssetServer,
-        scenes: &Assets<Scene>,
-        textures: &Assets<GpuTexture>,
-    ) -> Result<Vec<Tile>, &'static str> {
+    fn tiles(&mut self, asset_server: &AssetServer) -> Result<Vec<Tile>, &'static str> {
         let tiles = match &self.location.scene {
             Some(path) => {
-                let handle = self.handles.get(path).ok_or("Not loaded")?;
-                let scene = handle
-                    .id()
-                    .try_typed::<Scene>()
-                    .ok()
-                    .and_then(|id| scenes.get(id));
-                let Some(scene) = scene else {
-                    return Err(match asset_server.load_state(handle.id()) {
-                        LoadState::Failed(_) => "Failed to load",
-                        _ => "Loading...",
-                    });
+                let info = match self.previews.info(asset_server, path) {
+                    FileState::Ready(info) => info,
+                    FileState::Loading => return Err("Loading..."),
+                    FileState::Failed => return Err("Failed to load"),
                 };
-                let meshes = scene.meshes.iter().enumerate().map(|(i, mesh)| Tile {
-                    name: format!("mesh_{i}"),
-                    badge: "MESH",
-                    color: MESH_COLOR,
-                    content: Content::Mesh(mesh.clone()),
-                    preview: None,
+                let sub_asset = |label: String| AssetPath::from(path.clone()).with_label(label);
+                // Unnamed sub-assets show their label instead.
+                let name =
+                    |name: &String, id: &String| if name.is_empty() { id } else { name }.clone();
+                let meshes = info.mesh_names.iter().enumerate().map(|(i, mesh)| {
+                    let id = format!("mesh_{i}");
+                    Tile {
+                        name: name(mesh, &id),
+                        badge: "MESH",
+                        color: MESH_COLOR,
+                        content: Content::SubAsset(
+                            AssetType::of::<GpuMesh>(),
+                            sub_asset(id.clone()),
+                        ),
+                        preview: None,
+                        id,
+                    }
                 });
-                let textures = scene.textures.iter().enumerate().map(|(i, texture)| Tile {
-                    name: format!("texture_{i}"),
-                    badge: "TEX",
-                    color: TEXTURE_COLOR,
-                    content: Content::Texture(texture.clone()),
-                    preview: textures.get(texture).map(|texture| texture.handle()),
+                let textures = info.texture_names.iter().enumerate().map(|(i, texture)| {
+                    let id = format!("texture_{i}");
+                    Tile {
+                        name: name(texture, &id),
+                        badge: "TEX",
+                        color: TEXTURE_COLOR,
+                        content: Content::SubAsset(
+                            AssetType::of::<GpuTexture>(),
+                            sub_asset(id.clone()),
+                        ),
+                        preview: Some(Preview {
+                            info: info.clone(),
+                            index: i as u32,
+                        }),
+                        id,
+                    }
                 });
                 meshes.chain(textures).collect::<Vec<_>>()
             }
@@ -191,6 +220,7 @@ impl BrowserState {
                         ("?", UiContext::GRAB, Content::Unknown)
                     };
                     Tile {
+                        id: entry.name.clone(),
                         name: entry.name.clone(),
                         badge,
                         color,
@@ -246,21 +276,35 @@ enum Content {
     Folder(PathBuf),
     File(&'static AssetKind, PathBuf),
     Unknown,
-    Mesh(Handle<GpuMesh>),
-    Texture(Handle<GpuTexture>),
+    /// A mesh or texture inside a scene file, addressed by its labeled asset path.
+    SubAsset(AssetType, AssetPath<'static>),
+}
+
+/// The baked preview of a texture tile.
+struct Preview {
+    info: Arc<BrowseInfo>,
+    index: u32,
 }
 
 struct Tile {
+    /// Unique among the tiles shown together, unlike the names in a scene file.
+    id: String,
     name: String,
     badge: &'static str,
     color: Vec4,
     content: Content,
-    /// Image drawn in place of the badge, once it is loaded.
-    preview: Option<BindlessHandle>,
+    /// Drawn in place of the badge, once it is in the atlas.
+    preview: Option<Preview>,
 }
 
 impl Tile {
-    fn draw(&self, ui: &mut UiWindowBuilder, hovered: bool, selected: bool) {
+    fn draw(
+        &self,
+        ui: &mut UiWindowBuilder,
+        hovered: bool,
+        selected: bool,
+        preview: Option<AtlasCell>,
+    ) {
         let dim = matches!(self.content, Content::Unknown);
         let mut ds = DrawSettings::new(hovered, selected);
         if selected {
@@ -283,16 +327,16 @@ impl Tile {
             rect.min + Vec2::splat(TILE_PAD),
             Vec2::new(TILE_SIZE.x - TILE_PAD * 2.0, BADGE_HEIGHT),
         );
-        if let Some(preview) = self.preview {
+        if let Some(preview) = preview {
             let square = Rect::from_center_size(badge.center(), Vec2::splat(BADGE_HEIGHT));
             ui.ctx.window.draw_rect(
                 square,
-                Some((Vec2::ZERO, Vec2::ONE)),
+                Some((preview.uv_min, preview.uv_size)),
                 Vec4::ONE,
                 viewport_size,
                 clip,
                 false,
-                preview,
+                preview.image,
             );
         } else {
             ui.ctx.window.draw_box(
@@ -349,18 +393,17 @@ fn row_text(ui: &mut UiWindowBuilder, text: &str) {
 pub(crate) fn asset_browser(
     mut ui: UiBuilder,
     asset_server: Res<AssetServer>,
-    scenes: Res<Assets<Scene>>,
-    textures: Res<Assets<GpuTexture>>,
     mut state: Local<BrowserState>,
 ) {
     let state = &mut *state;
+    state.previews.poll();
     if state
         .last_read
         .is_none_or(|read| read.elapsed() > REFRESH_INTERVAL)
     {
         state.refresh();
     }
-    let tiles = state.tiles(&asset_server, &scenes, &textures);
+    let tiles = state.tiles(&asset_server);
 
     let mut nav = None;
     let mut refresh = false;
@@ -407,42 +450,48 @@ pub(crate) fn asset_browser(
         for row in tiles.chunks(columns) {
             ui.horizontal();
             for tile in row {
-                let hovered = ui.hoverd(from_pos_size(ui.cursor, TILE_SIZE));
-                let selected = state.selected.as_ref() == Some(&tile.name);
-                let draw = |ui: &mut UiWindowBuilder| tile.draw(ui, hovered, selected);
+                let rect = from_pos_size(ui.cursor, TILE_SIZE);
+                let hovered = ui.hoverd(rect);
+                let selected = state.selected.as_ref() == Some(&tile.id);
+                // Only tiles on screen ask for their preview, so the atlas fills as you scroll.
+                let preview = match (&tile.preview, &state.location.scene) {
+                    (Some(preview), Some(path)) if !rect.intersect(ui.clip_rect).is_empty() => {
+                        let Preview { info, index } = preview;
+                        state.previews.preview(&asset_server, path, info, *index)
+                    }
+                    _ => None,
+                };
+                let draw = |ui: &mut UiWindowBuilder| tile.draw(ui, hovered, selected, preview);
                 let icon = |ui: &mut UiWindowBuilder| ui.text(&tile.name);
                 match &tile.content {
                     Content::Folder(_) | Content::Unknown => draw(ui),
                     Content::File(kind, path) => ui.drag_source(
-                        &tile.name,
+                        &tile.id,
                         || {
-                            state
-                                .handles
-                                .entry(path.clone())
-                                .or_insert_with(|| (kind.load)(&asset_server, path))
-                                .clone()
+                            kind.asset
+                                .drag(&asset_server, AssetPath::from(path.clone()))
                         },
                         draw,
                         icon,
                     ),
-                    Content::Mesh(mesh) => {
-                        ui.asset_drag_source(&tile.name, || mesh.clone(), draw, icon)
-                    }
-                    Content::Texture(texture) => {
-                        ui.asset_drag_source(&tile.name, || texture.clone(), draw, icon)
-                    }
+                    Content::SubAsset(asset, path) => ui.drag_source(
+                        &tile.id,
+                        || asset.drag(&asset_server, path.clone()),
+                        draw,
+                        icon,
+                    ),
                 }
 
                 if !(hovered && ui.ctx.input.primary_pressed) {
                     continue;
                 }
-                state.selected = Some(tile.name.clone());
+                state.selected = Some(tile.id.clone());
                 let now = Instant::now();
-                let double_click = state.last_click.as_ref().is_some_and(|(time, name)| {
-                    *name == tile.name && now.duration_since(*time) < DOUBLE_CLICK
+                let double_click = state.last_click.as_ref().is_some_and(|(time, id)| {
+                    *id == tile.id && now.duration_since(*time) < DOUBLE_CLICK
                 });
                 if !double_click {
-                    state.last_click = Some((now, tile.name.clone()));
+                    state.last_click = Some((now, tile.id.clone()));
                     continue;
                 }
                 state.last_click = None;
@@ -467,10 +516,14 @@ pub(crate) fn asset_browser(
     });
 
     if refresh {
+        // A reimported file has new names and previews.
+        if let Some(scene) = &state.location.scene {
+            state.previews.forget(scene);
+        }
         state.refresh();
     }
     if let Some(nav) = nav {
-        state.navigate(nav, &asset_server);
+        state.navigate(nav);
     }
 }
 

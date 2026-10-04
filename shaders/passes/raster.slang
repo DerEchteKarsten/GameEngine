@@ -84,6 +84,10 @@ PSOutput raster_fragment(in VSOutput input)
     if (material.color_texture != NO_TEXTURE) {
         color *= sample_texture(material.color_texture, input.uv);
     }
+    // Alpha test: there is no blending, so a fragment is either drawn or not.
+    if (color.a < material.alpha_cutoff) {
+        discard;
+    }
     var metallic = material.metalic_factor;
     var roughness = material.roughness_factor;
     if (material.metallic_roughness_texture != NO_TEXTURE) {
@@ -132,7 +136,8 @@ PSOutput raster_fragment(in VSOutput input)
     var random = RandomSamplerState(uint2(input.meshlet, 0), 0);
 
     PSOutput output;
-    output.color = float4(lit, 1.0);
+    // output.color = float4(lit, 1.0);
     // output.color = float4(random.uniform_float(), random.uniform_float(), random.uniform_float(), 1.0);
+    output.color = float4(color.rgb, 1.0);
     return output;
 }

@@ -20,7 +20,7 @@ If you find that something in this file or the injected code map is wrong or out
 - `lava-macros`: proc macros for lava (validation tracing).
 - `lava`: Vulkan abstraction over `ash` + `gpu-allocator`. Global `Ctx` state, bindless descriptors (`BindlessHandle`), `lava::init(Option<display>)` (`None` = headless), per-window `Surface` + `Swapchain` objects, usage-typed `Buffer`/`BufferSlice` and `Image`/`ImageView` (type-state generics `F: Format`, `U: *Usage`), `CommandBuffer` with automatic barrier tracking, and `RasterBuilder`/`compute`/`raytrace` dispatch.
 - `core`: engine library made of bevy plugins wired in `core/src/lib.rs::CorePlugin`. It covers assets (glTF → meshlet meshes + textures via the bevy asset processor), the render sub-app (pipelined, `ExtractSchedule`), a custom immediate-mode UI with docking, the editor (gizmos, picking, console, asset browser), physics (BVH raycasts), and the scene.
-- `game`: binary. Spawns a camera and a glTF scene.
+- `game`: the game binary (spawns a camera) plus two headless tools in `game/src/bin`: `import` and `render` (see Headless tools).
 - `tools`: dev tool that generates the Claude Code context (code map + API files) from the sources.
 
 ## Viewport
@@ -28,6 +28,20 @@ If you find that something in this file or the injected code map is wrong or out
 - Without `EditorPlugin` there is no `ViewPort`, and the same passes draw straight into the swapchain image.
 - Lava hands released bindless slots out again when an `Image` is dropped.
 - An empty `DockingNode` leaf (`window: u32::MAX`) is just free space; a window dropped on it fills it.
+
+## Headless tools (use these to check your work)
+- **Render to a PNG:** `PATH=$HOME/.cargo/bin:$PATH cargo +nightly run -q -p game --bin render -- game/scenes/sponza.ron /tmp/out.png`, then Read the PNG. The RON file gives image size, camera (`position`, `look_at`, `fov` in degrees) and scene files with transforms; `game/scenes/sponza.ron` is the template. Takes about 3 s for sponza. Write the PNG outside `target/`, which is denied for reading.
+- It runs `RenderPlugin { headless: Some(size) }` (`core/src/render/headless.rs`): no window, swapchain, UI or pipelined render thread; the scene passes (`record_scene` in `render.rs`, shared with the windowed frame) draw into an RGBA8 image that `read_frame` copies back.
+- **Import without the game:** `cargo +nightly run -q -p game --bin import -- [--force [FILE...]]` bakes new or changed assets, needs no GPU, and prints the peak memory (sponza: about 130 s, 4 GiB). Any change to the baked layout (`write_scene`, the `Material` struct) needs `--force`.
+- Tracy is built with `ondemand`: without it the client buffers every span until a profiler connects, which grew the idle game by 10 MB/s.
+
+## Scene files and the asset browser
+- A baked scene (`game/imported_assets/*.glb`, written by `write_scene` in `core/src/assets/mesh.rs`) starts with a `u64` offset to its preview block, has no magic or version (a layout change needs a reimport), and ends with: one name per instance, then at the offset the mesh names, texture names, and one square `PREVIEW_SIZE` RGBA8 preview per texture. The full load reads up to and including the names.
+- The browser never holds asset handles. `editor/asset_preview.rs` reads only the preview block (`read_browse_info`/`read_preview`, through the asset source's processed reader on the `IoTaskPool`) into two fixed-size least-recently-used caches: names of 16 files, and 256 previews in one main-world atlas image written by `Image::copy_region_from`.
+- Dragging carries an `AssetDrag` (`ui/dragdrop.rs`), which loads the asset only when a drop target takes it (`drop_in_viewport`, the inspector's handle slots).
+
+## Materials
+- `Material` (`shaders/include/datatypes.slang`, mirrored by `MaterialSettings`) is baked into scene files, so changing it needs a reimport. There is no blending: `alpha_cutoff` discards fragments in `raster.slang`. The importer sets it to 0 for opaque glTF materials, and to the default 0.5 for blended ones and for masks with a cutoff of 0.
 
 ## Shader pipeline
 - Source: `shaders/passes/*.slang` (one file = one pass) and `shaders/include/*.slang`. `shaders/old/` is dead code.
@@ -47,7 +61,7 @@ If you find that something in this file or the injected code map is wrong or out
 - Slang gives shaders D3D-style `SV_VertexID`/`SV_InstanceID` (without `first_vertex`/`first_instance`).
 
 ## Commands
-- The glTF importer bakes results into `game/imported_assets`. After changing it, delete the `*.glb.meta` files there to force a reimport (sponza takes about 3 minutes).
+- The glTF importer bakes results into `game/imported_assets`. After changing it, run the `import` tool with `--force` (sponza takes about 2 minutes).
 - **Needs nightly.** `/usr/bin/cargo` (Arch stable) shadows rustup, so use `PATH=$HOME/.cargo/bin:$PATH cargo +nightly check` (or `build`/`run -p game`). Plain `cargo` fails with E0554. The asset paths in `CorePlugin` are absolute (`core::ASSET_DIR` = `game/assets`, which is also the asset browser root, and `game/imported_assets`).
 - Slang SDK lives in `lava/slang/` (gitignored). Linking goes through `.cargo/config.toml` (`SLANG_DIR` and rpath). `build.rs` links `slang-compiler` explicitly because `-lslang` would pick up the unrelated S-Lang library.
 - Profiling: tracing + tracy (`tracing-tracy`).

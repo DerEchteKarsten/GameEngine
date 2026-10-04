@@ -2110,6 +2110,10 @@ dependencies = [
  "bevy",
  "core",
  "glam",
+ "png",
+ "ron",
+ "serde",
+ "tracing",
 ]
 
 [[package]]

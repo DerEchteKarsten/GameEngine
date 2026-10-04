@@ -1,5 +1,6 @@
-//! Pipelined render sub-app: schedules, main-world extraction and Vulkan initialization.
+//! Render sub-app, windowed (pipelined) or headless: schedules, main-world extraction and Vulkan initialization.
 use crate::render::{
+    headless::HeadlessSize,
     render::{RenderPassesPlugin, resize_swapchain},
     world::WorldPlugin,
 };
@@ -22,9 +23,11 @@ use bevy::{
     utils::default,
     window::{PrimaryWindow, RawHandleWrapperHolder},
 };
+use glam::UVec2;
 use std::ops::{Deref, DerefMut};
 
 pub mod extract_param;
+pub mod headless;
 pub mod render;
 pub mod world;
 
@@ -242,8 +245,6 @@ fn renderer_extract(app_world: &mut World, _world: &mut World) {
     });
 }
 
-/// Surface of the primary window. Created on the main world next to `lava::init`, moved into
-/// the render world before `RenderStartup`, and taken by the swapchain there.
 #[derive(Resource)]
 pub struct PrimarySurface(pub Option<lava::vkobjects::surface::Surface>);
 
@@ -273,11 +274,18 @@ fn init(
 }
 
 #[derive(Default, Debug)]
-pub struct RenderPlugin;
+pub struct RenderPlugin {
+    pub headless: Option<UVec2>,
+}
 
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, init);
+        match self.headless {
+            Some(size) => app
+                .add_systems(PreStartup, headless::init)
+                .insert_resource(HeadlessSize(size)),
+            None => app.add_systems(PreStartup, init),
+        };
         app.init_resource::<ScratchMainWorld>();
 
         let mut render_app = SubApp::new();
@@ -296,7 +304,6 @@ impl Plugin for RenderPlugin {
             .add_schedule(Render::base_schedule())
             .init_schedule(RenderSystems::AquireSwapchainImage)
             .init_schedule(RenderSystems::PreRender)
-            .add_systems(ExtractSchedule, resize_swapchain)
             .add_systems(
                 Render,
                 apply_extract_commands.in_set(RenderSystems::ApplyExtractCommands),
@@ -312,8 +319,15 @@ impl Plugin for RenderPlugin {
 
                 extract(main_world, render_world);
             })
-            .add_plugins(WorldPlugin)
-            .add_plugins(RenderPassesPlugin);
+            .add_plugins(WorldPlugin);
+        match self.headless {
+            Some(size) => headless::build(&mut render_app, size),
+            None => {
+                render_app
+                    .add_systems(ExtractSchedule, resize_swapchain)
+                    .add_plugins(RenderPassesPlugin);
+            }
+        }
 
         app.insert_sub_app(RenderApp, render_app);
     }

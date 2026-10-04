@@ -5,6 +5,7 @@ use bevy::{
     ecs::{
         component::Component,
         entity::Entity,
+        name::Name,
         resource::Resource,
         system::{Commands, Query, Res},
     },
@@ -47,6 +48,8 @@ pub struct MaterialSettings {
     pub roughness_factor: f32,
     pub normal_scale: f32,
     pub occlusion_strength: f32,
+    /// Fragments with less alpha are not drawn. 0 draws everything.
+    pub alpha_cutoff: f32,
     pub color_texture: Option<Handle<GpuTexture>>,
     pub metallic_roughness_texture: Option<Handle<GpuTexture>>,
     pub normal_texture: Option<Handle<GpuTexture>>,
@@ -63,6 +66,7 @@ impl Default for MaterialSettings {
             roughness_factor: 1.0,
             normal_scale: 1.0,
             occlusion_strength: 1.0,
+            alpha_cutoff: 0.0,
             color_texture: None,
             metallic_roughness_texture: None,
             normal_texture: None,
@@ -89,11 +93,13 @@ impl MaterialSettings {
             roughness_factor: self.roughness_factor,
             normal_scale: self.normal_scale,
             occlusion_strength: self.occlusion_strength,
+            alpha_cutoff: self.alpha_cutoff,
             color_texture: index(&self.color_texture),
             metallic_roughness_texture: index(&self.metallic_roughness_texture),
             normal_texture: index(&self.normal_texture),
             occlusion_texture: index(&self.occlusion_texture),
             emissive_texture: index(&self.emissive_texture),
+            pad: Vec3::ZERO,
         }
     }
 }
@@ -120,10 +126,14 @@ fn add_sub_instances(
             .entity(entity)
             .with_children(|parent| {
                 for instance in 0..scene.instance_transforms.len() {
-                    parent.spawn((
+                    let mut child = parent.spawn((
                         scene.get_instance(instance, InstanceFlags::empty()),
                         scene.get_transform(instance),
                     ));
+                    let name = &scene.instance_names[instance];
+                    if !name.is_empty() {
+                        child.insert(Name::new(name.clone()));
+                    }
                 }
             })
             .remove::<SpawnScene>();

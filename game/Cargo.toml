@@ -2,11 +2,16 @@
 name = "game"
 version.workspace = true
 edition.workspace = true
+default-run = "game"
 
 [dependencies]
 core = { version = "0.1.0", path = "../core" }
 glam = {workspace = true}
 bevy = {workspace = true}
+tracing = {workspace = true}
+ron = {workspace = true}
+serde = {workspace = true}
+png = {workspace = true}
 
 [features]
 default = ["dynamic_linking"]

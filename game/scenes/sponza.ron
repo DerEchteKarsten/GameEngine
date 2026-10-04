@@ -1,0 +1,12 @@
+// Scene for the headless renderer: `cargo run -p game --bin render -- game/scenes/sponza.ron out.png`
+(
+    size: (1280, 720),
+    camera: (
+        position: (0.0, 2.0, 0.0),
+        look_at: (10.0, 3.0, 0.0),
+        fov: 65.0,
+    ),
+    scenes: [
+        (path: "sponza.glb"),
+    ],
+)

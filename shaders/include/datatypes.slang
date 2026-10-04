@@ -107,11 +107,15 @@ struct Material {
     float roughness_factor;
     float normal_scale;
     float occlusion_strength;
+    // Fragments with less alpha are discarded. 0 for opaque materials, whose alpha is ignored.
+    float alpha_cutoff;
     uint color_texture;
     uint metallic_roughness_texture;
     uint normal_texture;
     uint occlusion_texture;
     uint emissive_texture;
+    // Keeps the size a multiple of 16 bytes, the alignment of `color` on the CPU side.
+    float3 pad;
 }
 
 

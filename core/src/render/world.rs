@@ -28,12 +28,12 @@ use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue, Transfer};
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
 
+use crate::INITIAL_WINDOW_SIZE;
 use crate::assets::material::{Material, set_texture_indices};
 use crate::assets::mesh::{GpuMesh, MeshHeader};
 use crate::assets::texture::GpuTexture;
 use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
-use crate::INITIAL_WINDOW_SIZE;
 use crate::render::MainWorld;
 use crate::render::extract_param::Extract;
 use crate::render::render::{
@@ -475,7 +475,7 @@ fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res<FrameCount
     instances.pending_instances.clear();
 }
 
-fn extract_view_port(
+pub(super) fn extract_view_port(
     mut world: ResMut<MainWorld>,
     mut target: ResMut<ViewPortTarget>,
     swapchain: Res<Swapchain>,
@@ -502,9 +502,6 @@ fn extract_view_port(
 #[allow(non_snake_case)]
 pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
-        .add_systems(
-            ExtractSchedule,
-            (extract_meshlet_instances, extract_camera, extract_view_port),
-        )
+        .add_systems(ExtractSchedule, (extract_meshlet_instances, extract_camera))
         .add_systems(RenderSystems::PreRender, wirte_instances);
 }

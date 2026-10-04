@@ -1,4 +1,4 @@
-//! Engine core: assembles bevy, rendering, assets, scene, UI, editor and physics plugins.
+//! Engine core: assembles bevy, rendering, assets, scene, UI, editor and physics plugins, and the shared asset setup.
 // Needed to call `BindingOutput`'s access-registering methods, whose return type is `{ N + 1 }`.
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
@@ -46,7 +46,20 @@ pub mod ui;
 
 /// Root of the unprocessed assets: the asset server's source and the asset browser's root.
 pub const ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/assets";
+/// Where the asset processor bakes the assets to, and where they are loaded from.
+pub const IMPORTED_ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/imported_assets";
 pub const INITIAL_WINDOW_SIZE: Vec2 = Vec2::new(2000.0, 2000.0 * 9.0 / 16.0);
+
+/// The asset server setup shared by the game and the headless tools: sources in `ASSET_DIR`
+/// are baked into `IMPORTED_ASSET_DIR` by the asset processor and loaded from there.
+pub fn asset_plugin() -> AssetPlugin {
+    AssetPlugin {
+        mode: AssetMode::Processed,
+        file_path: ASSET_DIR.to_string(),
+        processed_file_path: IMPORTED_ASSET_DIR.to_string(),
+        ..Default::default()
+    }
+}
 
 #[allow(non_snake_case)]
 pub fn CorePlugin(app: &mut App) {
@@ -56,12 +69,7 @@ pub fn CorePlugin(app: &mut App) {
             level: Level::DEBUG,
             ..Default::default()
         },
-        AssetPlugin {
-            mode: AssetMode::Processed,
-            file_path: ASSET_DIR.to_string(),
-            processed_file_path: "/home/karsten/code/GameEngine/game/imported_assets".to_string(),
-            ..Default::default()
-        },
+        asset_plugin(),
         WinitPlugin::default(),
         WindowPlugin {
             primary_window: Some(Window {
@@ -86,7 +94,7 @@ pub fn CorePlugin(app: &mut App) {
         TransformPlugin,
     ))
     .add_plugins((
-        RenderPlugin,
+        RenderPlugin::default(),
         PipelinedRenderingPlugin,
         UiPlugin,
         PhysicsPlugin,
