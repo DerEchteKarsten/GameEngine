@@ -1,11 +1,14 @@
-//! Immediate-mode UI builder API: windows, layout and widgets like buttons, sliders, inputs.
+//! Immediate-mode UI builder API: windows, layout, widgets and drag-and-drop sources/targets.
 use std::{
+    any::Any,
     hash::{DefaultHasher, Hash, Hasher},
     num::NonZeroU64,
     ops::Rem,
+    sync::Mutex,
 };
 
 use bevy::{
+    asset::{Asset, Handle, UntypedHandle},
     ecs::{
         message::MessageReader,
         system::{Res, Single, SystemParam, lifetimeless},
@@ -22,12 +25,16 @@ use bevy::{
 };
 use glam::{Vec2, Vec4};
 use itertools::Itertools;
-use lava::bindings::UIVertex;
+use lava::{bindings::UIVertex, bindless::BindlessHandle};
 
 use crate::ui::{
-    Draggable, FocusedState, MultiInput, UiContext, UiWindows, from_pos_size,
+    Draggable, FocusedState, MultiInput, UiContext, UiWindows, WindowCommand,
+    dragdrop::{DragDrop, is_handle_of},
+    from_pos_size,
     scrollable::Scrollable,
-    window::{BorderSettings, DrawSettings, Drawable, Tab, TabState, TextDirection, UiWindow},
+    window::{
+        BorderSettings, DrawSettings, Drawable, Tab, TabState, TextDirection, UiOverlay, UiWindow,
+    },
 };
 
 #[derive(SystemParam)]
@@ -39,22 +46,86 @@ pub struct UiBuilder<'w, 's> {
     windows: Res<'w, UiWindows>,
     keys: MessageReader<'w, 's, KeyboardInput>,
     keyspressed: Res<'w, ButtonInput<KeyCode>>,
+    dnd: Res<'w, DragDrop>,
 }
 
 impl<'s, 'w> UiBuilder<'w, 's> {
+    /// Shorthand for `self.window(label).build(f)`.
     pub fn build(
         &mut self,
         label: impl AsRef<str>,
         f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>),
     ) {
-        let input = MultiInput::new(&self.window, &self.mouse, &self.touch);
+        self.window(label.as_ref()).build(f);
+    }
+
+    /// Starts a window that can be given an initial position and size before it is built.
+    pub fn window<'a>(&'a mut self, label: &'a str) -> UiWindowConfig<'a, 'w, 's> {
+        UiWindowConfig {
+            ui: self,
+            label,
+            pos: None,
+            size: None,
+        }
+    }
+
+    /// Hides the window (or tab) with this label until `open` is called. Later `build` calls
+    /// for it are skipped. Does nothing for unknown labels, so it can be called every frame.
+    pub fn close(&self, label: impl AsRef<str>) {
+        self.push_command(WindowCommand::Close(label.as_ref().to_string()));
+    }
+
+    /// Shows a closed window again, floating at its last rect. Does nothing for unknown
+    /// labels, so it can be called every frame.
+    pub fn open(&self, label: impl AsRef<str>) {
+        self.push_command(WindowCommand::Open(label.as_ref().to_string()));
+    }
+
+    fn push_command(&self, command: WindowCommand) {
+        if let Ok(mut commands) = self.windows.commands.lock() {
+            commands.push(command);
+        }
+    }
+}
+
+pub struct UiWindowConfig<'a, 'w, 's> {
+    ui: &'a mut UiBuilder<'w, 's>,
+    label: &'a str,
+    pos: Option<Vec2>,
+    size: Option<Vec2>,
+}
+
+impl<'a, 'w, 's> UiWindowConfig<'a, 'w, 's> {
+    /// Initial position in physical pixels. Only applies when the window is first created.
+    pub fn position(mut self, pos: Vec2) -> Self {
+        self.pos = Some(pos);
+        self
+    }
+
+    /// Initial size in physical pixels. Only applies when the window is first created.
+    pub fn size(mut self, size: Vec2) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    pub fn build(self, f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>)) {
+        let Self {
+            ui,
+            label,
+            pos,
+            size,
+        } = self;
+        let input = MultiInput::new(&ui.window, &ui.mouse, &ui.touch);
         let mut hovered = input.cursor_pos.is_some();
         let mut window: Option<&UiWindow> = None;
         let mut tab: Option<&Tab> = None;
-        for w in self.windows.windows.iter() {
+        for w in ui.windows.windows.iter() {
             let Some(w) = w else { continue };
             for (i, t) in w.tabs.iter().enumerate() {
-                if t.label.as_str() == label.as_ref() {
+                if t.label.as_str() == label {
+                    if w.hidden {
+                        return;
+                    }
                     window = Some(w);
                     tab = Some(t);
 
@@ -64,25 +135,29 @@ impl<'s, 'w> UiBuilder<'w, 's> {
                     break;
                 }
             }
-            if w.rect.contains(input.cursor_pos.unwrap_or_default()) && window.is_none() {
+            if !w.hidden
+                && w.rect.contains(input.cursor_pos.unwrap_or_default())
+                && window.is_none()
+            {
                 hovered = false;
             }
         }
 
         let Some(tab) = tab else {
-            let Ok(mut add_windows) = self.windows.add_windows.lock() else {
-                return;
-            };
-            add_windows.push(label.as_ref().to_string());
+            ui.push_command(WindowCommand::Add {
+                label: label.to_string(),
+                pos,
+                size,
+            });
             return;
         };
         let window = window.unwrap();
 
-        let scroll = Res::clone(&self.scroll);
-        let shift = self.keyspressed.pressed(KeyCode::ShiftLeft)
-            || self.keyspressed.pressed(KeyCode::ShiftRight);
-        let ctrl = self.keyspressed.pressed(KeyCode::ControlLeft)
-            || self.keyspressed.pressed(KeyCode::ControlRight);
+        let scroll = Res::clone(&ui.scroll);
+        let shift = ui.keyspressed.pressed(KeyCode::ShiftLeft)
+            || ui.keyspressed.pressed(KeyCode::ShiftRight);
+        let ctrl = ui.keyspressed.pressed(KeyCode::ControlLeft)
+            || ui.keyspressed.pressed(KeyCode::ControlRight);
 
         let Ok(mut state) = tab.state.lock() else {
             return;
@@ -99,12 +174,14 @@ impl<'s, 'w> UiBuilder<'w, 's> {
             focused_state,
             &tab.label,
             input,
-            &self.window,
+            &ui.window,
             scroll,
-            &mut self.keys,
+            &mut ui.keys,
             shift,
             ctrl,
             hovered,
+            &ui.dnd,
+            &ui.windows.overlay,
             f,
         );
     }
@@ -179,6 +256,8 @@ pub struct UiWindowContext<'a, 'w, 's> {
     pub ctrl: bool,
     pub shift: bool,
     pub hovered: bool,
+    pub dnd: &'a DragDrop,
+    pub overlay: &'a Mutex<UiOverlay>,
 }
 
 pub struct UiWindowBuilder<'a, 'w, 's> {
@@ -250,13 +329,6 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32, a: f32) -> Vec4 {
         _ => (v, p, q),
     };
     Vec4::new(r, g, b, a)
-}
-
-#[derive(Default)]
-pub struct DraggableState {
-    pub drag_started: bool,
-    pub draging: bool,
-    pub dropped: bool,
 }
 
 impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
@@ -337,6 +409,22 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         self.colored_text(label, self.text_color());
     }
 
+    pub fn image(&mut self, image: BindlessHandle, size: Vec2) {
+        if self.begin_element(size, false) {
+            return;
+        }
+        self.ctx.window.draw_rect(
+            from_pos_size(self.cursor, size),
+            Some((Vec2::ZERO, Vec2::ONE)),
+            Vec4::ONE,
+            self.ctx.viewport_size,
+            self.clip_rect,
+            false,
+            image,
+        );
+        self.finish_element(size, false);
+    }
+
     pub fn wrapping_text(&mut self, text: impl AsRef<str>, max_width: f32, color: Vec4) {
         let mut size = Vec2::ZERO;
         let mut pen = self.cursor;
@@ -361,6 +449,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 self.ctx.viewport_size,
                 self.clip_rect,
                 false,
+                BindlessHandle::default(),
             );
             pen.x +=
                 UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32;
@@ -426,18 +515,19 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         clicked
     }
 
-    pub fn droppable<S>(
+    /// Makes `children` a drop target for payloads of type `T` that pass `accept`. While such
+    /// a payload hovers it the target is outlined. Returns the payload on the frame it is
+    /// released over the target.
+    pub fn drop_target<T: Any>(
         &mut self,
-        state: &mut S,
-        valid_drop_target: impl FnOnce() -> bool,
-        children: impl FnOnce(&mut Self, &mut S),
-        on_drop: impl FnOnce(&mut S),
-    ) {
+        accept: impl Fn(&T) -> bool,
+        children: impl FnOnce(&mut Self),
+    ) -> Option<T> {
         let prev = self.cursor;
         let content_max = self.content_max;
 
         self.content_max = Vec2::ZERO;
-        children(self, state);
+        children(self);
         let rect = Rect::from_corners(prev, self.content_max);
 
         let ds = DrawSettings {
@@ -448,8 +538,9 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             ..Default::default()
         };
 
+        let mut dropped = None;
         let hoverd = self.ctx.input.hovered(rect);
-        if self.ctx.hovered && hoverd && valid_drop_target() {
+        if self.ctx.hovered && hoverd && self.ctx.dnd.accepts(&accept) {
             let rect = Rect::from_corners(
                 rect.min - Vec2::new(4.0, 4.0),
                 rect.max + Vec2::new(4.0, 4.0),
@@ -460,16 +551,20 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 .draw_box(rect, ds, self.ctx.viewport_size, self.clip_rect);
 
             if self.ctx.input.primary_released {
-                on_drop(state);
+                dropped = self.ctx.dnd.take(&accept);
             }
         }
         self.content_max = self.content_max.max(content_max);
+        dropped
     }
 
-    pub fn draggable(
+    /// Makes `children` draggable. `payload` is called once, when the drag threshold is
+    /// crossed, and `drag_icon` is drawn at the cursor above all windows while dragging.
+    pub fn drag_source<T: Any + Send + Sync>(
         &mut self,
         id: impl Hash,
-        children: impl FnOnce(&mut Self, DraggableState),
+        payload: impl FnOnce() -> T,
+        children: impl FnOnce(&mut Self),
         drag_icon: impl FnOnce(&mut Self),
     ) {
         let id = self.id(&id);
@@ -478,26 +573,25 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let content_max = self.content_max;
         self.content_max = Vec2::ZERO;
 
-        let mut drag_state = DraggableState::default();
-        if let Some(focused) = self.ctx.focused {
-            if focused.draging == Some(Draggable::Element(id))
-                && (focused.drag_start - self.ctx.input.cursor_pos.unwrap()).length()
-                    > UiContext::DRAG_THRESHHOLD
-            {
-                focused.draging = Some(Draggable::DragAndDrop(id));
-                drag_state.drag_started = true;
-            }
-            drag_state.draging = focused.draging == Some(Draggable::DragAndDrop(id));
+        if let Some(focused) = self.ctx.focused
+            && focused.draging == Some(Draggable::Element(id))
+            && let Some(cursor_pos) = self.ctx.input.cursor_pos
+            && (focused.drag_start - cursor_pos).length() > UiContext::DRAG_THRESHHOLD
+        {
+            focused.draging = Some(Draggable::DragAndDrop(id));
+            self.ctx.dnd.begin(payload());
         }
 
-        children(self, drag_state);
+        children(self);
         let rect = Rect::from_corners(prev, self.content_max);
 
         if let Some(focused) = self.ctx.focused {
-            let hoverd = self.ctx.input.hovered(rect);
-            if hoverd && self.ctx.input.primary_pressed {
+            if let Some(cursor_pos) = self.ctx.input.cursor_pos
+                && rect.contains(cursor_pos)
+                && self.ctx.input.primary_pressed
+            {
                 focused.draging = Some(Draggable::Element(id));
-                focused.drag_start = self.ctx.input.cursor_pos.unwrap();
+                focused.drag_start = cursor_pos;
             }
 
             if focused.draging == Some(Draggable::DragAndDrop(id)) {
@@ -508,12 +602,36 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         self.content_max = self.content_max.max(content_max);
     }
 
+    /// `drag_source` for an asset handle. `handle` is only called when the drag starts, so it
+    /// can load the asset lazily.
+    pub fn asset_drag_source<A: Asset>(
+        &mut self,
+        id: impl Hash,
+        handle: impl FnOnce() -> Handle<A>,
+        children: impl FnOnce(&mut Self),
+        drag_icon: impl FnOnce(&mut Self),
+    ) {
+        self.drag_source(id, || handle().untyped(), children, drag_icon);
+    }
+
+    /// `drop_target` that only accepts handles to an `A`.
+    pub fn asset_drop_target<A: Asset>(
+        &mut self,
+        children: impl FnOnce(&mut Self),
+    ) -> Option<Handle<A>> {
+        self.drop_target::<UntypedHandle>(is_handle_of::<A>, children)
+            .and_then(|handle| handle.try_typed::<A>().ok())
+    }
+
     fn render_drag_icon(&mut self, drag_icon: impl FnOnce(&mut Self)) {
+        let Some(cursor_pos) = self.ctx.input.cursor_pos else {
+            return;
+        };
         let verticies = std::mem::take(&mut self.ctx.window.verticies);
         let indicies = std::mem::take(&mut self.ctx.window.indicies);
 
         let cursor = self.cursor;
-        self.cursor = self.ctx.input.cursor_pos.unwrap();
+        self.cursor = cursor_pos;
         let clip_rect = self.clip_rect;
         self.clip_rect = Rect::from_corners(Vec2::ZERO, self.ctx.viewport_size);
 
@@ -521,21 +639,16 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         drag_icon(self);
         self.content_max = content_max;
 
-        let offset = self.ctx.window.top_verticies.len();
-        self.ctx
-            .window
-            .top_verticies
-            .append(&mut self.ctx.window.verticies);
-        self.ctx.window.top_indicies.extend(
-            self.ctx
-                .window
+        let icon_verticies = std::mem::replace(&mut self.ctx.window.verticies, verticies);
+        let icon_indicies = std::mem::replace(&mut self.ctx.window.indicies, indicies);
+        if let Ok(mut overlay) = self.ctx.overlay.lock() {
+            let offset = overlay.verticies.len() as u32;
+            overlay.verticies.extend(icon_verticies);
+            overlay
                 .indicies
-                .drain(..)
-                .map(|i| i + offset as u32),
-        );
+                .extend(icon_indicies.into_iter().map(|i| i + offset));
+        }
 
-        self.ctx.window.verticies = verticies;
-        self.ctx.window.indicies = indicies;
         self.cursor = cursor;
         self.clip_rect = clip_rect;
     }
@@ -964,6 +1077,60 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         value
     }
 
+    /// Draws a bar filled to `fraction` (clamped to 0..=1) with `label` centered on top.
+    /// Pass an empty label for a plain bar.
+    pub fn progress_bar(&mut self, fraction: f32, width: f32, label: impl AsRef<str>) {
+        let size = Self::contain_size(Vec2::new(width, UiContext::ATLAS_CELL_SIZE.y as f32));
+        if self.begin_element(size, false) {
+            return;
+        }
+        let fraction = if fraction.is_nan() {
+            0.0
+        } else {
+            fraction.clamp(0.0, 1.0)
+        };
+
+        let rect = from_pos_size(self.cursor, size);
+        self.ctx.window.draw_box(
+            rect,
+            DrawSettings {
+                color: UiContext::BG_DARK,
+                ..Default::default()
+            },
+            self.ctx.viewport_size,
+            self.clip_rect,
+        );
+
+        let track = rect.inflate(-(UiContext::BORDER.max(UiContext::ROUNDING) as f32));
+        let fill_width = (track.width() * fraction).round();
+        if fill_width > 0.0 {
+            self.ctx.window.draw_rect(
+                from_pos_size(track.min, Vec2::new(fill_width, track.height())),
+                None,
+                if self.disable_all_input {
+                    UiContext::ACENT_DIM
+                } else {
+                    UiContext::ACENT
+                },
+                self.ctx.viewport_size,
+                self.clip_rect,
+                false,
+                BindlessHandle::default(),
+            );
+        }
+
+        let label = label.as_ref();
+        if !label.is_empty() {
+            let text_pos = Vec2::new(
+                rect.center().x - UiContext::text_len(label) / 2.0,
+                self.child_cursor().y,
+            )
+            .round();
+            self.draw_text(text_pos, label, track.intersect(self.clip_rect), false);
+        }
+        self.finish_element(size, false);
+    }
+
     pub fn dropdown(&mut self, id: impl Hash, mut selected: usize, options: &[&str]) -> usize {
         let id = self.id(&id);
 
@@ -1332,21 +1499,25 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                         pos: to_ndc(Vec2::new(cmin_x, cmin_y)),
                         color: bilerp(cmin_x, cmin_y),
                         uv: solid,
+                        ..Default::default()
                     },
                     UIVertex {
                         pos: to_ndc(Vec2::new(cmax_x, cmin_y)),
                         color: bilerp(cmax_x, cmin_y),
                         uv: solid,
+                        ..Default::default()
                     },
                     UIVertex {
                         pos: to_ndc(Vec2::new(cmax_x, cmax_y)),
                         color: bilerp(cmax_x, cmax_y),
                         uv: solid,
+                        ..Default::default()
                     },
                     UIVertex {
                         pos: to_ndc(Vec2::new(cmin_x, cmax_y)),
                         color: bilerp(cmin_x, cmax_y),
                         uv: solid,
+                        ..Default::default()
                     },
                 ]);
                 idxs.extend_from_slice(&[vi, vi + 1, vi + 2, vi, vi + 3, vi + 2]);
@@ -1373,6 +1544,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                         self.ctx.viewport_size,
                         self.clip_rect,
                         false,
+                        BindlessHandle::default(),
                     );
                 }
             }
@@ -1414,6 +1586,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 self.ctx.viewport_size,
                 self.clip_rect,
                 false,
+                BindlessHandle::default(),
             );
             self.ctx.window.draw_rect(
                 from_pos_size(cx - Vec2::new(1.0, cross), Vec2::new(2.0, cross * 2.0)),
@@ -1422,6 +1595,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 self.ctx.viewport_size,
                 self.clip_rect,
                 false,
+                BindlessHandle::default(),
             );
         }
 
@@ -1458,6 +1632,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 self.ctx.viewport_size,
                 self.clip_rect,
                 false,
+                BindlessHandle::default(),
             );
         }
 
@@ -1487,6 +1662,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 self.ctx.viewport_size,
                 self.clip_rect,
                 false,
+                BindlessHandle::default(),
             );
         }
 
@@ -1499,6 +1675,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 self.ctx.viewport_size,
                 self.clip_rect,
                 false,
+                BindlessHandle::default(),
             );
         }
 
@@ -1739,6 +1916,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 self.ctx.viewport_size,
                 self.clip_rect,
                 false,
+                BindlessHandle::default(),
             );
             if self.hoverd(value_rect) {
                 self.tooltip_label(format!("{:.5}", value));

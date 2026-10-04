@@ -64,16 +64,18 @@ pub fn update_camera(
         if keys.pressed(KeyCode::ArrowRight) {
             *yaw += settings.keyboard_sensitivity * delta_time;
         }
+    }
+    // Released outside the focus check: the viewport can lose focus the moment the button
+    // goes up, and the cursor must not stay locked.
+    if vp.focused() && mouse_buttons.pressed(MouseButton::Right) {
         let size = vp.size();
-        if mouse_buttons.pressed(MouseButton::Right) {
-            *pitch -= mouse_motion.delta.y / size.y as f32 * settings.sensitivity;
-            *yaw += mouse_motion.delta.x / size.x as f32 * settings.sensitivity;
-            cursor.grab_mode = CursorGrabMode::Locked;
-            cursor.visible = false;
-        } else {
-            cursor.grab_mode = CursorGrabMode::None;
-            cursor.visible = true;
-        }
+        *pitch -= mouse_motion.delta.y / size.y as f32 * settings.sensitivity;
+        *yaw += mouse_motion.delta.x / size.x as f32 * settings.sensitivity;
+        cursor.grab_mode = CursorGrabMode::Locked;
+        cursor.visible = false;
+    } else {
+        cursor.grab_mode = CursorGrabMode::None;
+        cursor.visible = true;
     }
 
     *pitch = pitch.clamp(

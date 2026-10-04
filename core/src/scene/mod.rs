@@ -54,8 +54,34 @@ pub struct MaterialSettings {
     pub emissive_texture: Option<Handle<GpuTexture>>,
 }
 
+impl Default for MaterialSettings {
+    fn default() -> Self {
+        Self {
+            color: Vec4::ONE,
+            emissive: Vec3::ZERO,
+            metalic_factor: 0.0,
+            roughness_factor: 1.0,
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
+            color_texture: None,
+            metallic_roughness_texture: None,
+            normal_texture: None,
+            occlusion_texture: None,
+            emissive_texture: None,
+        }
+    }
+}
+
 impl MaterialSettings {
     pub(crate) fn into_material(&self, textures: &Assets<GpuTexture>) -> Material {
+        // A texture that is unset or still loading falls back to the null handle.
+        let index = |texture: &Option<Handle<GpuTexture>>| {
+            texture
+                .as_ref()
+                .and_then(|t| textures.get(t))
+                .map(|t| t.descriptor_index())
+                .unwrap_or(NULL_HANDLE)
+        };
         Material {
             color: self.color,
             emissive: self.emissive,
@@ -63,31 +89,11 @@ impl MaterialSettings {
             roughness_factor: self.roughness_factor,
             normal_scale: self.normal_scale,
             occlusion_strength: self.occlusion_strength,
-            color_texture: self
-                .color_texture
-                .as_ref()
-                .map(|t| textures.get(t).unwrap().descriptor_index())
-                .unwrap_or(NULL_HANDLE),
-            metallic_roughness_texture: self
-                .metallic_roughness_texture
-                .as_ref()
-                .map(|t| textures.get(t).unwrap().descriptor_index())
-                .unwrap_or(NULL_HANDLE),
-            normal_texture: self
-                .normal_texture
-                .as_ref()
-                .map(|t| textures.get(t).unwrap().descriptor_index())
-                .unwrap_or(NULL_HANDLE),
-            occlusion_texture: self
-                .occlusion_texture
-                .as_ref()
-                .map(|t| textures.get(t).unwrap().descriptor_index())
-                .unwrap_or(NULL_HANDLE),
-            emissive_texture: self
-                .emissive_texture
-                .as_ref()
-                .map(|t| textures.get(t).unwrap().descriptor_index())
-                .unwrap_or(NULL_HANDLE),
+            color_texture: index(&self.color_texture),
+            metallic_roughness_texture: index(&self.metallic_roughness_texture),
+            normal_texture: index(&self.normal_texture),
+            occlusion_texture: index(&self.occlusion_texture),
+            emissive_texture: index(&self.emissive_texture),
         }
     }
 }

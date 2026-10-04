@@ -1,8 +1,7 @@
-//! Entity selection: viewport raycast picking, translate gizmo dragging and hierarchy panel.
+//! Entity selection: viewport raycast picking, world-space move gizmo and hierarchy panel.
 use crate::{
     assets::mesh::GpuMesh,
     editor::{
-        dragndrop::EntityDragAndDropProvider,
         gizzmos::{ArrowGizzmo, DrawGizzmos},
         viewport::ViewPortProxy,
     },
@@ -33,7 +32,7 @@ use bevy::{
     },
     window::Window,
 };
-use glam::{Vec2, Vec3};
+use glam::{Mat3, Mat4, Vec2, Vec3};
 
 #[derive(Component, Reflect)]
 #[component(storage = "SparseSet")]
@@ -53,17 +52,15 @@ pub(crate) fn hierarchy_ui(
     )>,
     selected: Query<Entity, With<Selected>>,
     keys: Res<ButtonInput<KeyCode>>,
-    dragndrop: Res<EntityDragAndDropProvider>,
 ) {
     ui.build("Hierarchy", |ui| {
         if ui.button("insert") {
             cmd.spawn(Transform::default());
         }
 
-        ui.droppable(
-            &mut cmd,
-            || dragndrop.drop_valid(),
-            |ui, cmd| {
+        let dropped = ui.drop_target::<Entity>(
+            |_| true,
+            |ui| {
                 let mut roots: Vec<Entity> = instances
                     .iter()
                     .filter(|(_, _, _, _, parent, _)| parent.is_none())
@@ -75,12 +72,11 @@ pub(crate) fn hierarchy_ui(
                 let mut content_max = ui.content_max;
                 for root in roots {
                     draw_entity_node(
-                        cmd,
+                        &mut cmd,
                         ui,
                         root,
                         &mut instances,
                         &selected,
-                        &dragndrop,
                         &mut content_max,
                     );
                 }
@@ -94,13 +90,10 @@ pub(crate) fn hierarchy_ui(
                     .content_max
                     .max(ui.clip_rect.size() - UiContext::WINDOW_PAD.as_vec2());
             },
-            |cmd| {
-                let entity = dragndrop.drop();
-                if let Some(entity) = entity {
-                    cmd.entity(entity).remove_parent_in_place();
-                }
-            },
         );
+        if let Some(entity) = dropped {
+            cmd.entity(entity).remove_parent_in_place();
+        }
     });
 }
 
@@ -117,7 +110,6 @@ fn draw_entity_node(
         Option<&Instance>,
     )>,
     selected: &Query<Entity, With<Selected>>,
-    dragndrop: &EntityDragAndDropProvider,
     content_max: &mut Vec2,
 ) {
     let Ok((_, is_selected, name, children, _, instance)) = instances.get(this_entity) else {
@@ -137,13 +129,13 @@ fn draw_entity_node(
     let has_children = children.is_some();
 
     ui.disabled(!is_selected);
-    ui.draggable(
+    ui.drag_source(
         this_entity,
-        |ui, state| {
-            ui.droppable(
-                cmd,
-                || dragndrop.drop_valid(),
-                |ui, cmd| {
+        || this_entity,
+        |ui| {
+            let dropped = ui.drop_target::<Entity>(
+                |_| true,
+                |ui| {
                     ui.content_max = if has_children {
                         ui.collapsable(true, this_entity, &label, |ui| {
                             let size = ui.content_max;
@@ -158,15 +150,7 @@ fn draw_entity_node(
                                 .collect::<Vec<_>>();
                             children.sort();
                             for child in children {
-                                draw_entity_node(
-                                    cmd,
-                                    ui,
-                                    child,
-                                    instances,
-                                    selected,
-                                    dragndrop,
-                                    content_max,
-                                );
+                                draw_entity_node(cmd, ui, child, instances, selected, content_max);
                             }
                             *content_max = content_max.max(ui.content_max);
                             size
@@ -177,16 +161,12 @@ fn draw_entity_node(
                         ui.content_max
                     };
                 },
-                |cmd| {
-                    if let Some(entity) = dragndrop.drop()
-                        && entity != this_entity
-                    {
-                        cmd.entity(entity).set_parent_in_place(this_entity);
-                    }
-                },
             );
-
-            dragndrop.drag(state, this_entity);
+            if let Some(entity) = dropped
+                && entity != this_entity
+            {
+                cmd.entity(entity).set_parent_in_place(this_entity);
+            }
         },
         |ui| ui.text(&label),
     );
@@ -200,13 +180,18 @@ fn draw_entity_node(
     }
 }
 
+/// Length of the move arrows as a fraction of the viewport's half height, so they keep the
+/// same size on screen at any distance.
+const GIZMO_SCREEN_SIZE: f32 = 0.2;
+
 pub struct DragState {
-    world_space_axis: Vec3,
-    local_space_axis: Vec3,
-    world_space_axis_origin: Vec3,
+    /// Unit axis and a point on it, in world space.
+    axis: Vec3,
+    origin: Vec3,
+    /// Maps a world-space offset into the space `Transform::translation` lives in.
+    world_to_parent: Mat3,
     start_pos: Vec3,
     start_t: f32,
-    scale: f32,
 }
 
 pub(crate) fn picking(
@@ -220,9 +205,15 @@ pub(crate) fn picking(
     camera: Single<(&Camera, &GlobalTransform)>,
     assets: Res<Assets<GpuMesh>>,
     mut picked: Query<
-        (Entity, &GlobalTransform, Option<&Instance>, &mut Transform),
+        (
+            &GlobalTransform,
+            Option<&Instance>,
+            &mut Transform,
+            Option<&ChildOf>,
+        ),
         With<Selected>,
     >,
+    parents: Query<&GlobalTransform>,
     all_picked: Query<Entity, With<Selected>>,
     mut local: Local<Option<DragState>>,
 ) {
@@ -236,7 +227,7 @@ pub(crate) fn picking(
         *local = None;
     }
 
-    if let Some((_entity, global_transform, instance, mut transform)) = picked.iter_mut().next() {
+    if let Some((global_transform, instance, mut transform, child_of)) = picked.iter_mut().next() {
         if let Some(drag) = local.as_ref()
             && let Some(pos) = input.cursor_pos
         {
@@ -245,66 +236,70 @@ pub(crate) fn picking(
                     camera.1,
                     pos,
                     viewport.size(),
-                    drag.world_space_axis_origin,
-                    drag.world_space_axis,
+                    drag.origin,
+                    drag.axis,
                 );
-            transform.translation = drag.start_pos + drag.local_space_axis * (t / drag.scale);
+            let offset = drag.world_to_parent * (drag.axis * t);
+            if offset.is_finite() {
+                transform.translation = drag.start_pos + offset;
+            }
         }
 
-        let center = if let Some(instance) = instance
+        // The arrows sit at the mesh center (or the entity origin) and are built in world
+        // space, so the entity's scale changes neither their size nor how far a drag moves.
+        let origin = if let Some(instance) = instance
             && let Some(mesh) = assets.get(&instance.mesh)
         {
-            Vec3::from(mesh.header.aabb.center)
+            global_transform.transform_point(Vec3::from(mesh.header.aabb.center))
         } else {
             global_transform.translation()
         };
+        let distance = origin.distance(camera.1.translation());
+        let size = distance * (camera.0.fov * 0.5).tan() * GIZMO_SCREEN_SIZE;
 
-        if global_transform.affine().matrix3.row(0).length() == 0.0
-            || global_transform.affine().matrix3.row(1).length() == 0.0
-            || global_transform.affine().matrix3.row(2).length() == 0.0
-        {
-            return;
-        }
+        // Arrows are drawn every frame, but only hit-tested on the press itself.
+        let click = input.cursor_pos.filter(|_| input.primary_pressed);
 
-        if !input.primary_pressed {
-            return;
-        }
-
-        let directions = [
-            (global_transform.right(), transform.right()),
-            (global_transform.up(), transform.up()),
-            (global_transform.forward(), transform.forward()),
-        ];
-        let scale = global_transform.scale();
-        for (global_dir, local_dir) in directions {
-            let scale_factor = scale.dot(*global_dir) * 5.0;
+        let matrix = global_transform.affine().matrix3;
+        for (axis, color) in [
+            (matrix.x_axis, Vec3::X),
+            (matrix.y_axis, Vec3::Y),
+            (matrix.z_axis, Vec3::Z),
+        ] {
+            let Some(axis) = Vec3::from(axis).try_normalize() else {
+                continue;
+            };
+            if size <= 0.0 {
+                continue;
+            }
             if gizzmos.draw_gizzmo_check_clicked(
                 &ArrowGizzmo {
-                    color: (*local_dir).abs().extend(1.0),
-                    start: center,
-                    end: center + (*local_dir / scale_factor),
-                    width: 1.0 / scale_factor,
+                    color: color.extend(1.0),
+                    start: origin,
+                    end: origin + axis * size,
+                    width: size,
                 },
-                input.cursor_pos,
-                global_transform.to_matrix(),
+                click,
+                Mat4::IDENTITY,
             ) && local.is_none()
+                && let Some(cursor_pos) = input.cursor_pos
             {
-                let world_space_axis_origin = global_transform.transform_point(center);
-                let scale =
-                    global_transform.scale().dot(*global_dir) / transform.scale.dot(*local_dir);
+                let world_to_parent = child_of
+                    .and_then(|child_of| parents.get(child_of.parent()).ok())
+                    .map(|parent| Mat3::from(parent.affine().matrix3).inverse())
+                    .unwrap_or(Mat3::IDENTITY);
                 *local = Some(DragState {
-                    scale,
+                    axis,
+                    origin,
+                    world_to_parent,
+                    start_pos: transform.translation,
                     start_t: camera.0.closest_t_on_axis(
                         camera.1,
-                        input.cursor_pos.unwrap(),
+                        cursor_pos,
                         viewport.size(),
-                        world_space_axis_origin,
-                        *global_dir,
+                        origin,
+                        axis,
                     ),
-                    world_space_axis_origin,
-                    start_pos: transform.translation,
-                    world_space_axis: *global_dir,
-                    local_space_axis: *local_dir,
                 });
             }
         }

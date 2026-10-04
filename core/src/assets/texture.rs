@@ -3,7 +3,7 @@ use anyhow::Result;
 use bevy::{asset::Asset, reflect::TypePath};
 use bytemuck::{Pod, Zeroable};
 use lava::{
-    bindless::NULL_HANDLE,
+    bindless::{BindlessHandle, NULL_HANDLE},
     image::{
         Image,
         format::{R8G8B8A8Srgb, R8G8B8A8Unorm},
@@ -40,6 +40,14 @@ impl GpuTexture {
             TextureImage::Linear(image) => image.copy_from(pixels, level)?,
         }
         Ok(())
+    }
+
+    /// Bindless handle of the texture, e.g. for drawing it in the UI.
+    pub fn handle(&self) -> BindlessHandle {
+        match &self.image {
+            TextureImage::Srgb(image) => image.handle,
+            TextureImage::Linear(image) => image.handle,
+        }
     }
 
     pub fn descriptor_index(&self) -> u32 {

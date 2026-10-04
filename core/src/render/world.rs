@@ -16,9 +16,9 @@ use bevy::transform::components::GlobalTransform;
 use bevy::window::Window;
 use futures::channel::oneshot;
 
-use bevy::log::error;
+use bevy::log::{error, warn_once};
 use bytemuck::Pod;
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, UVec2, Vec2, Vec3};
 use lava::buffer::Buffer;
 use lava::buffer::slice::BufferSlice;
 use lava::image::Image;
@@ -33,8 +33,12 @@ use crate::assets::mesh::{GpuMesh, MeshHeader};
 use crate::assets::texture::GpuTexture;
 use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
+use crate::INITIAL_WINDOW_SIZE;
+use crate::render::MainWorld;
 use crate::render::extract_param::Extract;
-use crate::render::render::{FrameCount, QueueStrategie, Queues, extract_camera};
+use crate::render::render::{
+    FrameCount, QueueStrategie, Queues, Swapchain, ViewPortTarget, extract_camera,
+};
 use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, RenderStartup, RenderSystems};
 use crate::scene::Instance;
 use lava::bindings::{self, AabbError};
@@ -428,6 +432,10 @@ fn extract_meshlet_instances(
     instance_manager.any_outlined = false;
     for (instance, transform, selected) in &instances {
         if let Some(mesh) = meshes.get(&instance.mesh) {
+            if instance_manager.pending_instances.len() >= MAX_INSTANCES {
+                warn_once!("more than {MAX_INSTANCES} instances, the rest are not drawn");
+                break;
+            }
             let mat = transform.to_matrix();
             let flags = if selected {
                 instance.flags | InstanceFlags::OUTLINE
@@ -468,15 +476,27 @@ fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res<FrameCount
 }
 
 fn extract_view_port(
-    mut cmd: Commands,
-    view_port: Extract<Option<Res<ViewPort>>>,
-    window: Extract<Single<&Window>>,
+    mut world: ResMut<MainWorld>,
+    mut target: ResMut<ViewPortTarget>,
+    swapchain: Res<Swapchain>,
 ) {
-    cmd.insert_resource(view_port.as_deref().cloned().unwrap_or(ViewPort {
-        rect: Rect::from_corners(Vec2::ZERO, window.physical_size().as_vec2()),
-        visible_rect: Rect::from_corners(Vec2::ZERO, window.physical_size().as_vec2()),
-        focused: true,
-    }));
+    if let Some(mut view_port) = world.get_resource_mut::<ViewPort>() {
+        // Starts at the initial window size; `record_frame` grows it when the tab outgrows it.
+        let size = view_port
+            .rect
+            .size()
+            .as_uvec2()
+            .max(INITIAL_WINDOW_SIZE.as_uvec2());
+        let image = target
+            .image
+            .get_or_insert_with(|| Image::new(size.x, size.y).unwrap());
+        view_port.image = image.handle;
+        view_port.image_size = image.extent.as_vec2();
+        target.rect = view_port.rect;
+    } else {
+        // No editor, so no viewport tab: the scene fills the swapchain image.
+        target.rect = Rect::from_corners(Vec2::ZERO, UVec2::from(swapchain.size).as_vec2());
+    }
 }
 
 #[allow(non_snake_case)]

@@ -30,7 +30,7 @@ float2 hammersley(uint i, uint n) {
 float2 r2_sequence(uint i) {
     const float a1 = 1.0 / M_PLASTIC;
     const float a2 = 1.0 / (M_PLASTIC * M_PLASTIC);
-    
+
     return frac(float2(a1, a2) * i + 0.5);
 }
 
@@ -49,7 +49,7 @@ struct RandomSamplerState
     uint murmur3()
     {
     #define ROT32(x, y) ((x << y) | (x >> (32 - y)))
-    
+
         // https://en.wikipedia.org/wiki/MurmurHash
         uint c1 = 0xcc9e2d51;
         uint c2 = 0x1b873593;
@@ -57,25 +57,25 @@ struct RandomSamplerState
         uint r2 = 13;
         uint m = 5;
         uint n = 0xe6546b64;
-    
+
         uint hash = seed;
         uint k = index++;
         k *= c1;
         k = ROT32(k, r1);
         k *= c2;
-    
+
         hash ^= k;
         hash = ROT32(hash, r2) * m + n;
-    
+
         hash ^= 4;
         hash ^= (hash >> 16);
         hash *= 0x85ebca6b;
         hash ^= (hash >> 13);
         hash *= 0xc2b2ae35;
         hash ^= (hash >> 16);
-    
+
     #undef ROT32
-    
+
         return hash;
     }
 

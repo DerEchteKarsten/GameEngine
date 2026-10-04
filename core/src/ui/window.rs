@@ -1,4 +1,4 @@
-//! UI windows and tabs plus the `Drawable` primitives for boxes, text and rounded rects.
+//! UI windows, tabs and the top overlay, plus the `Drawable` primitives for boxes, text and rounded rects.
 use std::{
     collections::{HashMap, HashSet},
     f32::consts::PI,
@@ -17,10 +17,11 @@ use glam::{Vec2, Vec4};
 use crate::ui::{
     Draggable, FocusedState, MultiInput, UiContext,
     builder::{UiWindowBuilder, UiWindowContext},
+    dragdrop::DragDrop,
     from_pos_size,
     scrollable::Scrollable,
 };
-use lava::bindings::UIVertex;
+use lava::{bindings::UIVertex, bindless::BindlessHandle};
 
 #[derive(Debug)]
 pub struct UiWindow {
@@ -30,6 +31,7 @@ pub struct UiWindow {
     pub layer: u32,
     pub rect: Rect,
     pub focused: Option<FocusedState>,
+    pub hidden: bool,
     pub verticies: Vec<UIVertex>,
     pub indicies: Vec<u32>,
 }
@@ -59,6 +61,7 @@ impl UiWindow {
             layer: 0,
             rect,
             focused: None,
+            hidden: false,
             verticies: Vec::new(),
             indicies: Vec::new(),
         }
@@ -80,6 +83,13 @@ pub struct TabState {
     pub indicies: Vec<u32>,
     pub top_verticies: Vec<UIVertex>,
     pub top_indicies: Vec<u32>,
+}
+
+/// Screen-space geometry drawn after all windows.
+#[derive(Default, Debug)]
+pub struct UiOverlay {
+    pub verticies: Vec<UIVertex>,
+    pub indicies: Vec<u32>,
 }
 
 #[derive(Copy, Clone)]
@@ -194,6 +204,8 @@ impl TabState {
         shift: bool,
         ctrl: bool,
         hovered: bool,
+        dnd: &DragDrop,
+        overlay: &Mutex<UiOverlay>,
         f: impl FnOnce(&mut UiWindowBuilder<'_, 'w, 's>) -> R,
     ) -> Option<R> {
         let mut id = DefaultHasher::new();
@@ -207,8 +219,8 @@ impl TabState {
         let clip_rect = Rect::from_corners(
             content_rect.min + UiContext::BORDER as f32,
             content_rect.max
-                + UiContext::BORDER as f32 * 2.0
-                + self.content_scroll.bar_size(content_rect.size()),
+                - UiContext::BORDER as f32
+                - self.content_scroll.bar_size(content_rect.size()),
         );
 
         let viewport_size = window.physical_size().as_vec2();
@@ -227,6 +239,8 @@ impl TabState {
             ctrl,
             shift,
             hovered,
+            dnd,
+            overlay,
         };
         let mut builder = UiWindowBuilder {
             ctx,
@@ -291,6 +305,16 @@ impl Drawable for TabState {
     }
 }
 
+impl Drawable for UiOverlay {
+    fn vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>) {
+        (&mut self.verticies, &mut self.indicies)
+    }
+
+    fn on_top_vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>) {
+        (&mut self.verticies, &mut self.indicies)
+    }
+}
+
 impl Drawable for UiWindow {
     fn vecs(&mut self) -> (&mut Vec<UIVertex>, &mut Vec<u32>) {
         (&mut self.verticies, &mut self.indicies)
@@ -319,6 +343,7 @@ pub trait Drawable {
             viewport_size,
             clip_rect,
             ds.on_top,
+            BindlessHandle::default(),
         );
         let border = ds.border;
 
@@ -344,6 +369,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 ds.on_top,
+                BindlessHandle::default(),
             );
             self.draw_rect(
                 from_pos_size(
@@ -361,6 +387,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 ds.on_top,
+                BindlessHandle::default(),
             );
             self.draw_rect(
                 from_pos_size(
@@ -372,6 +399,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 ds.on_top,
+                BindlessHandle::default(),
             );
             self.draw_rect(
                 from_pos_size(
@@ -383,6 +411,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 ds.on_top,
+                BindlessHandle::default(),
             );
         }
 
@@ -461,6 +490,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 ds.on_top,
+                BindlessHandle::default(),
             );
             self.draw_rect(
                 from_pos_size(
@@ -478,6 +508,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 ds.on_top,
+                BindlessHandle::default(),
             );
             self.draw_rect(
                 from_pos_size(
@@ -493,6 +524,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 ds.on_top,
+                BindlessHandle::default(),
             );
             self.draw_rect(
                 from_pos_size(
@@ -509,6 +541,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 ds.on_top,
+                BindlessHandle::default(),
             );
         }
     }
@@ -536,6 +569,7 @@ pub trait Drawable {
                 viewport_size,
                 clip_rect,
                 on_top,
+                BindlessHandle::default(),
             );
             pen.x +=
                 UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32;
@@ -712,21 +746,25 @@ pub trait Drawable {
                     color,
                     pos: to_ndc(c_tl.0),
                     uv: c_tl.1,
+                    ..Default::default()
                 },
                 UIVertex {
                     color,
                     pos: to_ndc(c_tr.0),
                     uv: c_tr.1,
+                    ..Default::default()
                 },
                 UIVertex {
                     color,
                     pos: to_ndc(c_br.0),
                     uv: c_br.1,
+                    ..Default::default()
                 },
                 UIVertex {
                     color,
                     pos: to_ndc(c_bl.0),
                     uv: c_bl.1,
+                    ..Default::default()
                 },
             ]);
             indicies.extend_from_slice(&[
@@ -754,6 +792,7 @@ pub trait Drawable {
         view_port_size: Vec2,
         clip_rect: Rect,
         on_top: bool,
+        texture: BindlessHandle,
     ) {
         let (verticies, indicies) = if on_top {
             self.on_top_vecs()
@@ -783,21 +822,29 @@ pub trait Drawable {
                 color,
                 pos: (clipped_rect.min / half_vp) - Vec2::splat(1.0),
                 uv: clipped_uv_min,
+                texture,
+                ..Default::default()
             },
             UIVertex {
                 color,
                 pos: (clipped_rect.min.with_x(clipped_rect.max.x) / half_vp) - Vec2::splat(1.0),
                 uv: clipped_uv_min.with_x(clipped_uv_max.x),
+                texture,
+                ..Default::default()
             },
             UIVertex {
                 color,
                 pos: (clipped_rect.max / half_vp) - Vec2::splat(1.0),
                 uv: clipped_uv_max,
+                texture,
+                ..Default::default()
             },
             UIVertex {
                 color,
                 pos: (clipped_rect.min.with_y(clipped_rect.max.y) / half_vp) - Vec2::splat(1.0),
                 uv: clipped_uv_min.with_y(clipped_uv_max.y),
+                texture,
+                ..Default::default()
             },
         ]);
         indicies.extend_from_slice(&[
@@ -835,6 +882,7 @@ pub trait Drawable {
             color,
             pos: to_ndc(clamp_to_clip(center)),
             uv: Vec2::splat(20.0),
+            ..Default::default()
         });
 
         for i in 0..=segments {
@@ -847,6 +895,7 @@ pub trait Drawable {
                 color,
                 pos: to_ndc(point),
                 uv: Vec2::splat(20.0),
+                ..Default::default()
             });
 
             if i > 0 {

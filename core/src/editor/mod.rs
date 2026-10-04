@@ -12,31 +12,31 @@ use bevy::{
     time::Time,
 };
 use glam::Vec2;
+use lava::bindless::BindlessHandle;
 
 use crate::{
     INITIAL_WINDOW_SIZE,
-    assets::mesh::{GpuMesh, Scene},
+    assets::{
+        mesh::{GpuMesh, Scene},
+        texture::GpuTexture,
+    },
     editor::{
-        asset_browser::{AssetDND, asset_browser},
+        asset_browser::{asset_browser, drop_in_viewport},
         camera::{CameraSettings, update_camera},
         console::ConsolePlugin,
-        dragndrop::{AssetDragAndDropProvider, EntityDragAndDropProvider},
         gizzmos::{Gizzmos, extract_gizzmos, init_gizzmos, write_gizzmos},
         picking::{hierarchy_ui, picking},
         selected::{ReflectEditorView, selected_ui},
-        viewport::{ViewPort, update_view_port},
+        viewport::{ViewPort, viewport_ui},
     },
     physics::bvh::debug_draw_scene_bvh,
-    render::{
-        ExtractSchedule, RenderApp, RenderStartup, RenderSystems, render::RenderDebugUi,
-    },
+    render::{ExtractSchedule, RenderApp, RenderStartup, RenderSystems, render::RenderDebugUi},
     ui::builder::UiBuilder,
 };
 
 pub mod asset_browser;
 pub mod camera;
 pub mod console;
-pub mod dragndrop;
 pub mod gizzmos;
 pub(crate) mod picking;
 pub mod selected;
@@ -111,15 +111,14 @@ impl Plugin for EditorPlugin {
         })
         .add_plugins(RenderDebugUi)
         .insert_resource(self.camera_settings)
-        .init_resource::<AssetDragAndDropProvider>()
-        .init_resource::<EntityDragAndDropProvider>()
         .init_resource::<UiState>()
         .insert_resource(ViewPort {
+            focused: false,
+            hovered: false,
+            image: BindlessHandle::default(),
+            image_size: Vec2::ZERO,
             rect: Rect::from_corners(Vec2::ZERO, INITIAL_WINDOW_SIZE),
-            visible_rect: Rect::from_corners(Vec2::ZERO, INITIAL_WINDOW_SIZE),
-            focused: true,
         })
-        .insert_resource(AssetDND(None))
         .add_systems(
             Update,
             (
@@ -129,20 +128,24 @@ impl Plugin for EditorPlugin {
                 hierarchy_ui,
                 frame_histogram,
                 asset_browser,
+                viewport_ui,
+                drop_in_viewport,
                 picking
                     .after(update_camera)
                     .after(selected_ui)
                     .after(hierarchy_ui)
                     .after(frame_histogram),
             ),
-        )
-        .add_systems(PreUpdate, update_view_port);
+        );
         app.get_sub_app_mut(RenderApp)
             .unwrap()
             .add_systems(ExtractSchedule, extract_gizzmos)
             .add_systems(RenderSystems::PreRender, write_gizzmos)
             .add_systems(RenderStartup, init_gizzmos);
 
+        // `MaterialSettings` registers these too, but `ScenePlugin` may be added after us.
+        app.register_type::<Handle<GpuTexture>>()
+            .register_type::<Option<Handle<GpuTexture>>>();
         register_editor_views!(
             app,
             f32,
@@ -160,7 +163,9 @@ impl Plugin for EditorPlugin {
             glam::Affine3A,
             Entity,
             Handle<GpuMesh>,
-            Handle<Scene>
+            Handle<Scene>,
+            Handle<GpuTexture>,
+            Option<Handle<GpuTexture>>
         );
     }
 }

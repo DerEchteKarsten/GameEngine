@@ -12,11 +12,15 @@ use crate::{
         RenderSystems::{self},
         render::Queues,
     },
-    ui::update_windows::{draw_windows, update_windows},
+    ui::{
+        dragdrop::{DragDrop, end_drag},
+        update_windows::{draw_windows, update_windows},
+    },
 };
 
 pub mod builder;
 pub mod dock;
+pub mod dragdrop;
 pub mod scrollable;
 pub mod update_windows;
 pub mod window;
@@ -81,7 +85,7 @@ use crate::{
         builder::TextCursor,
         dock::DockingNode,
         update_windows::ResizeEdges,
-        window::{Tab, TabState, UiWindow},
+        window::{Tab, TabState, UiOverlay, UiWindow},
     },
 };
 use lava::bindings::UIVertex;
@@ -161,28 +165,99 @@ pub struct UiContext {
     pub drag_start: Vec2,
 }
 
+/// Structural window changes queued by `UiBuilder` and applied in order by `update_windows`.
+pub enum WindowCommand {
+    Add {
+        label: String,
+        pos: Option<Vec2>,
+        size: Option<Vec2>,
+    },
+    Close(String),
+    Open(String),
+}
+
 #[derive(Resource)]
 pub struct UiWindows {
-    pub add_windows: Mutex<SmallVec<[String; 4]>>,
+    pub commands: Mutex<SmallVec<[WindowCommand; 4]>>,
     pub windows: Vec<Option<UiWindow>>,
     pub free_slots: Vec<usize>,
+    /// Geometry drawn above every window, e.g. the drag-and-drop preview.
+    pub overlay: Mutex<UiOverlay>,
 }
 
 impl UiWindows {
+    /// Slot of the frontmost visible window whose rect contains `pos`.
+    pub fn window_at(&self, pos: Vec2) -> Option<usize> {
+        self.by_layer()
+            .rev()
+            .find(|(_, w)| w.rect.contains(pos))
+            .map(|(i, _)| i)
+    }
+
+    /// Visible windows, back to front.
     pub fn by_layer_mut(&mut self) -> impl DoubleEndedIterator<Item = (usize, &mut UiWindow)> {
         self.windows
             .iter_mut()
             .enumerate()
             .filter_map(|w| w.1.as_mut().map(|o| (w.0, o)))
+            .filter(|w| !w.1.hidden)
             .sorted_by(|a, b| a.1.layer.cmp(&b.1.layer))
     }
+    /// Visible windows, back to front.
     pub fn by_layer(&self) -> impl DoubleEndedIterator<Item = (usize, &UiWindow)> {
         self.windows
             .iter()
             .enumerate()
             .filter_map(|w| w.1.as_ref().map(|o| (w.0, o)))
+            .filter(|w| !w.1.hidden)
             .sorted_by(|a, b| a.1.layer.cmp(&b.1.layer))
     }
+
+    /// Window slot and tab index of the tab with this label, hidden windows included.
+    pub fn find_tab(&self, label: &str) -> Option<(usize, usize)> {
+        self.windows.iter().enumerate().find_map(|(i, w)| {
+            let j = w.as_ref()?.tabs.iter().position(|t| t.label == label)?;
+            Some((i, j))
+        })
+    }
+
+    /// Hides the tab with this label. A tab that shares its window with others is split off
+    /// into its own hidden window, so a window never ends up with zero tabs.
+    pub fn close_tab(&mut self, label: &str, dock: &mut DockingNode) {
+        let Some((i, j)) = self.find_tab(label) else {
+            return;
+        };
+        let window = self.windows[i].as_mut().unwrap();
+        if window.hidden {
+            return;
+        }
+        if window.tabs.len() > 1 {
+            let tab = window.tabs.remove(j);
+            if (j as u32) < window.active_tab {
+                window.active_tab -= 1;
+            }
+            window.active_tab = window.active_tab.min(window.tabs.len() as u32 - 1);
+            let mut closed = UiWindow::new(vec![tab], window.rect, 0);
+            closed.hidden = true;
+            self.append(closed);
+        } else {
+            // `undock` reports an emptied node instead of removing it, which at the root
+            // means the closed window was the only docked one.
+            if dock.undock(i as u32) {
+                *dock = DockingNode::default();
+            }
+            window.hidden = true;
+            window.focused = None;
+        }
+    }
+
+    /// Shows a closed tab again, floating at its last rect.
+    pub fn open_tab(&mut self, label: &str) {
+        if let Some((i, _)) = self.find_tab(label) {
+            self.windows[i].as_mut().unwrap().hidden = false;
+        }
+    }
+
     pub fn remove(&mut self, index: usize) -> UiWindow {
         let window = self.windows[index].take().unwrap();
         self.free_slots.push(index);
@@ -297,7 +372,7 @@ impl UiContext {
             },
         );
         let windows = UiWindows {
-            add_windows: Mutex::new(SmallVec::new()),
+            commands: Mutex::new(SmallVec::new()),
             windows: windows
                 .iter()
                 .map(|w| {
@@ -315,6 +390,7 @@ impl UiContext {
                 })
                 .collect(),
             free_slots: Vec::new(),
+            overlay: Mutex::new(UiOverlay::default()),
         };
 
         Ok((
@@ -445,6 +521,13 @@ pub fn extract_ui(mut res: If<ResMut<UiResources>>, windows: Extract<Res<UiWindo
         );
         res.pending_verticies.extend(tab_state.top_verticies.iter());
     }
+
+    if let Ok(overlay) = windows.overlay.lock() {
+        let vertex_offset = res.pending_verticies.len();
+        res.pending_indicies
+            .extend(overlay.indicies.iter().map(|e| *e + vertex_offset as u32));
+        res.pending_verticies.extend(overlay.verticies.iter());
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -486,7 +569,7 @@ impl MultiInput {
     pub fn to_viewport(self, view_port: &ViewPort) -> Self {
         let cursor_pos = self.cursor_pos.and_then(|cp| {
             let new_cp = cp - view_port.rect.min;
-            if view_port.rect.contains(cp) {
+            if view_port.hovered && view_port.rect.contains(cp) {
                 Some(new_cp)
             } else {
                 None
@@ -530,10 +613,11 @@ pub fn save_windows(
         return;
     }
 
+    // Hidden windows are not saved: `hidden` is runtime state and `build` recreates them.
     let mut remap = HashMap::new();
     let mut new_idx = 0;
     for (i, w) in windows.windows.iter().enumerate() {
-        if w.is_some() {
+        if w.as_ref().is_some_and(|w| !w.hidden) {
             remap.insert(i as u32, new_idx as u32);
             new_idx += 1;
         }
@@ -545,6 +629,7 @@ pub fn save_windows(
             .windows
             .iter()
             .filter_map(|w| w.as_ref())
+            .filter(|w| !w.hidden)
             .map(|w| SaveWindow {
                 tabs: w
                     .tabs
@@ -579,5 +664,6 @@ pub fn UiPlugin(app: &mut App) {
         .insert_resource(ctx)
         .insert_resource(windows)
         .insert_resource(dock)
-        .add_systems(PostUpdate, save_windows);
+        .init_resource::<DragDrop>()
+        .add_systems(PostUpdate, (save_windows, end_drag));
 }

@@ -5,12 +5,17 @@ struct VSOutput {
     float4 position : SV_Position;
     float4 color;
     float2 uv;
+    nointerpolation uint2 texture;
 };
 
 struct UIVertex {
     float2 pos;
     float2 uv;
     float4 color;
+    // Null for solid and text quads, which sample the font atlas instead.
+    DynImg texture;
+    // Keeps the size a multiple of 16, the alignment of `color` on the Rust side.
+    uint2 pad;
 }
 
 struct RasterMeshUiBindings {
@@ -28,6 +33,7 @@ VSOutput raster_ui_vertex(uint instance_index: SV_InstanceID, uint index : SV_Ve
     output.position = float4(vertex.pos.xy, 0.5, 1.0);
     output.color = vertex.color;
     output.uv = vertex.uv.xy;
+    output.texture = uint2(vertex.texture.SampledIndex, vertex.texture.StorageIndex);
     return output;
 }
 
@@ -39,6 +45,14 @@ struct PSOutput {
 PSOutput raster_ui_fragment(in VSOutput input)
 {
     PSOutput output;
-    output.color = float4(input.color.xyz, input.color.a * b.font_atlas.Sample(input.uv));
+    DynImg texture;
+    texture.SampledIndex = input.texture.x;
+    texture.StorageIndex = input.texture.y;
+    if (texture.IsNull()) {
+        output.color = float4(input.color.xyz, input.color.a * b.font_atlas.Sample(input.uv));
+    } else {
+        // Sampler 2 is trilinear, so mipmapped textures stay clean when drawn small.
+        output.color = float4(texture.Sample(input.uv, 2).xyz * input.color.xyz, input.color.a);
+    }
     return output;
 }

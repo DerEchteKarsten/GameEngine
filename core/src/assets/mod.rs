@@ -29,7 +29,7 @@ impl Plugin for MeshAssets {
             )
             .set_default_asset_processor::<LoadTransformAndSave<GltfMeshLoader, MeshTransformer, MeshSaver>>("glb")
             .register_asset_loader(GltfMeshLoader)
-            .register_asset_loader(MeshLoader)
+            .init_asset_loader::<MeshLoader>()
             .init_asset::<Scene>()
             .init_asset::<GltfMesh>()
             .init_asset::<GpuMesh>()

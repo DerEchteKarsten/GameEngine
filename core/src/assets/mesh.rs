@@ -1,8 +1,10 @@
 //! glTF scene import: meshlet LOD building, BVH baking, serialization and GPU mesh loading.
 use bevy::{
     asset::{
-        Asset, AssetLoader, Handle, LoadContext, saver::AssetSaver, transformer::AssetTransformer,
+        Asset, AssetLoader, AssetPath, Handle, LoadContext, saver::AssetSaver,
+        transformer::AssetTransformer,
     },
+    ecs::resource::Resource,
     math::{
         Isometry3d,
         bounding::{Aabb3d, BoundingSphere, BoundingVolume},
@@ -22,7 +24,7 @@ use meshopt::{
 };
 use metis::{Graph, option::Opt};
 use smallvec::SmallVec;
-use std::mem::ManuallyDrop;
+use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, ops::Range};
 use tracing::debug_span;
 
@@ -84,7 +86,7 @@ impl Scene {
 
         Instance {
             flags,
-            mesh: self.meshes[index].clone(),
+            mesh: self.meshes[self.instance_mesh[index] as usize].clone(),
             material: MaterialSettings {
                 color: material.color,
                 emissive: material.emissive,
@@ -208,6 +210,11 @@ impl AssetTransformer for MeshTransformer {
                     .into_u32()
                     .collect::<Vec<_>>();
 
+                // Nothing to build meshlets from.
+                if indicies.len() < 3 {
+                    continue;
+                }
+
                 remap.insert(index, meshes.len() as u32);
 
                 let mesh = MeshletMesh::new(&indicies, &verticies, &normals, &uvs);
@@ -231,9 +238,24 @@ impl AssetTransformer for MeshTransformer {
                 (textures.len() - 1) as u32
             })
         };
-        for node in asset.document.nodes().filter(|n| n.mesh().is_some()) {
-            let transform = node.transform().matrix();
-            let gltf_mesh = node.mesh().unwrap();
+        // A node's transform is relative to its parent, so walk the hierarchy and accumulate.
+        // Exporters often put the unit conversion (e.g. cm to m) on a parent node.
+        let mut world_nodes = Vec::new();
+        let mut stack: Vec<(gltf::Node, Mat4)> = asset
+            .document
+            .scenes()
+            .flat_map(|scene| scene.nodes())
+            .map(|node| (node, Mat4::IDENTITY))
+            .collect();
+        while let Some((node, parent)) = stack.pop() {
+            let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+            stack.extend(node.children().map(|child| (child, world)));
+            world_nodes.push((node, world));
+        }
+        for (node, transform) in &world_nodes {
+            let Some(gltf_mesh) = node.mesh() else {
+                continue;
+            };
 
             for primitive in gltf_mesh.primitives() {
                 let material = materials.len();
@@ -270,7 +292,7 @@ impl AssetTransformer for MeshTransformer {
 
                 instance_materials.push(material as u32);
                 instance_mesh.push(*mesh);
-                instance_transforms.push(Mat4::from_cols_array_2d(&transform));
+                instance_transforms.push(*transform);
             }
         }
 
@@ -326,7 +348,7 @@ impl AssetSaver for MeshSaver {
     }
 }
 
-#[derive(TypePath)]
+#[derive(TypePath, Default)]
 pub struct MeshLoader;
 impl AssetLoader for MeshLoader {
     type Asset = Scene;
@@ -363,54 +385,45 @@ impl AssetLoader for MeshLoader {
             reader.read_exact(bytes_of_mut(&mut header)).await?;
             let len = read_u64(reader).await? as usize;
 
-            let buffer = Buffer::new(len, false).unwrap();
+            let buffer = Buffer::new(len, true).unwrap();
             let slice = buffer.range(..);
             let address = buffer.address;
 
-            let mut data = Vec::with_capacity(header.cull_data_offset as usize);
-            // } else {
-            //     Vec::with_capacity(len)
-            // };
-
-            let ptr = data.as_mut_ptr();
-            reader
-                .read_exact(unsafe {
-                    std::slice::from_raw_parts_mut(ptr, header.cull_data_offset as usize)
-                })
-                .await?;
-            unsafe { data.set_len(data.capacity()) };
+            let mut data = vec![0u8; header.cull_data_offset as usize];
+            reader.read_exact(&mut data).await?;
 
             let bvh_node_count = header.meshlet_offset as usize / size_of::<BvhNode>();
             for i in 0..bvh_node_count {
-                let node: &mut BvhNode = bytemuck::from_bytes_mut(
-                    &mut data[i * size_of::<BvhNode>()..(i + 1) * size_of::<BvhNode>()],
-                );
-                for (child_index, aabb) in node.aabb_and_offsets.iter_mut().enumerate() {
-                    let offset = aabb_ptr_offset(aabb);
-                    aabb_ptr_set_offset(
-                        aabb,
-                        if ((node.child_counts >> (child_index * 8)) & 0xFF) as u8 == 255 {
-                            offset * size_of::<BvhNode>() as u64 + address
-                        } else {
-                            offset
-                        },
-                    );
+                // `data` is a byte buffer with no alignment guarantee, so patch a copy.
+                let bytes = &mut data[i * size_of::<BvhNode>()..(i + 1) * size_of::<BvhNode>()];
+                let mut node: BvhNode = bytemuck::pod_read_unaligned(bytes);
+                for child_index in 0..node.aabb_and_offsets.len() {
+                    if bvh_node_child_counts(&node, child_index) == u8::MAX {
+                        let aabb = &mut node.aabb_and_offsets[child_index];
+                        let offset = aabb_ptr_offset(aabb);
+                        aabb_ptr_set_offset(aabb, offset * size_of::<BvhNode>() as u64 + address);
+                    }
                 }
+                bytes.copy_from_slice(bytes_of(&node));
             }
 
             let meshlet_count =
                 (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
             for i in 0..meshlet_count {
                 let offset = header.meshlet_offset as usize + i * size_of::<Meshlet>();
-                let meshlet: &mut Meshlet =
-                    bytemuck::from_bytes_mut(&mut data[offset..offset + size_of::<Meshlet>()]);
+                let bytes = &mut data[offset..offset + size_of::<Meshlet>()];
+                let mut meshlet: Meshlet = bytemuck::pod_read_unaligned(bytes);
                 meshlet.triangle_index =
                     meshlet.triangle_index + header.index_offset as u64 + address;
                 meshlet.vertex_index = meshlet.vertex_index * size_of::<Vertex>() as u64
                     + header.vertex_offset as u64
                     + address;
+                bytes.copy_from_slice(bytes_of(&meshlet));
             }
 
+            slice
+                .range(..header.cull_data_offset as usize)
+                .copy_from(&data);
             read_slice_to_buffer(reader, slice.range(header.cull_data_offset as usize..)).await?;
 
             let colission_bvh = read_slice(reader, Some(8)).await?;
@@ -425,7 +438,6 @@ impl AssetLoader for MeshLoader {
             );
             meshes.push(handle);
         }
-
         Ok(Scene {
             instance_transforms,
             instance_materials,
@@ -468,15 +480,6 @@ pub struct MeshletMesh {
     pub header: MeshHeader,
     pub data: Vec<u8>,
     pub colission_bvh: Vec<u8>,
-}
-
-fn cast_vec_trust_me_bro<A>(a: Vec<A>) -> Vec<u8> {
-    let length = a.len() * size_of::<A>();
-    let capacity = a.capacity() * size_of::<A>();
-    let mut manual_drop_vec = ManuallyDrop::new(a);
-    let vec_ptr = manual_drop_vec.as_mut_ptr();
-    let ptr = vec_ptr as *mut u8;
-    unsafe { Vec::from_raw_parts(ptr, length, capacity) }
 }
 
 impl MeshletMesh {
@@ -527,10 +530,12 @@ impl MeshletMesh {
             );
             simplification_queue.clear();
 
-            // Lock borders between groups to prevent cracks when simplifying
+            // Lock borders between groups to prevent cracks when simplifying. Stuck groups that
+            // sit this round out keep their geometry, so their borders must stay intact too.
             lock_group_borders(
                 &mut vertex_locks,
                 &groups,
+                &stuck,
                 &meshlets,
                 &position_only_vertex_remap,
             );
@@ -703,15 +708,15 @@ impl MeshletMesh {
                 + cull_data.len() * size_of::<CullData>(),
         );
 
-        data.append(&mut cast_vec_trust_me_bro(bvh));
+        data.extend_from_slice(bytemuck::cast_slice(&bvh));
         let meshlet_offset = data.len() as u32;
-        data.append(&mut cast_vec_trust_me_bro(mmeshlets));
+        data.extend_from_slice(bytemuck::cast_slice(&mmeshlets));
         let cull_data_offset = data.len() as u32;
-        data.append(&mut cast_vec_trust_me_bro(cull_data));
+        data.extend_from_slice(bytemuck::cast_slice(&cull_data));
         let vertex_offset = data.len() as u32;
-        data.append(&mut cast_vec_trust_me_bro(duped_verticies));
+        data.extend_from_slice(bytemuck::cast_slice(&duped_verticies));
         let index_offset = data.len() as u32;
-        data.append(&mut cast_vec_trust_me_bro(meshlets.triangles));
+        data.extend_from_slice(&meshlets.triangles);
 
         Self {
             header: MeshHeader {
@@ -935,19 +940,22 @@ fn group_meshlets(
         group.aabb = group.aabb.merge(&data.aabb);
         group.lod_bounds = merge_spheres(group.lod_bounds, data.lod_group_sphere);
     }
+    // METIS may leave partitions empty
+    groups.retain(|group| !group.meshlets.is_empty());
     groups
 }
 
 fn lock_group_borders(
     vertex_locks: &mut [bool],
     groups: &[TempMeshletGroup],
+    stuck: &[TempMeshletGroup],
     meshlets: &meshopt::Meshlets,
     position_only_vertex_remap: &[u32],
 ) {
     let mut position_only_locks = vec![-1; position_only_vertex_remap.len()];
 
     // Iterate over position-only based vertices of all meshlets in all groups
-    for (group_id, group) in groups.iter().enumerate() {
+    for (group_id, group) in groups.iter().chain(stuck).enumerate() {
         for &meshlet_id in group.meshlets.iter() {
             let meshlet = meshlets.get(meshlet_id as usize);
             for index in meshlet.triangles {
@@ -1009,9 +1017,10 @@ fn simplify_meshlet_group(
         Some(&mut error),
     );
 
-    // Check if we were able to simplify
-    if simplified_group_indices.len() as f32 / group_indices.len() as f32
-        > SIMPLIFICATION_FAILURE_PERCENTAGE
+    // Check if we were able to simplify, without collapsing the group to nothing
+    if simplified_group_indices.is_empty()
+        || simplified_group_indices.len() as f32 / group_indices.len() as f32
+            > SIMPLIFICATION_FAILURE_PERCENTAGE
     {
         return None;
     }
@@ -1033,11 +1042,20 @@ fn merge_meshlets(meshlets: &mut meshopt::Meshlets, merge: meshopt::Meshlets) {
         }));
 }
 
+/// Identity for `merge_spheres`: a sphere containing nothing, marked by a negative radius.
+const EMPTY_SPHERE: Vec4 = Vec4::new(0.0, 0.0, 0.0, -1.0);
+
 fn merge_spheres(a: Vec4, b: Vec4) -> Vec4 {
+    if a.w < 0.0 {
+        return b;
+    }
+    if b.w < 0.0 {
+        return a;
+    }
     let sr = a.w.min(b.w);
     let br = a.w.max(b.w);
     let len = a.xyz().distance(b.xyz());
-    if len + sr <= br || sr == 0.0 || len == 0.0 {
+    if len + sr <= br {
         if a.w > b.w { a } else { b }
     } else {
         let radius = (sr + br + len) / 2.0;
@@ -1065,7 +1083,7 @@ impl Default for TempMeshletGroup {
     fn default() -> Self {
         Self {
             aabb: aabb_default(), // Default AABB to merge into
-            lod_bounds: Vec4::ZERO,
+            lod_bounds: EMPTY_SPHERE,
             parent_error: f32::MAX,
             meshlets: SmallVec::new(),
         }
@@ -1252,7 +1270,7 @@ impl BvhBuilder {
                 let child = &out[child_id as usize];
                 let mut aabb = aabb_default();
                 let mut parent_error = 0.0f32;
-                let mut lod_bounds = Vec4::ZERO;
+                let mut lod_bounds = EMPTY_SPHERE;
                 for i in 0..8 {
                     if bvh_node_child_counts(child, i) == 0 {
                         break;
@@ -1296,6 +1314,11 @@ impl BvhBuilder {
                     .map(|&m| meshlets.meshlets[m as usize]),
             );
             remapped_cull_data.extend(group.meshlets.iter().map(|&m| cull_data[m as usize]));
+            // The count is stored in a byte, where 0 marks an unused child and 255 an inner node.
+            assert!(
+                count > 0 && count < u8::MAX as u32,
+                "meshlet group has {count} meshlets, must be in 1..255"
+            );
             group.meshlets.resize(2, 0);
             group.meshlets[0] = first;
             group.meshlets[1] = count;
@@ -1366,7 +1389,7 @@ fn verify_bvh(
                 let sphere_error = (sphere.xyz() - child.lod_bounds[i].xyz()).length()
                     - (sphere.w - child.lod_bounds[i].w);
                 assert!(
-                    sphere_error <= 0.001,
+                    sphere_error <= sphere_tolerance(sphere),
                     "BVH lod spheres are not monotonic ({sphere_error})"
                 );
             }
@@ -1389,13 +1412,18 @@ fn verify_bvh(
                 let sphere_error = (sphere.xyz() - meshlet.lod_group_sphere.xyz()).length()
                     - (sphere.w - meshlet.lod_group_sphere.w);
                 assert!(
-                    sphere_error <= 0.001,
+                    sphere_error <= sphere_tolerance(sphere),
                     "meshlet lod spheres are not monotonic: ({sphere_error})"
                 );
                 reachable[mid] = true;
             }
         }
     }
+}
+
+/// Slack for sphere containment checks, relative to the magnitude of the sphere's coordinates.
+fn sphere_tolerance(sphere: Vec4) -> f32 {
+    (sphere.xyz().abs().max_element() + sphere.w).max(1.0) * 0.001
 }
 
 fn aabb_default() -> Aabb3d {
@@ -1407,4 +1435,54 @@ fn aabb_default() -> Aabb3d {
 
 fn aabb_to_meshlet(aabb: Aabb3d, child_offset: u32) -> AabbPtr {
     aabb_ptr_new(aabb, child_offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::tasks::TaskPool;
+
+    #[test]
+    fn merge_spheres_contains_both() {
+        let a = Vec4::new(0.0, 0.0, 0.0, 3.0);
+        let b = Vec4::new(10.0, 0.0, 0.0, 1.0);
+        assert_eq!(merge_spheres(a, b), Vec4::new(4.0, 0.0, 0.0, 7.0));
+        assert_eq!(merge_spheres(EMPTY_SPHERE, b), b);
+        assert_eq!(merge_spheres(a, EMPTY_SPHERE), a);
+        // A zero-radius sphere outside the other one still has to be enclosed.
+        let point = Vec4::new(10.0, 0.0, 0.0, 0.0);
+        assert_eq!(merge_spheres(a, point), Vec4::new(3.5, 0.0, 0.0, 6.5));
+    }
+
+    /// Builds the full LOD chain for a bumpy grid; `BvhBuilder::build` verifies the result.
+    #[test]
+    fn builds_lods_for_grid() {
+        AsyncComputeTaskPool::get_or_init(TaskPool::new);
+        let n = 120u32;
+        let mut vertices = Vec::new();
+        for y in 0..=n {
+            for x in 0..=n {
+                let height = ((x as f32 * 0.3).sin() + (y as f32 * 0.2).cos()) * 0.5;
+                vertices.push(Vec3::new(x as f32, height, y as f32));
+            }
+        }
+        let mut indices = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                let i = y * (n + 1) + x;
+                indices.extend_from_slice(&[i, i + n + 1, i + 1, i + 1, i + n + 1, i + n + 2]);
+            }
+        }
+        let normals = [0.0, 1.0, 0.0].repeat(vertices.len());
+        let uvs = vec![0.0; vertices.len() * 2];
+
+        let mesh = MeshletMesh::new(&indices, &vertices, &normals, &uvs);
+
+        let header = mesh.header;
+        let lod0_meshlets = indices.len() / 3 / 128;
+        let meshlets =
+            (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
+        assert!(meshlets > lod0_meshlets, "no further LODs were built");
+        assert_eq!(header.aabb.half_extend[0], n as f32 / 2.0);
+    }
 }

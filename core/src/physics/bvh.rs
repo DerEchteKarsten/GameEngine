@@ -214,12 +214,19 @@ impl<'a> Iterator for &mut ChildIter<'a> {
     }
 }
 
-fn transform_ray(ray: &RayCast3d, mat: &Mat4) -> Option<RayCast3d> {
-    let origin = mat.transform_point3(ray.origin.into());
-    let direction = mat.transform_vector3(ray.direction.to_vec3());
-    Dir3::new(direction)
-        .map(|direction| RayCast3d::new(origin, direction, ray.max))
-        .ok()
+/// The ray in the local space of an instance with the given local-to-world matrix, plus how
+/// many local units one world unit along the ray is. Local hit distances are divided by that
+/// factor to get world distances. It depends on the ray direction unless the scale is uniform.
+fn ray_to_local(ray: &RayCast3d, local_to_world: &Mat4) -> Option<(RayCast3d, f32)> {
+    let world_to_local = local_to_world.inverse();
+    let origin = world_to_local.transform_point3(ray.origin.into());
+    let direction = world_to_local.transform_vector3(ray.direction.to_vec3());
+    let local_per_world = direction.length();
+    let direction = Dir3::new(direction).ok()?;
+    Some((
+        RayCast3d::new(origin, direction, ray.max * local_per_world),
+        local_per_world,
+    ))
 }
 
 fn transform_aabb(aabb: &Aabb3d, mat: &Mat4) -> Aabb3d {
@@ -324,15 +331,12 @@ impl SceneBvh {
 
                         let blas_bvh: &[u8] = &mesh.colission_bvh;
 
-                        let mat = transform.to_matrix();
-                        let inv = mat.inverse();
-                        let local_to_world_t =
-                            mat.transform_vector3(ray.direction.to_vec3()).length();
-                        let Some(mut local_ray) = transform_ray(ray, &inv) else {
+                        let Some((local_ray, local_per_world)) =
+                            ray_to_local(ray, &transform.to_matrix())
+                        else {
                             continue;
                         };
 
-                        local_ray.max /= local_to_world_t;
                         // Traverse the BLAS inline — push its root onto the
                         // stack with the local ray. We can't mix rays though,
                         // so we do a nested traversal here rather than sharing
@@ -342,11 +346,11 @@ impl SceneBvh {
                             blas_bvh,
                             blas.blas_root_node_index,
                             blas.entity,
-                            best.map(|b| b.t / local_to_world_t),
+                            best.map(|b| b.t * local_per_world),
                         );
 
                         if let Some(mut result) = blas_result {
-                            result.t *= local_to_world_t;
+                            result.t /= local_per_world;
                             if best.is_none_or(|b| result.t < b.t) {
                                 best = Some(result);
                             }
@@ -677,5 +681,76 @@ pub(crate) fn debug_draw_scene_bvh(
                 ChildData::HasLeaf(_) => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn triangle_blas(triangle: [Vec3A; 3]) -> (Vec<u8>, usize) {
+        let aabb = Aabb3d::from_point_cloud(Isometry3d::IDENTITY, triangle.into_iter());
+        let mut leafs = [LeafData {
+            mortan_code: 0,
+            data: ChildData::HasLeaf(HasLeaf {
+                triangle: triangle.map(|v| v.extend(0.0).to_array()),
+            }),
+            typ: ChildType::HasLeaf,
+            aabb,
+        }];
+        let mut data = Vec::new();
+        let root = build_bvh(build_intial_nodes(&mut leafs, aabb), aabb, &mut data);
+        (data, root)
+    }
+
+    /// World distance to a unit quad half in the local XY plane, seen through `local_to_world`.
+    fn hit_distance(ray: &RayCast3d, local_to_world: &Mat4) -> Option<f32> {
+        let (bvh, root) = triangle_blas([
+            Vec3A::new(-1.0, -1.0, 0.0),
+            Vec3A::new(3.0, -1.0, 0.0),
+            Vec3A::new(-1.0, 3.0, 0.0),
+        ]);
+        let (local_ray, local_per_world) = ray_to_local(ray, local_to_world)?;
+        let hit = raycast_blas(&local_ray, &bvh, root, Entity::PLACEHOLDER, None)?;
+        Some(hit.t / local_per_world)
+    }
+
+    #[test]
+    fn flat_axis_aligned_triangles_are_hit() {
+        let ray = RayCast3d::new(Vec3A::new(0.2, 0.1, 5.0), Dir3A::NEG_Z, 1000.0);
+        let t = hit_distance(&ray, &Mat4::IDENTITY).unwrap();
+        assert!((t - 5.0).abs() < 1e-4, "{t}");
+    }
+
+    #[test]
+    fn hit_distance_is_in_world_units_under_uniform_scale() {
+        let mat = Mat4::from_scale_rotation_translation(
+            Vec3::splat(0.01),
+            Quat::IDENTITY,
+            Vec3::new(0.0, 0.0, -2.0),
+        );
+        let ray = RayCast3d::new(Vec3A::new(0.0, 0.0, 3.0), Dir3A::NEG_Z, 1000.0);
+        let t = hit_distance(&ray, &mat).unwrap();
+        assert!((t - 5.0).abs() < 1e-3, "{t}");
+    }
+
+    /// A wall modelled as a unit plane and stretched by its node transform, hit at an angle:
+    /// the distance must not depend on the stretch along the wall.
+    #[test]
+    fn hit_distance_is_in_world_units_under_non_uniform_scale() {
+        let mat = Mat4::from_scale(Vec3::new(10.0, 0.5, 1.0));
+        let direction = Dir3A::new(Vec3A::new(1.0, 0.0, -1.0)).unwrap();
+        let ray = RayCast3d::new(Vec3A::new(0.0, 0.0, 2.0), direction, 1000.0);
+        let t = hit_distance(&ray, &mat).unwrap();
+        let expected = 2.0 * 2.0f32.sqrt();
+        assert!((t - expected).abs() < 1e-3, "{t} vs {expected}");
+    }
+
+    #[test]
+    fn local_ray_keeps_the_world_range() {
+        let mat = Mat4::from_scale(Vec3::splat(0.01));
+        let ray = RayCast3d::new(Vec3A::new(0.0, 0.0, 3.0), Dir3A::NEG_Z, 2.0);
+        // The plane is 3 world units away, beyond the ray's range of 2.
+        assert!(hit_distance(&ray, &mat).is_none());
     }
 }

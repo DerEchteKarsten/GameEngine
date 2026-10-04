@@ -1,4 +1,5 @@
 //! Scrollable region state with scrollbar sizing, clamping and drawing.
+use lava::bindless::BindlessHandle;
 use bevy::math::Rect;
 use glam::Vec2;
 
@@ -77,6 +78,7 @@ impl Scrollable {
             viewport_size,
             clip_rect,
             false,
+            BindlessHandle::default(),
         );
 
         let scroll_max = (self.content_size - size).max(Vec2::ONE);

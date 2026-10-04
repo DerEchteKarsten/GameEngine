@@ -54,9 +54,8 @@ impl Render {
     pub fn base_schedule() -> Schedule {
         let mut schedule = Schedule::new(Self);
 
-        schedule.configure_sets(
-            (RenderSystems::ApplyExtractCommands, RenderSystems::Render).chain(),
-        );
+        schedule
+            .configure_sets((RenderSystems::ApplyExtractCommands, RenderSystems::Render).chain());
         schedule
     }
 }
@@ -243,7 +242,15 @@ fn renderer_extract(app_world: &mut World, _world: &mut World) {
     });
 }
 
-fn init(window: Single<&RawHandleWrapperHolder, With<PrimaryWindow>>) {
+/// Surface of the primary window. Created on the main world next to `lava::init`, moved into
+/// the render world before `RenderStartup`, and taken by the swapchain there.
+#[derive(Resource)]
+pub struct PrimarySurface(pub Option<lava::vkobjects::surface::Surface>);
+
+fn init(
+    mut cmd: bevy::prelude::Commands,
+    window: Single<&RawHandleWrapperHolder, With<PrimaryWindow>>,
+) {
     #[cfg(debug_assertions)]
     let validation = true;
 
@@ -252,14 +259,17 @@ fn init(window: Single<&RawHandleWrapperHolder, With<PrimaryWindow>>) {
 
     let mutex = window.0.lock().unwrap();
     let handle = mutex.as_ref().unwrap();
+    let display = handle.get_display_handle();
     lava::init(
-        &handle.get_display_handle(),
-        &handle.get_window_handle(),
+        Some(&display),
         validation,
         // true,
         false,
     )
     .unwrap();
+    cmd.insert_resource(PrimarySurface(Some(
+        lava::vkobjects::surface::Surface::new(&display, &handle.get_window_handle()).unwrap(),
+    )));
 }
 
 #[derive(Default, Debug)]
@@ -293,6 +303,9 @@ impl Plugin for RenderPlugin {
             )
             .set_extract(move |main_world, render_world| {
                 if should_run_startup {
+                    if let Some(surface) = main_world.remove_resource::<PrimarySurface>() {
+                        render_world.insert_resource(surface);
+                    }
                     render_world.run_schedule(RenderStartup);
                     should_run_startup = false;
                 }

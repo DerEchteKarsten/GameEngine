@@ -14,13 +14,14 @@ use bevy::{
     },
     reflect::{PartialReflect, Reflect, ReflectMut, TypeRegistry, reflect_trait},
 };
-use glam::{EulerRot, Mat3, Quat, Vec3};
+use glam::{EulerRot, Mat3, Quat, Vec2, Vec3};
 
 use crate::{
     editor::picking::Selected,
     ui::{
         UiContext,
         builder::{UiBuilder, UiWindowBuilder},
+        window::{DrawSettings, Drawable},
     },
 };
 
@@ -362,18 +363,107 @@ impl EditorView for Entity {
     }
 }
 
+/// A boxed asset path that accepts dropped `Handle<A>`s. `width` is the width of the box.
+fn handle_slot<A: Asset>(
+    ui: &mut UiWindowBuilder,
+    handle: Option<&Handle<A>>,
+    width: f32,
+) -> Option<Handle<A>> {
+    let label = match handle {
+        Some(handle) => handle
+            .path()
+            .map(|path| path.to_string())
+            .unwrap_or_else(|| "Unknown".to_string()),
+        None => "None".to_string(),
+    };
+    let pad = UiWindowBuilder::child_offset();
+    let inner_width = width - pad.x * 2.0;
+    // Keep the end of a long path: that is where the file name and sub-asset label are.
+    let max_chars = (inner_width / UiContext::text_len(" ")) as usize;
+    let chars = label.chars().count();
+    let label = if chars > max_chars && max_chars > 2 {
+        let tail: String = label.chars().skip(chars - (max_chars - 2)).collect();
+        format!("..{tail}")
+    } else {
+        label
+    };
+    let color = if ui.disable_all_input || handle.is_none() {
+        UiContext::TEXT_DIM
+    } else {
+        UiContext::TEXT
+    };
+
+    ui.asset_drop_target::<A>(|ui| {
+        let size = Vec2::new(width, UiContext::ATLAS_CELL_SIZE.y as f32 + pad.y * 2.0);
+        ui.rect(size, DrawSettings::default());
+        let rect = ui.prev_element;
+        ui.ctx.window.draw_text(
+            (rect.min + pad).round(),
+            color,
+            &label,
+            ui.ctx.viewport_size,
+            rect.intersect(ui.clip_rect),
+            false,
+        );
+    })
+}
+
 impl<A: Asset> EditorView for Handle<A> {
     fn ui(
         &mut self,
         ui: &mut UiWindowBuilder,
-        _name: &str,
+        name: &str,
         _id: u64,
         _registry: &TypeRegistry,
     ) -> bool {
-        self.path()
-            .map(|path| ui.text(path.to_string()))
-            .unwrap_or_else(|| ui.text("Unknown"));
-        false
+        ui.horizontal();
+        ui.text(name);
+        let before = ui.cursor.x;
+        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
+        let dropped = handle_slot(ui, Some(&*self), INPUT_WIDTH);
+        ui.cursor.x = before;
+        ui.vertical();
+        match dropped {
+            Some(handle) => {
+                *self = handle;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl<A: Asset> EditorView for Option<Handle<A>> {
+    fn ui(
+        &mut self,
+        ui: &mut UiWindowBuilder,
+        name: &str,
+        _id: u64,
+        _registry: &TypeRegistry,
+    ) -> bool {
+        const CLEAR: &str = "x";
+        let clear_width = UiContext::text_len(CLEAR)
+            + UiWindowBuilder::child_offset().x * 2.0
+            + UiContext::ELEMENT_GAP.x as f32;
+
+        ui.horizontal();
+        ui.text(name);
+        let before = ui.cursor.x;
+        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
+        let dropped = handle_slot(ui, self.as_ref(), INPUT_WIDTH - clear_width);
+        let cleared = self.is_some() && ui.button(CLEAR);
+        ui.cursor.x = before;
+        ui.vertical();
+
+        if let Some(handle) = dropped {
+            *self = Some(handle);
+            true
+        } else if cleared {
+            *self = None;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -602,7 +692,7 @@ fn draw_reflect_value(
     changed
 }
 
-pub(crate) fn selected_ui(world: &mut World) {
+pub(crate) fn selected_ui(world: &mut World, state: &mut SystemState<UiBuilder<'static, 'static>>) {
     let mut q = world.query_filtered::<Entity, With<Selected>>();
     let entity = q.iter(world).last();
 
@@ -647,8 +737,6 @@ pub(crate) fn selected_ui(world: &mut World) {
         };
 
     let mut mutations: Vec<(ComponentId, Box<dyn PartialReflect>)> = vec![];
-
-    let mut state: SystemState<UiBuilder> = SystemState::new(world);
 
     let mut ui = state.get_mut(world);
     ui.build("Selected", |ui| {

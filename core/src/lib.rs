@@ -1,4 +1,7 @@
 //! Engine core: assembles bevy, rendering, assets, scene, UI, editor and physics plugins.
+// Needed to call `BindingOutput`'s access-registering methods, whose return type is `{ N + 1 }`.
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![feature(integer_casts)]
 
 use bevy::{
@@ -41,6 +44,8 @@ pub mod render;
 pub mod scene;
 pub mod ui;
 
+/// Root of the unprocessed assets: the asset server's source and the asset browser's root.
+pub const ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/assets";
 pub const INITIAL_WINDOW_SIZE: Vec2 = Vec2::new(2000.0, 2000.0 * 9.0 / 16.0);
 
 #[allow(non_snake_case)]
@@ -53,7 +58,7 @@ pub fn CorePlugin(app: &mut App) {
         },
         AssetPlugin {
             mode: AssetMode::Processed,
-            file_path: "/home/karsten/code/GameEngine/game/assets".to_string(),
+            file_path: ASSET_DIR.to_string(),
             processed_file_path: "/home/karsten/code/GameEngine/game/imported_assets".to_string(),
             ..Default::default()
         },

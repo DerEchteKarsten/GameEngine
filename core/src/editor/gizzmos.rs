@@ -2,10 +2,10 @@
 use std::ops::Range;
 
 use crate::{
-    editor::viewport::{ViewPort, ViewPortProxy},
+    editor::viewport::ViewPortProxy,
     render::{
         FRAMES_IN_FLIGHT, MainWorld,
-        render::{FrameCount, RenderCamera, Swapchain},
+        render::{FrameCount, RenderCamera},
     },
     scene::camera::Camera,
 };
@@ -18,11 +18,16 @@ use bevy::{
     },
     transform::components::GlobalTransform,
 };
-use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
+use glam::{IVec2, Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
 use lava::bindings::{DrawAabbs, DrawArrows, DrawSpheres, Gizzmo};
 use lava::{
     buffer::Buffer,
     command_buffer::{CommandBuffer, Scissor, Viewport},
+    image::{
+        format::{ColorAspect, Format},
+        slice::ImageView,
+        usage::ColorAttachmentStorage,
+    },
 };
 
 const MAX_GIZZMOS: usize = 1_000_000;
@@ -339,17 +344,25 @@ pub(crate) fn init_gizzmos(mut cmd: Commands) {
 }
 
 impl GizzmoResources {
-    pub(crate) fn draw<'a>(
+    pub(crate) fn draw<F: Format + ColorAspect>(
         &self,
         cmd: &mut CommandBuffer,
-        swapchain: &Swapchain,
+        target: ImageView<'_, F, ColorAttachmentStorage>,
+        target_size: UVec2,
         camera: &RenderCamera,
-        viewport: &ViewPort,
         frame_in_flight: usize,
     ) {
+        let scissors = [Scissor {
+            extent: target_size,
+            offset: IVec2::ZERO,
+        }];
+        let viewport = Viewport {
+            extent: target_size,
+            offset: IVec2::ZERO,
+        };
         if !self.aabb_range.is_empty() {
             cmd.raster()
-                .color_attachment(swapchain.image(), None)
+                .color_attachment(target, None)
                 .backface_culling(false)
                 .draw_with_dynstates(
                     DrawAabbs::new(
@@ -357,22 +370,16 @@ impl GizzmoResources {
                         self.gizzmos
                             .range((MAX_GIZZMOS * frame_in_flight + self.aabb_range.start)..),
                     ),
-                    swapchain.size.into(),
+                    target_size,
                     36,
                     self.aabb_range.len() as u32,
-                    &[Scissor {
-                        extent: viewport.visible_rect.size().as_uvec2(),
-                        offset: viewport.visible_rect.min.as_ivec2(),
-                    }],
-                    Viewport {
-                        extent: viewport.rect.size().as_uvec2(),
-                        offset: viewport.rect.min.as_ivec2(),
-                    },
+                    &scissors,
+                    viewport,
                 );
         }
         if !self.sphere_range.is_empty() {
             cmd.raster()
-                .color_attachment(swapchain.image(), None)
+                .color_attachment(target, None)
                 .backface_culling(false)
                 .draw_with_dynstates(
                     DrawSpheres::new(
@@ -380,22 +387,16 @@ impl GizzmoResources {
                         self.gizzmos
                             .range((MAX_GIZZMOS * frame_in_flight + self.sphere_range.start)..),
                     ),
-                    swapchain.size.into(),
+                    target_size,
                     576,
                     self.sphere_range.len() as u32,
-                    &[Scissor {
-                        extent: viewport.visible_rect.size().as_uvec2(),
-                        offset: viewport.visible_rect.min.as_ivec2(),
-                    }],
-                    Viewport {
-                        extent: viewport.rect.size().as_uvec2(),
-                        offset: viewport.rect.min.as_ivec2(),
-                    },
+                    &scissors,
+                    viewport,
                 );
         }
         if !self.arrow_range.is_empty() {
             cmd.raster()
-                .color_attachment(swapchain.image(), None)
+                .color_attachment(target, None)
                 .backface_culling(false)
                 .draw_with_dynstates(
                     DrawArrows::new(
@@ -403,17 +404,11 @@ impl GizzmoResources {
                         self.gizzmos
                             .range((MAX_GIZZMOS * frame_in_flight + self.arrow_range.start)..),
                     ),
-                    swapchain.size.into(),
+                    target_size,
                     216,
                     self.arrow_range.len() as u32,
-                    &[Scissor {
-                        extent: viewport.visible_rect.size().as_uvec2(),
-                        offset: viewport.visible_rect.min.as_ivec2(),
-                    }],
-                    Viewport {
-                        extent: viewport.rect.size().as_uvec2(),
-                        offset: viewport.rect.min.as_ivec2(),
-                    },
+                    &scissors,
+                    viewport,
                 );
         }
     }

@@ -1,38 +1,62 @@
-//! Editor 3D viewport rect from the dock layout and window-to-viewport coordinate helpers.
+//! Editor 3D viewport: the dockable tab showing the scene image, and window-to-viewport helpers.
 use bevy::{
     ecs::{
         resource::Resource,
         system::{If, Res, ResMut, Single, SystemParam, lifetimeless},
     },
+    input::{ButtonInput, mouse::MouseButton},
     math::Rect,
     window::Window,
 };
-use glam::{UVec2, Vec2};
+use glam::{UVec2, Vec2, Vec4};
+use lava::bindless::BindlessHandle;
 
-use crate::ui::dock::DockingNode;
+use crate::ui::{UiWindows, builder::UiBuilder, window::Drawable};
 
-#[derive(Resource, Debug, Copy, Clone)]
+#[derive(Resource, Debug)]
 pub struct ViewPort {
     pub rect: Rect,
-    pub visible_rect: Rect,
     pub focused: bool,
+    pub hovered: bool,
+    pub image: BindlessHandle,
+    pub image_size: Vec2,
 }
 
-pub(crate) fn update_view_port(
+pub(crate) fn viewport_ui(
+    mut ui: UiBuilder,
     mut vp: If<ResMut<ViewPort>>,
-    dock: Res<DockingNode>,
-    window: Single<&Window>,
+    windows: Res<UiWindows>,
+    mouse: Res<ButtonInput<MouseButton>>,
 ) {
-    let size = window.physical_size();
+    let vp = &mut **vp;
+    let window = windows.find_tab("Viewport").map(|(window, _)| window);
+    let mut focused = false;
+    vp.hovered = false;
+    ui.build("Viewport", |ui| {
+        let rect = ui.clip_rect;
+        if rect.width() < 1.0 || rect.height() < 1.0 {
+            return;
+        }
+        vp.rect = rect;
+        vp.hovered = ui
+            .ctx
+            .input
+            .cursor_pos
+            .is_some_and(|pos| rect.contains(pos) && windows.window_at(pos) == window);
+        focused = ui.ctx.focused.is_some();
 
-    let dock_rect = dock
-        .dock_info(u32::MAX, Rect::from_corners(Vec2::ZERO, size.as_vec2()))
-        .unwrap();
+        ui.ctx.window.draw_rect(
+            rect,
+            Some((Vec2::ZERO, rect.size() / vp.image_size.max(Vec2::ONE))),
+            Vec4::ONE,
+            ui.ctx.viewport_size,
+            rect,
+            false,
+            vp.image,
+        );
+    });
 
-    vp.rect = dock_rect;
-    vp.visible_rect = vp
-        .rect
-        .intersect(Rect::from_corners(Vec2::ZERO, size.as_vec2()))
+    vp.focused = focused || (vp.hovered && mouse.pressed(MouseButton::Right));
 }
 
 #[derive(SystemParam)]

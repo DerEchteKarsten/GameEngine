@@ -65,9 +65,32 @@ impl DockingNode {
         (left_area, right_area)
     }
 
+    /// Puts `window` into the first empty leaf. Returns false if there is none.
+    pub fn fill_empty(&mut self, window: u32) -> bool {
+        match self {
+            DockingNode::Leaf { window: w } => {
+                let empty = *w == u32::MAX;
+                if empty {
+                    *w = window;
+                }
+                empty
+            }
+            DockingNode::Node { left, right, .. } => {
+                left.fill_empty(window) || right.fill_empty(window)
+            }
+        }
+    }
+
     pub fn dock(&mut self, window: u32, cursor_pos: Vec2, area: Rect) -> Option<u32> {
         match self {
             DockingNode::Leaf { window: w, .. } => {
+                if *w == u32::MAX {
+                    // An empty leaf is filled completely instead of being split.
+                    if area.contains(cursor_pos) {
+                        *w = window;
+                    }
+                    return None;
+                }
                 if *w != u32::MAX
                     && from_pos_size(
                         area.min,
@@ -144,6 +167,9 @@ impl DockingNode {
     pub fn preview_dock(&self, cursor_pos: Vec2, area: Rect) -> Option<Rect> {
         match self {
             DockingNode::Leaf { window } => {
+                if *window == u32::MAX {
+                    return area.contains(cursor_pos).then_some(area);
+                }
                 if *window != u32::MAX
                     && from_pos_size(
                         area.min,

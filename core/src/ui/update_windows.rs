@@ -20,7 +20,7 @@ use smallvec::SmallVec;
 use std::sync::Mutex;
 
 use crate::ui::{
-    FocusedState, MultiInput, UiContext, UiWindows,
+    FocusedState, MultiInput, UiContext, UiWindows, WindowCommand,
     scrollable::Scrollable,
     window::{BorderSettings, DrawSettings},
 };
@@ -162,25 +162,37 @@ pub fn update_windows(
     mut ctx: ResMut<UiContext>,
     mut dock: ResMut<DockingNode>,
 ) {
-    let new_windows = if let Ok(mut lock) = windows.add_windows.lock() {
-        lock.drain(..).collect::<SmallVec<[String; 4]>>()
+    let ctx: &mut UiContext = &mut ctx;
+    let dock: &mut DockingNode = &mut dock;
+
+    let commands = if let Ok(mut lock) = windows.commands.lock() {
+        std::mem::take(&mut *lock)
     } else {
         SmallVec::new()
     };
-    for (i, label) in new_windows.into_iter().enumerate() {
-        let pos = Vec2::new(500.0 * i as f32, 0.0);
-        windows.append(UiWindow::new(
-            vec![Tab {
-                label,
-                state: Mutex::new(TabState::default()),
-            }],
-            Rect::from_corners(pos, pos + Vec2::new(500.0, 500.0)),
-            0,
-        ));
+    let mut added = 0;
+    for command in commands {
+        match command {
+            WindowCommand::Add { label, pos, size } => {
+                if windows.find_tab(&label).is_some() {
+                    continue;
+                }
+                let pos = pos.unwrap_or(Vec2::new(500.0 * added as f32, 0.0));
+                let size = size.unwrap_or(Vec2::new(500.0, 500.0));
+                added += 1;
+                windows.append(UiWindow::new(
+                    vec![Tab {
+                        label,
+                        state: Mutex::new(TabState::default()),
+                    }],
+                    Rect::from_corners(pos, pos + size),
+                    0,
+                ));
+            }
+            WindowCommand::Close(label) => windows.close_tab(&label, dock),
+            WindowCommand::Open(label) => windows.open_tab(&label),
+        }
     }
-
-    let ctx: &mut UiContext = &mut ctx;
-    let dock: &mut DockingNode = &mut dock;
 
     let viewport_size = desktop_window.physical_size().as_vec2();
     let frame = FrameInfo {
@@ -188,6 +200,11 @@ pub fn update_windows(
         viewport_size,
         full_screen_rect: Rect::from_corners(Vec2::ZERO, viewport_size),
     };
+
+    if let Ok(overlay) = windows.overlay.get_mut() {
+        overlay.verticies.clear();
+        overlay.indicies.clear();
+    }
 
     let mut found_new_focused = false;
     let mut hovering_any_tab = false;
@@ -301,6 +318,7 @@ pub fn update_windows(
                 layer: window.layer,
                 rect: window.rect,
                 focused: window.focused.take(),
+                hidden: false,
                 verticies: Vec::new(),
                 indicies: Vec::new(),
             })
@@ -332,8 +350,11 @@ pub fn update_windows(
                 && focused.draging == Some(Draggable::Window)
             {
                 if docked {
-                    if (focused.drag_start - cursor_pos).length() > UiContext::DRAG_THRESHHOLD {
-                        dock.undock(i as u32);
+                    if (focused.drag_start - cursor_pos).length() > UiContext::DRAG_THRESHHOLD
+                        && dock.undock(i as u32)
+                    {
+                        // The window was the root leaf: nothing is docked any more.
+                        *dock = DockingNode::default();
                     }
                 } else {
                     let size = window.rect.size();

@@ -13,6 +13,10 @@ struct BvhCullBindings {
     float4x4 proj;
     float4x4 clip_from_world;
     float window_height;
+    float lod_bias;
+    uint max_nodes;
+    uint max_candidate_meshlets;
+    uint max_visible_meshlets;
 };
 [[vk::push_constant]] BvhCullBindings b;
 #define INVALID_U32 (~uint(0))
@@ -24,14 +28,8 @@ struct BvhCullBindings {
 #define MAX_BVH_NODE_CHILDREN_NUM (1 << MAX_BVH_NODE_CHILDREN_BITS_NUM)
 #define MAX_BVH_NODES_PER_GROUP (DAG_CULL_GROUP_SIZE >> MAX_BVH_NODE_CHILDREN_BITS_NUM)
 
-#define MAX_NODES 2 * 1024 * 1024
-
-#define MAX_CANDIDATE_MESHLETS 16 * 1024 * 1024
-#define MAX_CANDIDATE_MESHLETS_BATCH (MAX_CANDIDATE_MESHLETS / DAG_CULL_GROUP_SIZE)
-
-#define MAX_VISIBLE_MESHLETS 4 * 1024 * 1024
-
 groupshared uint GroupNumCandidateNodes;
+groupshared uint GroupNumAcceptedNodes;
 groupshared uint GroupCandidateNodesOffset;
 
 groupshared uint GroupNodeBatchStartIndex;
@@ -61,7 +59,7 @@ bool lod_error_is_imperceptible(float4 lod_sphere, float simplification_error, f
     let d_pos = world_sphere_center - camera_pos.xyz;
     let d = max(sqrt(dot(d_pos, d_pos)) - world_sphere_radius, near);
     let norm_error = (simplification_error * world_scale) / d * b.proj[1][1] * 0.5;
-    return norm_error * b.window_height < 1.0;
+    return norm_error * b.window_height <= b.lod_bias;
 }
 
 float4 normalize_plane(float4 p) {
@@ -172,12 +170,14 @@ void ProcessNodeBatch(uint batchSize, uint groupIndex)
     if (groupIndex == 0)
     {
         InterlockedAdd(b.queue_state.val.node_write_offset, GroupNumCandidateNodes, GroupCandidateNodesOffset);
-        InterlockedAdd(b.queue_state.val.node_count, GroupNumCandidateNodes);
+        // Nodes that don't fit in the queue are dropped, and must not be counted as pending.
+        GroupNumAcceptedNodes = min(GroupNumCandidateNodes, b.max_nodes - min(GroupCandidateNodesOffset, b.max_nodes));
+        InterlockedAdd(b.queue_state.val.node_count, GroupNumAcceptedNodes);
     }
     AllMemoryBarrierWithGroupSync();
 
     // Write new tasks to the queue
-    if (push_node)
+    if (push_node && node_write_offset_in_group < GroupNumAcceptedNodes)
     {
         uint globalIdx = (GroupCandidateNodesOffset + node_write_offset_in_group);
         b.queue.val[globalIdx] = InstanceBvhRoot(job.instance, child_node);
@@ -221,7 +221,7 @@ void ProcessNodeBatch(uint batchSize, uint groupIndex)
         uint candidateWriteOffset = 0;
         InterlockedAdd(b.queue_state.val.candidate_meshlet_write_offset, totalMeshletsInGroup, candidateWriteOffset);
 
-        const uint candidateEnd = min(candidateWriteOffset + totalMeshletsInGroup, MAX_CANDIDATE_MESHLETS);
+        const uint candidateEnd = min(candidateWriteOffset + totalMeshletsInGroup, b.max_candidate_meshlets);
         GroupCandidateMeshletBase = candidateWriteOffset;
         GroupCandidateMeshletCount = (uint)max((int)candidateEnd - (int)candidateWriteOffset, 0);
     }
@@ -279,7 +279,12 @@ void ProcessMeshletBatch(uint meshletBatchStartIndex, uint meshletBatchReadySize
             lod_error_is_imperceptible(cull_data.lod_group_sphere, cull_data.aabb.center_and_error.w, trans)) {
             uint write_offset;
             InterlockedAdd(b.queue_state.val.visible_meshlet_count, 1, write_offset);
-            b.visible_meshlets.val[write_offset] = InstancedMeshlet((uint64_t)job.instance, (Meshlet *)(header.meshlet_offset + uint64_t(job.meshlet * sizeof(Meshlet))));
+            if (write_offset < b.max_visible_meshlets) {
+                b.visible_meshlets.val[write_offset] = InstancedMeshlet((uint64_t)job.instance, (Meshlet *)(header.meshlet_offset + uint64_t(job.meshlet * sizeof(Meshlet))));
+            } else {
+                // Out of space: undo the reservation so the draw never sees more meshlets than were written.
+                InterlockedAdd(b.queue_state.val.visible_meshlet_count, ~0u);
+            }
         }
 
     }
@@ -324,7 +329,7 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
 
                 nodeBatchLocalOffset = 0;
                 nodeBatchBaseIndex = GroupNodeBatchStartIndex;
-                if (nodeBatchBaseIndex >= MAX_NODES)
+                if (nodeBatchBaseIndex >= b.max_nodes)
                 {
                     processNodeQueue = false;
                     continue;
@@ -332,7 +337,7 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
             }
 
             const uint nodeQueueIndex = nodeBatchBaseIndex + nodeBatchLocalOffset + groupIndex;
-            bool laneHasNode = ((nodeBatchLocalOffset + groupIndex) < MAX_BVH_NODES_PER_GROUP);
+            bool laneHasNode = ((nodeBatchLocalOffset + groupIndex) < MAX_BVH_NODES_PER_GROUP) && nodeQueueIndex < b.max_nodes;
             if (laneHasNode)
             {
                 let nodeData = b.queue.val[nodeQueueIndex];
@@ -377,7 +382,7 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
             meshletBatchStartIndex = GroupMeshletBatchStartIndex;
         }
 
-        if (!processNodeQueue && GroupMeshletBatchStartIndex >= MAX_CANDIDATE_MESHLETS_BATCH)
+        if (!processNodeQueue && GroupMeshletBatchStartIndex >= b.max_candidate_meshlets / DAG_CULL_GROUP_SIZE)
             break;
 
         if (groupIndex == 0)

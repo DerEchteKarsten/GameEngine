@@ -1,21 +1,33 @@
 //! Sample game binary: boots the engine and spawns an editor camera and glTF scene
 use core::{
     CorePlugin,
+    assets::mesh::Scene,
     editor::camera::EditorCamera,
     scene::{SpawnScene, camera::CameraBundle},
+    ui::{
+        UiContext,
+        builder::{UiBuilder, UiWindowBuilder},
+    },
 };
 
 use bevy::{
     app::{App, Startup, Update},
-    asset::AssetServer,
-    ecs::system::{Commands, Res},
+    asset::{AssetServer, Handle, LoadState},
+    ecs::{
+        resource::Resource,
+        system::{Commands, Res},
+    },
     time::Time,
     transform::components::Transform,
 };
-use glam::Vec3;
+use glam::{Vec2, Vec3};
+
+#[derive(Resource)]
+struct LoadingScene(Handle<Scene>);
 
 fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
-    let handle = asset_server.load("stanford_bunny.glb");
+    let handle = asset_server.load("sponza.glb");
+    cmd.insert_resource(LoadingScene(handle.clone()));
     let camera = CameraBundle::new(
         Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         65.0_f32.to_radians(),
@@ -23,11 +35,51 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
         100.0,
     );
     cmd.spawn((camera, EditorCamera));
-    cmd.spawn((
-        Transform::from_scale(Vec3::splat(0.1)),
-        SpawnScene { scene: handle },
-    ));
+    cmd.spawn((Transform::default(), SpawnScene { scene: handle }));
 }
+
+// fn loading_window(
+//     mut ui: UiBuilder,
+//     asset_server: Res<AssetServer>,
+//     scene: Res<LoadingScene>,
+//     tracker: Res<SceneLoadTracker>,
+// ) {
+//     let path = scene.0.path();
+//     let name = path.map(|p| p.to_string()).unwrap_or_default();
+//     let state = asset_server.load_state(&scene.0);
+//     let progress = path.and_then(|p| tracker.get(p));
+
+//     if matches!(state, LoadState::Loaded) {
+//         ui.close("Loading");
+//         return;
+//     }
+
+//     ui.window("Loading")
+//         .position(Vec2::new(20.0, 20.0))
+//         .size(Vec2::new(420.0, 140.0))
+//         .build(|ui| {
+//             ui.text(&name);
+//             let (fraction, status) = match (&state, progress) {
+//                 (LoadState::Failed(_), p) => {
+//                     (p.map_or(0.0, |p| p.fraction()), "Failed".to_string())
+//                 }
+//                 (_, Some(p)) => {
+//                     let stage = match p.stage {
+//                         SceneLoadStage::Textures => "Textures",
+//                         SceneLoadStage::Meshes => "Meshes",
+//                     };
+//                     (p.fraction(), format!("{stage} {}/{}", p.done, p.total))
+//                 }
+//                 (_, None) => (0.0, "Importing".to_string()),
+//             };
+//             let width = ui.remaining_width() - UiWindowBuilder::child_offset().x * 2.0;
+//             ui.progress_bar(fraction, width, format!("{:.0}%", fraction * 100.0));
+//             ui.text(status);
+//             if let LoadState::Failed(error) = &state {
+//                 ui.wrapping_text(error.to_string(), width, UiContext::ERROR);
+//             }
+//         });
+// }
 
 fn update_mesh(
     // mut cmd: Commands,
