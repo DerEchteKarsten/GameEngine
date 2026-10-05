@@ -17,9 +17,7 @@ use lava::{
     },
 };
 
-use crate::assets::{read_compressed, write_compressed};
-
-pub const TEXTURE_EXTENSION: &str = "tex";
+use crate::assets::util::{read_compressed, write_compressed};
 
 /// What a texture holds, which decides how it is compressed.
 #[repr(u32)]
@@ -34,7 +32,7 @@ pub enum TextureKind {
 }
 
 impl TextureKind {
-    fn from_raw(raw: u32) -> Result<Self> {
+    pub fn from_raw(raw: u32) -> Result<Self> {
         Ok(match raw {
             0 => Self::Color,
             1 => Self::Data,
@@ -69,36 +67,8 @@ impl GpuTexture {
     }
 }
 
-#[derive(TypePath, Default)]
-pub struct TextureLoader;
-impl AssetLoader for TextureLoader {
-    type Asset = GpuTexture;
-    type Error = anyhow::Error;
-    type Settings = ();
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _settings: &(),
-        _load_context: &mut LoadContext<'_>,
-    ) -> Result<GpuTexture> {
-        let mut header = TextureHeader::zeroed();
-        reader.read_exact(bytes_of_mut(&mut header)).await?;
-        // The preview is for the asset browser.
-        reader.read_exact(&mut vec![0u8; PREVIEW_BYTES]).await?;
-        Ok(match TextureKind::from_raw(header.kind)? {
-            TextureKind::Color => GpuTexture::Color(read_image(&header, reader).await?),
-            TextureKind::Data => GpuTexture::Data(read_image(&header, reader).await?),
-            TextureKind::Normal => GpuTexture::Normal(read_image(&header, reader).await?),
-        })
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &[TEXTURE_EXTENSION]
-    }
-}
-
 /// Each compressed mip is uploaded before the next is read.
-async fn read_image<F: Format>(
+pub async fn read_image<F: Format>(
     header: &TextureHeader,
     reader: &mut dyn Reader,
 ) -> Result<Image<F, Sampled>> {
@@ -415,8 +385,14 @@ mod tests {
             let mut header = TextureHeader::zeroed();
             reader.read_exact(bytes_of_mut(&mut header)).await.unwrap();
             assert_eq!((header.width, header.height, header.mip_levels), (4, 2, 3));
-            assert_eq!(TextureKind::from_raw(header.kind).unwrap(), TextureKind::Normal);
-            reader.read_exact(&mut vec![0; PREVIEW_BYTES]).await.unwrap();
+            assert_eq!(
+                TextureKind::from_raw(header.kind).unwrap(),
+                TextureKind::Normal
+            );
+            reader
+                .read_exact(&mut vec![0; PREVIEW_BYTES])
+                .await
+                .unwrap();
             for mip in &texture.mips {
                 assert_eq!(&read_compressed(&mut reader).await.unwrap(), mip);
             }

@@ -34,8 +34,9 @@ use tracing::warn;
 use crate::{
     ASSET_DIR,
     assets::{
-        mesh::{GpuMesh, MESH_EXTENSION, MaterialSet, SCENE_EXTENSION, Scene},
-        texture::{GpuTexture, PREVIEW_SIZE, TEXTURE_EXTENSION, read_preview},
+        MESH_EXTENSION, SCENE_EXTENSION, TEXTURE_EXTENSION,
+        mesh::{GpuMesh, MaterialSet, Scene},
+        texture::{GpuTexture, PREVIEW_SIZE, read_preview},
     },
     editor::{picking::Selected, viewport::ViewPort},
     physics::bvh::Raycast,

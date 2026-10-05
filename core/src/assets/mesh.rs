@@ -1,7 +1,7 @@
 //! Meshes and scenes: meshlet LOD building, BVH baking, the baked `.mesh` and `.scene` files and their loaders.
 use anyhow::Result;
 use bevy::{
-    asset::{Asset, AssetLoader, Assets, Handle, LoadContext, io::Reader},
+    asset::{Asset, Assets, Handle, LoadContext, io::Reader},
     math::{
         Isometry3d,
         bounding::{Aabb3d, BoundingSphere, BoundingVolume},
@@ -26,9 +26,9 @@ use tracing::debug_span;
 
 use crate::{
     assets::{
-        read_compressed, read_names, read_slice,
+        read_compressed,
         texture::GpuTexture,
-        write_compressed, write_names, write_slice,
+        util::{read_names, read_slice, write_compressed, write_names, write_slice},
     },
     physics::bvh::{
         ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
@@ -42,9 +42,6 @@ use lava::{
 };
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
-
-pub const MESH_EXTENSION: &str = "mesh";
-pub const SCENE_EXTENSION: &str = "scene";
 
 #[derive(Pod, Zeroable, Clone, Copy, Debug)]
 #[repr(C)]
@@ -69,68 +66,6 @@ pub struct GpuMesh {
     pub header: MeshHeader,
     pub buffer: Buffer<u8>,
     pub colission_bvh: Vec<u8>,
-}
-
-/// Loads a `.mesh` file: the `MeshHeader`, the compressed GPU data and the compressed
-/// collision BVH. The file addresses its data by offsets, the shaders want pointers.
-#[derive(TypePath, Default)]
-pub struct GpuMeshLoader;
-impl AssetLoader for GpuMeshLoader {
-    type Asset = GpuMesh;
-    type Error = anyhow::Error;
-    type Settings = ();
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _settings: &(),
-        _load_context: &mut LoadContext<'_>,
-    ) -> Result<GpuMesh> {
-        let mut header = MeshHeader::zeroed();
-        reader.read_exact(bytes_of_mut(&mut header)).await?;
-        let mut data = read_compressed(reader).await?;
-
-        let buffer = Buffer::new(data.len(), true)?;
-        let address = buffer.address;
-
-        let bvh_node_count = header.meshlet_offset as usize / size_of::<BvhNode>();
-        for i in 0..bvh_node_count {
-            // `data` is a byte buffer with no alignment guarantee, so patch a copy.
-            let bytes = &mut data[i * size_of::<BvhNode>()..(i + 1) * size_of::<BvhNode>()];
-            let mut node: BvhNode = bytemuck::pod_read_unaligned(bytes);
-            for child_index in 0..node.aabb_and_offsets.len() {
-                if bvh_node_child_counts(&node, child_index) == u8::MAX {
-                    let aabb = &mut node.aabb_and_offsets[child_index];
-                    let offset = aabb_ptr_offset(aabb);
-                    aabb_ptr_set_offset(aabb, offset * size_of::<BvhNode>() as u64 + address);
-                }
-            }
-            bytes.copy_from_slice(bytes_of(&node));
-        }
-
-        let meshlet_count =
-            (header.cull_data_offset - header.meshlet_offset) as usize / size_of::<Meshlet>();
-        for i in 0..meshlet_count {
-            let offset = header.meshlet_offset as usize + i * size_of::<Meshlet>();
-            let bytes = &mut data[offset..offset + size_of::<Meshlet>()];
-            let mut meshlet: Meshlet = bytemuck::pod_read_unaligned(bytes);
-            meshlet.triangle_index = meshlet.triangle_index + header.index_offset as u64 + address;
-            meshlet.vertex_index = meshlet.vertex_index * size_of::<Vertex>() as u64
-                + header.vertex_offset as u64
-                + address;
-            bytes.copy_from_slice(bytes_of(&meshlet));
-        }
-        buffer.range(..).copy_from(&data);
-
-        Ok(GpuMesh {
-            header,
-            buffer,
-            colission_bvh: read_compressed(reader).await?,
-        })
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &[MESH_EXTENSION]
-    }
 }
 
 /// The color, metallic-roughness, normal, occlusion and emissive texture of a material.
@@ -247,89 +182,24 @@ impl SceneFile {
     }
 }
 
-#[derive(TypePath, Default)]
-pub struct SceneLoader;
-impl AssetLoader for SceneLoader {
-    type Asset = Scene;
-    type Error = anyhow::Error;
-    type Settings = ();
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _settings: &(),
-        load_context: &mut LoadContext<'_>,
-    ) -> Result<Scene> {
-        let mut scene = SceneFile::read(reader).await?;
-
-        // The meshes and textures load on their own, and are shared with everything else
-        // that loads the same files.
-        let mut textures: Vec<Handle<GpuTexture>> = Vec::with_capacity(scene.textures.len());
-        for path in &scene.textures {
-            let path = load_context.path().resolve_embed(path)?;
-            textures.push(load_context.load(path));
-        }
-        let mut meshes: Vec<Handle<GpuMesh>> = Vec::with_capacity(scene.meshes.len());
-        for path in &scene.meshes {
-            let path = load_context.path().resolve_embed(path)?;
-            meshes.push(load_context.load(path));
-        }
-
-        // The materials of the file index its textures, those of the set get bindless indices.
-        let material_textures = scene
-            .materials
-            .iter_mut()
-            .map(|material| {
-                [
-                    &mut material.color_texture,
-                    &mut material.metallic_roughness_texture,
-                    &mut material.normal_texture,
-                    &mut material.occlusion_texture,
-                    &mut material.emissive_texture,
-                ]
-                .map(|index| {
-                    let texture = std::mem::replace(index, NULL_HANDLE);
-                    (texture != NULL_HANDLE).then(|| textures[texture as usize].clone())
-                })
-            })
-            .collect();
-        let materials = load_context.add_labeled_asset(
-            "materials".to_string(),
-            MaterialSet::new(&scene.materials, material_textures),
-        );
-
-        Ok(Scene {
-            meshes,
-            materials,
-            instance_transforms: scene.instance_transforms,
-            instance_materials: scene.instance_materials,
-            instance_mesh: scene.instance_mesh,
-            instance_names: scene.instance_names,
-        })
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &[SCENE_EXTENSION]
-    }
-}
-
-fn bvh_node_child_counts(node: &BvhNode, i: usize) -> u8 {
+pub fn bvh_node_child_counts(node: &BvhNode, i: usize) -> u8 {
     ((node.child_counts >> (i * 8)) & 0xFF) as u8
 }
-fn bvh_node_set_child_count(node: &mut BvhNode, i: usize, value: u8) {
+pub fn bvh_node_set_child_count(node: &mut BvhNode, i: usize, value: u8) {
     let shift = i * 8;
     let mask = !(0xFFu64 << shift);
     node.child_counts = (node.child_counts & mask) | ((value as u64) << shift);
 }
 
-fn aabb_ptr_offset(aabb: &AabbPtr) -> u64 {
+pub fn aabb_ptr_offset(aabb: &AabbPtr) -> u64 {
     (aabb.center_and_offset_high.w.to_bits() as u64) << 32
         | aabb.half_extent_and_offset_low.w.to_bits() as u64
 }
-fn aabb_ptr_set_offset(aabb: &mut AabbPtr, value: u64) {
+pub fn aabb_ptr_set_offset(aabb: &mut AabbPtr, value: u64) {
     aabb.center_and_offset_high.w = f32::from_bits((value >> 32) as u32);
     aabb.half_extent_and_offset_low.w = f32::from_bits(value as u32);
 }
-fn aabb_ptr_new(aabb: Aabb3d, offset: u32) -> AabbPtr {
+pub fn aabb_ptr_new(aabb: Aabb3d, offset: u32) -> AabbPtr {
     AabbPtr {
         center_and_offset_high: aabb.center().extend(f32::from_bits(0)),
         half_extent_and_offset_low: aabb.half_size().extend(f32::from_bits(offset)),
@@ -1331,7 +1201,10 @@ mod tests {
             instance_materials: vec![0, 1, 1],
             instance_mesh: vec![0, 1, 1],
             instance_names: vec!["floor".into(), String::new(), "lamp.1".into()],
-            meshes: vec!["box/meshes/Plane.mesh".into(), "box/meshes/mesh_1.mesh".into()],
+            meshes: vec![
+                "box/meshes/Plane.mesh".into(),
+                "box/meshes/mesh_1.mesh".into(),
+            ],
             textures: vec!["box/textures/bricks.tex".into()],
         };
         let mut file = Vec::new();

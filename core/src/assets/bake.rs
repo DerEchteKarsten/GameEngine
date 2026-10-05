@@ -12,8 +12,9 @@ use glam::{Mat4, Vec3, Vec4};
 use lava::{bindings::Material, bindless::NULL_HANDLE};
 
 use crate::assets::{
-    mesh::{MESH_EXTENSION, MeshletMesh, SceneFile},
-    texture::{TEXTURE_EXTENSION, TextureData, TextureKind},
+    MESH_EXTENSION, TEXTURE_EXTENSION,
+    mesh::{MeshletMesh, SceneFile},
+    texture::{TextureData, TextureKind},
 };
 
 /// glTF's default `alphaCutoff`.
@@ -69,7 +70,6 @@ fn make_unique_filename(
 struct MeshJob {
     mesh: usize,
     primitive: usize,
-    /// Relative to the directory of the scene file.
     path: String,
 }
 

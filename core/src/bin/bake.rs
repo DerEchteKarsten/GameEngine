@@ -9,7 +9,7 @@ use std::{
 use bevy::tasks::{AsyncComputeTaskPool, TaskPool};
 use core::{
     ASSET_DIR, UNBAKED_ASSET_DIR,
-    assets::{bake::bake_gltf, mesh::SCENE_EXTENSION},
+    assets::{SCENE_EXTENSION, bake::bake_gltf},
 };
 
 /// The glTF files below `dir`, relative to it.
