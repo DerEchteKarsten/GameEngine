@@ -160,7 +160,7 @@ pub fn extract_camera(mut cmd: Commands, camera: Extract<Single<(&Camera, &Globa
     });
 }
 
-/// The graphics queue with its frame slots, shared by the windowed and the headless renderer.
+/// The graphics queue with its frame slots.
 pub(super) fn init_queues(cmd: &mut Commands, present: Option<Queue<Present>>) {
     let queues = Queues {
         graphics: if Ctx::num_gfx_queues() == 1 {
@@ -318,7 +318,7 @@ type RenderParams<'w, 's> = (
     Res<'w, Swapchain>,
     Option<ResMut<'w, RenderValues>>,
     Res<'w, RenderSettings>,
-    Res<'w, UiResources>,
+    Option<Res<'w, UiResources>>,
     ResMut<'w, ViewPortTarget>,
 );
 
@@ -485,7 +485,9 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
                         .transforms
                         .range(MAX_INSTANCES * frame_in_flight..),
                     resources.meshlets.range(..),
-                    instances.materials.range(MAX_INSTANCES * frame_in_flight..),
+                    instances
+                        .instance_materials
+                        .range(MAX_INSTANCES * frame_in_flight..),
                 ),
                 target_size,
                 dic,
@@ -596,35 +598,28 @@ fn record_frame(
                         frame_in_flight,
                     );
 
-                    let ui = RasterUi::new(
-                        ui_resources.verticies[frame_in_flight].range(..),
-                        ui_resources.font_atlas.whole_view(),
-                    );
-                    let ui_indicies =
-                        ui_resources.indicies[frame_in_flight].range(..ui_resources.num_indicies);
-                    let ui_pass = cmd
-                        .raster()
-                        .backface_culling(false)
-                        .color_attachment(swapchain.image(), None);
-                    // The viewport tab reads the scene through a handle in its vertices.
-                    match &target.image {
-                        Some(image) => ui_pass.draw_indexed(
-                            ui.storage_read(image.whole_view()),
-                            swapchain.size.into(),
-                            ui_indicies,
-                            1,
-                        ),
-                        None => ui_pass.draw_indexed(ui, swapchain.size.into(), ui_indicies, 1),
+                    if let Some(ui_resources) = ui_resources.as_ref() {
+                        let ui = RasterUi::new(
+                            ui_resources.verticies[frame_in_flight].range(..),
+                            ui_resources.font_atlas.whole_view(),
+                        );
+                        let ui_indicies = ui_resources.indicies[frame_in_flight]
+                            .range(..ui_resources.num_indicies);
+                        let ui_pass = cmd
+                            .raster()
+                            .backface_culling(false)
+                            .color_attachment(swapchain.image(), None);
+                        // The viewport tab reads the scene through a handle in its vertices.
+                        match &target.image {
+                            Some(image) => ui_pass.draw_indexed(
+                                ui.storage_read(image.whole_view()),
+                                swapchain.size.into(),
+                                ui_indicies,
+                                1,
+                            ),
+                            None => ui_pass.draw_indexed(ui, swapchain.size.into(), ui_indicies, 1),
+                        }
                     }
-
-                    // cmd.blit_image(
-                    //     nui_resources.font_atlas.whole(),
-                    //     swapchain.image().region(UVec2::new(
-                    //         nui_resources.font_atlas.extent.width,
-                    //         nui_resources.font_atlas.extent.height,
-                    //     )),
-                    //     Filter::Nearest,
-                    // );
                     cmd.present(swapchain.image());
                 },
             )

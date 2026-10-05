@@ -17,7 +17,7 @@ struct RasterBindings {
     float4 camera_position;
     Buf<float4x4> instance_transforms;
     Buf<InstancedMeshlet> meshlets;
-    Buf<Material> materials;
+    Buf<Material *> instance_materials;
 }
 
 [[vk::push_constant]] RasterBindings b;
@@ -71,14 +71,14 @@ float3 perturb_normal(float3 normal, float3 position, float2 uv, float3 tangent_
     return normalize(mul(tangent_normal, tbn));
 }
 
-static const float3 LIGHT_DIRECTION = normalize(float3(0.4, 1.0, 0.3));
+static const float3 LIGHT_DIRECTION = normalize(float3(0.0, 1.0, 0.0));
 static const float3 LIGHT_COLOR = float3(3.0);
 static const float3 AMBIENT = float3(0.03);
 
 [shader("fragment")]
 PSOutput raster_fragment(in VSOutput input)
 {
-    let material = b.materials.val[input.instance];
+    let material = *b.instance_materials.val[input.instance];
 
     var color = material.color;
     if (material.color_texture != NO_TEXTURE) {
@@ -105,7 +105,9 @@ PSOutput raster_fragment(in VSOutput input)
     }
     var normal = normalize(input.normal);
     if (material.normal_texture != NO_TEXTURE) {
-        var tangent_normal = sample_texture(material.normal_texture, input.uv).xyz * 2.0 - 1.0;
+        // Normal maps are baked with two channels (BC5): z follows from the unit length.
+        var tangent_normal = float3(sample_texture(material.normal_texture, input.uv).xy * 2.0 - 1.0, 0.0);
+        tangent_normal.z = sqrt(saturate(1.0 - dot(tangent_normal.xy, tangent_normal.xy)));
         tangent_normal.xy *= material.normal_scale;
         normal = perturb_normal(normal, input.world_position, input.uv, tangent_normal);
     }
@@ -136,8 +138,8 @@ PSOutput raster_fragment(in VSOutput input)
     var random = RandomSamplerState(uint2(input.meshlet, 0), 0);
 
     PSOutput output;
-    // output.color = float4(lit, 1.0);
+    output.color = float4(lit, 1.0);
     // output.color = float4(random.uniform_float(), random.uniform_float(), random.uniform_float(), 1.0);
-    output.color = float4(color.rgb, 1.0);
+    // output.color = float4(color.rgb, 1.0);
     return output;
 }

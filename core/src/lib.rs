@@ -7,7 +7,7 @@
 use bevy::{
     a11y::AccessibilityPlugin,
     app::{App, PanicHandlerPlugin, TaskPoolPlugin},
-    asset::{AssetMode, AssetPlugin},
+    asset::{AssetMetaCheck, AssetMode, AssetPlugin},
     diagnostic::DiagnosticsPlugin,
     input::InputPlugin,
     time::TimePlugin,
@@ -44,19 +44,19 @@ pub mod render;
 pub mod scene;
 pub mod ui;
 
-/// Root of the unprocessed assets: the asset server's source and the asset browser's root.
+/// Root of the baked assets: the asset server's source and the asset browser's root.
 pub const ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/assets";
-/// Where the asset processor bakes the assets to, and where they are loaded from.
-pub const IMPORTED_ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/imported_assets";
+/// The source files (glTF) that the `bake` tool turns into the files in `ASSET_DIR`.
+pub const UNBAKED_ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/unbaked_assets";
 pub const INITIAL_WINDOW_SIZE: Vec2 = Vec2::new(2000.0, 2000.0 * 9.0 / 16.0);
 
-/// The asset server setup shared by the game and the headless tools: sources in `ASSET_DIR`
-/// are baked into `IMPORTED_ASSET_DIR` by the asset processor and loaded from there.
+/// The asset server setup shared by the game and the headless tools: the baked files in
+/// `ASSET_DIR` are loaded as they are. Nothing has a `.meta` file.
 pub fn asset_plugin() -> AssetPlugin {
     AssetPlugin {
-        mode: AssetMode::Processed,
+        mode: AssetMode::Unprocessed,
         file_path: ASSET_DIR.to_string(),
-        processed_file_path: IMPORTED_ASSET_DIR.to_string(),
+        meta_check: AssetMetaCheck::Never,
         ..Default::default()
     }
 }

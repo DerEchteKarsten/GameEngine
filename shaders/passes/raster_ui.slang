@@ -12,9 +12,7 @@ struct UIVertex {
     float2 pos;
     float2 uv;
     float4 color;
-    // Null for solid and text quads, which sample the font atlas instead.
     DynImg texture;
-    // Keeps the size a multiple of 16, the alignment of `color` on the Rust side.
     uint2 pad;
 }
 
@@ -51,7 +49,6 @@ PSOutput raster_ui_fragment(in VSOutput input)
     if (texture.IsNull()) {
         output.color = float4(input.color.xyz, input.color.a * b.font_atlas.Sample(input.uv));
     } else {
-        // Sampler 2 is trilinear, so mipmapped textures stay clean when drawn small.
         output.color = float4(texture.Sample(input.uv, 2).xyz * input.color.xyz, input.color.a);
     }
     return output;

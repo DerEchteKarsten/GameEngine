@@ -7,6 +7,6 @@
         fov: 65.0,
     ),
     scenes: [
-        (path: "sponza.glb"),
+        (path: "sponza.scene"),
     ],
 )

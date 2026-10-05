@@ -9,17 +9,15 @@ use std::{
 
 use bevy::{
     app::{App, TaskPoolPlugin},
-    asset::{AssetPlugin, AssetServer, Handle, LoadState},
+    asset::{AssetPlugin, AssetServer, Handle, LoadState, RecursiveDependencyLoadState},
     ecs::query::With,
     transform::{TransformPlugin, components::Transform},
 };
 use core::{
     asset_plugin,
     assets::{MeshAssets, mesh::Scene},
-    editor::console::ConsolePlugin,
     render::{
-        RenderApp, RenderPlugin,
-        headless::{HeadlessTarget, read_frame},
+        headless::{HeadlessRenderPlugin, render_frame},
         render::RenderSettings,
     },
     scene::{Instance, ScenePlugin, SpawnScene, camera::CameraBundle},
@@ -32,8 +30,6 @@ const USAGE: &str = "usage: render SCENE.ron OUTPUT.png
 Renders the scene described by SCENE.ron and writes the image to OUTPUT.png.
 See game/scenes/sponza.ron for the format.";
 
-/// Frames rendered after everything is loaded, so transforms and instance buffers settle.
-const SETTLE_FRAMES: usize = 4;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Deserialize)]
@@ -129,11 +125,6 @@ fn run(description: &Path, output: &Path) -> Result<(), String> {
 
     let mut app = App::new();
     app.add_plugins((
-        ConsolePlugin {
-            level: tracing::Level::WARN,
-            also_log_to_stderr: true,
-            filter: String::new(),
-        },
         TaskPoolPlugin::default(),
         AssetPlugin {
             watch_for_changes_override: Some(false),
@@ -142,10 +133,7 @@ fn run(description: &Path, output: &Path) -> Result<(), String> {
         MeshAssets,
         TransformPlugin,
         ScenePlugin,
-        // Not pipelined: every `update` extracts and renders, and the frame can be read back.
-        RenderPlugin {
-            headless: Some(size),
-        },
+        HeadlessRenderPlugin { size },
     ));
 
     let camera = &description.camera;
@@ -172,32 +160,38 @@ fn run(description: &Path, output: &Path) -> Result<(), String> {
             (instance.path.clone(), scene)
         })
         .collect();
+    let mut settings = RenderSettings::default();
     if let Some(pixel_error) = description.pixel_error {
-        app.sub_app_mut(RenderApp)
-            .world_mut()
-            .resource_mut::<RenderSettings>()
-            .pixel_error = pixel_error;
+        settings.pixel_error = pixel_error;
     }
     app.finish();
     app.cleanup();
 
-    // A scene is in the world once its `SpawnScene` was replaced by its instances.
+    // A scene is in the world once its `SpawnScene` was replaced by its instances, and
+    // complete once its meshes and textures, which are files of their own, are loaded too.
     let start = Instant::now();
     loop {
         app.update();
         let server = app.world().resource::<AssetServer>();
+        let mut loaded = true;
         for (path, scene) in &scenes {
             if let LoadState::Failed(err) = server.load_state(scene) {
                 return Err(format!("failed to load {path}: {err}"));
             }
+            if let RecursiveDependencyLoadState::Failed(err) =
+                server.recursive_dependency_load_state(scene)
+            {
+                return Err(format!("failed to load a file of {path}: {err}"));
+            }
+            loaded &= server.is_loaded_with_dependencies(scene);
         }
         let world = app.world_mut();
-        if world
+        let spawned = world
             .query_filtered::<(), With<SpawnScene>>()
             .iter(world)
             .next()
-            .is_none()
-        {
+            .is_none();
+        if loaded && spawned {
             break;
         }
         if start.elapsed() > LOAD_TIMEOUT {
@@ -205,20 +199,16 @@ fn run(description: &Path, output: &Path) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    for _ in 0..SETTLE_FRAMES {
-        app.update();
-    }
+    // One more update, so the transforms and camera matrices of the new instances settle.
+    app.update();
 
-    let (size, pixels) = read_frame(&mut app);
-    write_png(output, size, &pixels).map_err(|err| format!("{}: {err}", output.display()))?;
+    let frame = render_frame(app.world_mut(), &settings);
+    let size = frame.size;
+    write_png(output, size, &frame.pixels).map_err(|err| format!("{}: {err}", output.display()))?;
 
     let world = app.world_mut();
     let instances = world.query::<&Instance>().iter(world).count();
-    let meshlets = app
-        .sub_app(RenderApp)
-        .world()
-        .resource::<HeadlessTarget>()
-        .visible_meshlets;
+    let meshlets = frame.visible_meshlets;
     println!(
         "{}: {}x{}, {instances} instances, {meshlets} meshlets drawn, {:.1} s",
         output.display(),
@@ -235,6 +225,11 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    // Lava reports validation errors through tracing.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing::Level::WARN)
+        .init();
     match run(Path::new(description), Path::new(output)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

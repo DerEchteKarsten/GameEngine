@@ -1,8 +1,8 @@
-//! Per-frame UI window management: moving, resizing, docking, layering and drawing.
+//! Per-frame UI window management: opening/closing, moving, resizing, docking, layering and drawing.
 use crate::ui::{
     Draggable,
     dock::DockingNode,
-    window::{Drawable, Tab, TabState, UiWindow},
+    window::{Drawable, UiWindow},
 };
 use bevy::{
     ecs::system::{Res, ResMut, Single},
@@ -17,10 +17,9 @@ use bevy::{
 use glam::Vec2;
 use itertools::Itertools;
 use smallvec::SmallVec;
-use std::sync::Mutex;
 
 use crate::ui::{
-    FocusedState, MultiInput, UiContext, UiWindows, WindowCommand,
+    FocusedState, MultiInput, UiContext, UiWindows,
     scrollable::Scrollable,
     window::{BorderSettings, DrawSettings},
 };
@@ -165,33 +164,21 @@ pub fn update_windows(
     let ctx: &mut UiContext = &mut ctx;
     let dock: &mut DockingNode = &mut dock;
 
-    let commands = if let Ok(mut lock) = windows.commands.lock() {
+    windows.close_unbuilt(dock);
+    let requests = if let Ok(mut lock) = windows.requests.lock() {
         std::mem::take(&mut *lock)
     } else {
         SmallVec::new()
     };
     let mut added = 0;
-    for command in commands {
-        match command {
-            WindowCommand::Add { label, pos, size } => {
-                if windows.find_tab(&label).is_some() {
-                    continue;
-                }
-                let pos = pos.unwrap_or(Vec2::new(500.0 * added as f32, 0.0));
-                let size = size.unwrap_or(Vec2::new(500.0, 500.0));
-                added += 1;
-                windows.append(UiWindow::new(
-                    vec![Tab {
-                        label,
-                        state: Mutex::new(TabState::default()),
-                    }],
-                    Rect::from_corners(pos, pos + size),
-                    0,
-                ));
-            }
-            WindowCommand::Close(label) => windows.close_tab(&label, dock),
-            WindowCommand::Open(label) => windows.open_tab(&label),
-        }
+    let any_requests = !requests.is_empty();
+    for request in requests {
+        windows.open(request, dock, &mut added);
+    }
+    // All windows built unconditionally are requested in the first frame, so saved dock slots
+    // that are still empty after that belong to windows nobody shows.
+    if any_requests && windows.dock_pending {
+        windows.prune_pending_dock(dock);
     }
 
     let viewport_size = desktop_window.physical_size().as_vec2();
@@ -318,7 +305,6 @@ pub fn update_windows(
                 layer: window.layer,
                 rect: window.rect,
                 focused: window.focused.take(),
-                hidden: false,
                 verticies: Vec::new(),
                 indicies: Vec::new(),
             })

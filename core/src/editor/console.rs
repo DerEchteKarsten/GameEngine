@@ -490,7 +490,7 @@ fn console_window(
                 let str;
                 let (message, mut level_color) = entry.format();
                 let message = if message.len() > max_len {
-                    str = format!("{}...", &message[..max_len]);
+                    str = format!("{}...", &message[..message.ceil_char_boundary(max_len)]);
                     &str
                 } else {
                     &message

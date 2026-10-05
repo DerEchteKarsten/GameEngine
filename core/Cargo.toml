@@ -29,6 +29,9 @@ tracing-core = {workspace = true}
 fontdue = {workspace = true}
 ron = {workspace = true}
 serde = {workspace = true}
+notify = {workspace = true}
+zstd = {workspace = true}
+intel_tex_2 = {workspace = true}
 
 [features]
 default = []

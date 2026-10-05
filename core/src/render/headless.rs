@@ -1,139 +1,91 @@
-//! Headless rendering: the scene passes drawn into an offscreen image that is read back, without a window, swapchain or UI.
+//! Headless rendering: one frame of the scene passes drawn into an offscreen image and read back, without a window, swapchain, UI or render sub-app.
 use bevy::{
-    app::{App, SubApp},
-    ecs::{
-        resource::Resource,
-        schedule::IntoScheduleConfigs,
-        system::{Commands, Local, Res, ResMut, SystemState},
-        world::{Mut, World},
-    },
+    app::{App, Plugin},
+    ecs::{resource::Resource, system::RunSystemOnce, world::World},
 };
 use glam::UVec2;
 use lava::{
     buffer::Buffer,
     image::{Image, format::R8G8B8A8Unorm, slice::AsImage, usage::ColorAttachmentStorage},
-    vkobjects::queue::Frame,
+    vkobjects::queue::{FrameSlot, Gfx, PendingAccesses, Queue},
 };
 
 use crate::render::{
-    Render, RenderApp, RenderStartup, RenderSystems,
-    render::{
-        FrameCount, FrameSlots, Queues, RenderCamera, RenderResources, RenderSettings,
-        ResourceStates, init_queues, record_scene,
-    },
-    world::InstanceManager,
+    MainWorld,
+    render::{RenderCamera, RenderResources, RenderSettings, extract_camera, record_scene},
+    world::{InstanceManager, extract_meshlet_instances, init_world, wirte_instances},
 };
 
 /// Size of the headless render target. In the main world it stands in for the window size.
 #[derive(Resource, Clone, Copy)]
 pub struct HeadlessSize(pub UVec2);
 
-/// What the headless renderer draws into, and the host-visible copy of it.
-#[derive(Resource)]
-pub struct HeadlessTarget {
-    image: Image<R8G8B8A8Unorm, ColorAttachmentStorage>,
-    /// The last recorded frame as tightly packed RGBA8.
-    readback: Buffer<u8>,
-    /// Meshlets the last finished frame drew.
+/// Initialises Vulkan without a display. Frames are drawn on demand by [`render_frame`].
+pub struct HeadlessRenderPlugin {
+    pub size: UVec2,
+}
+
+impl Plugin for HeadlessRenderPlugin {
+    fn build(&self, app: &mut App) {
+        lava::init(None, cfg!(debug_assertions), false).unwrap();
+        app.insert_resource(HeadlessSize(self.size));
+    }
+}
+
+pub struct HeadlessFrame {
+    pub size: UVec2,
+    /// Tightly packed RGBA8.
+    pub pixels: Vec<u8>,
+    /// Meshlets the frame drew.
     pub visible_meshlets: u32,
 }
 
-/// Initialises Vulkan without a display.
-pub(super) fn init() {
-    lava::init(None, cfg!(debug_assertions), false).unwrap();
-}
+/// Extracts the main world into a throwaway render world, draws it once and waits for the result.
+pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> HeadlessFrame {
+    let size = main_world.resource::<HeadlessSize>().0;
 
-fn init_target(mut cmd: Commands, size: Res<HeadlessSize>) {
-    let size = size.0;
-    init_queues(&mut cmd, None);
-    cmd.insert_resource(HeadlessTarget {
-        image: Image::new(size.x, size.y).unwrap(),
-        readback: Buffer::new((size.x * size.y * 4) as usize, true).unwrap(),
-        visible_meshlets: 0,
-    });
-}
+    let mut render_world = World::new();
+    render_world.run_system_once(init_world).unwrap();
+    render_world.insert_resource(MainWorld(std::mem::take(main_world)));
+    let instances = render_world.run_system_once(extract_meshlet_instances);
+    let camera = render_world.run_system_once(extract_camera);
+    *main_world = render_world.remove_resource::<MainWorld>().unwrap().0;
+    instances.unwrap();
+    camera.expect("the scene needs exactly one camera");
+    render_world.run_system_once(wirte_instances).unwrap();
 
-type HeadlessParams<'w, 's> = (
-    Option<ResMut<'w, RenderCamera>>,
-    Res<'w, InstanceManager>,
-    Res<'w, Queues>,
-    Local<'s, Option<RenderResources>>,
-    ResMut<'w, ResourceStates>,
-    Res<'w, RenderSettings>,
-    ResMut<'w, HeadlessTarget>,
-);
+    let mut camera = render_world.remove_resource::<RenderCamera>().unwrap();
+    let instances = render_world.resource::<InstanceManager>();
 
-fn render(world: &mut World, params: &mut SystemState<HeadlessParams<'static, 'static>>) {
-    world.resource_scope(|world, mut slots: Mut<FrameSlots>| {
-        let frame_in_flight = {
-            let mut frame = world.resource_mut::<FrameCount>();
-            frame.0 += 1;
-            frame.frame_in_flight()
-        };
-        let frame = slots.slots[frame_in_flight].begin().unwrap();
-        world.run_schedule(RenderSystems::PreRender);
-        record_frame(frame, frame_in_flight, params.get_mut(world));
-    });
-}
-
-fn record_frame(
-    mut frame: Frame,
-    frame_in_flight: usize,
-    (camera, instances, queues, mut resources, mut resource_states, setting, mut target): HeadlessParams,
-) {
-    let Some(mut camera) = camera else {
-        return;
-    };
-    let size = target.image.extent;
+    let image = Image::<R8G8B8A8Unorm, ColorAttachmentStorage>::new(size.x, size.y).unwrap();
+    let readback = Buffer::<u8>::new((size.x * size.y * 4) as usize, true).unwrap();
+    let queue = Queue::<Gfx>::new().unwrap();
+    let mut slot = FrameSlot::new(&queue).unwrap();
+    let mut frame = slot.begin().unwrap();
+    let mut resources = None;
     let resources = RenderResources::fit(&mut resources, size, size, &mut frame);
-    target.visible_meshlets = resources.visible_meshlets();
+    frame
+        .execute(&queue, PendingAccesses::default(), &[], &[], |cmd| {
+            record_scene(
+                cmd,
+                image.whole_view(),
+                size,
+                &mut camera,
+                instances,
+                resources,
+                settings,
+                None,
+                0,
+            );
+            cmd.copy_image_to_buffer(image.whole(), readback.range(..));
+        })
+        .unwrap();
+    // Beginning a frame waits for the one the slot submitted before.
+    drop(slot.begin().unwrap());
 
-    let states = queues.graphics.with(|queue| {
-        frame
-            .execute(
-                queue,
-                resource_states.pending.take().unwrap(),
-                &[],
-                &[],
-                |cmd| {
-                    record_scene(
-                        cmd,
-                        target.image.whole_view(),
-                        size,
-                        &mut camera,
-                        &instances,
-                        resources,
-                        &setting,
-                        None,
-                        frame_in_flight,
-                    );
-                    cmd.copy_image_to_buffer(target.image.whole(), target.readback.range(..));
-                },
-            )
-            .unwrap()
-    });
-    resource_states.pending = Some(states);
-}
-
-pub(super) fn build(render_app: &mut SubApp, size: UVec2) {
-    render_app
-        .insert_resource(HeadlessSize(size))
-        .insert_resource(RenderSettings::default())
-        .add_systems(RenderStartup, init_target)
-        .add_systems(Render, render.in_set(RenderSystems::Render));
-}
-
-/// Waits for the submitted frames and returns the last one as tightly packed RGBA8 with its
-/// size. The app must not use `PipelinedRenderingPlugin`: the render world has to be at home.
-pub fn read_frame(app: &mut App) -> (UVec2, Vec<u8>) {
-    let world = app.sub_app_mut(RenderApp).world_mut();
-    for slot in &mut world.resource_mut::<FrameSlots>().slots {
-        // Beginning a frame waits for the one the slot submitted before.
-        drop(slot.begin().unwrap());
+    HeadlessFrame {
+        size,
+        pixels: readback.range(..).as_slice().to_vec(),
+        visible_meshlets: resources.visible_meshlets(),
     }
-    let target = world.resource::<HeadlessTarget>();
-    (
-        target.image.extent,
-        target.readback.range(..).as_slice().to_vec(),
-    )
 }

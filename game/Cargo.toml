@@ -9,6 +9,7 @@ core = { version = "0.1.0", path = "../core" }
 glam = {workspace = true}
 bevy = {workspace = true}
 tracing = {workspace = true}
+tracing-subscriber = {workspace = true}
 ron = {workspace = true}
 serde = {workspace = true}
 png = {workspace = true}

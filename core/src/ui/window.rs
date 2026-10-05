@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     f32::consts::PI,
     hash::{DefaultHasher, Hash, Hasher},
-    sync::Mutex,
+    sync::{Mutex, atomic::AtomicBool},
 };
 
 use bevy::{
@@ -31,7 +31,6 @@ pub struct UiWindow {
     pub layer: u32,
     pub rect: Rect,
     pub focused: Option<FocusedState>,
-    pub hidden: bool,
     pub verticies: Vec<UIVertex>,
     pub indicies: Vec<u32>,
 }
@@ -61,7 +60,6 @@ impl UiWindow {
             layer: 0,
             rect,
             focused: None,
-            hidden: false,
             verticies: Vec::new(),
             indicies: Vec::new(),
         }
@@ -72,6 +70,18 @@ impl UiWindow {
 pub struct Tab {
     pub state: Mutex<TabState>,
     pub label: String,
+    /// Set by `build`; a tab that wasn't built during the last frame is closed.
+    pub built: AtomicBool,
+}
+
+impl Tab {
+    pub fn new(label: String) -> Self {
+        Self {
+            state: Mutex::new(TabState::default()),
+            label,
+            built: AtomicBool::new(false),
+        }
+    }
 }
 
 #[derive(Default, Debug)]

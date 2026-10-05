@@ -35,7 +35,6 @@ use crate::{
 };
 
 pub mod asset_browser;
-mod asset_preview;
 pub mod camera;
 pub mod console;
 pub mod gizzmos;

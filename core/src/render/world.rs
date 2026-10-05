@@ -29,9 +29,7 @@ use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
 
 use crate::INITIAL_WINDOW_SIZE;
-use crate::assets::material::{Material, set_texture_indices};
-use crate::assets::mesh::{GpuMesh, MeshHeader};
-use crate::assets::texture::GpuTexture;
+use crate::assets::mesh::{GpuMesh, MaterialSet, MeshHeader};
 use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
 use crate::render::MainWorld;
@@ -51,7 +49,7 @@ pub struct InstanceManager {
     pub headers: Buffer<bindings::InstanceHeader>,
     pub aabbs: Buffer<AabbError>,
     pub flags: Buffer<u32>,
-    pub materials: Buffer<Material>,
+    pub instance_materials: Buffer<u64>,
     pub instance_count: usize,
     pub any_outlined: bool,
     pending_instances: Vec<TempInstance>,
@@ -86,7 +84,7 @@ impl std::ops::BitOr for InstanceFlags {
 #[derive(Clone, Copy)]
 struct TempInstance {
     flags: InstanceFlags,
-    material: Material,
+    material: u64,
     transform: Mat4,
     bvh_root: u64,
     header: MeshHeader,
@@ -410,11 +408,11 @@ pub const MAX_INSTANCES: usize = 8 * 1024;
 
 pub(super) fn init_world(mut cmd: Commands) {
     cmd.insert_resource(InstanceManager {
+        instance_materials: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         headers: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         aabbs: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         transforms: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         bvh_root_nodes: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
-        materials: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         instance_count: 0,
         any_outlined: false,
         flags: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
@@ -423,15 +421,17 @@ pub(super) fn init_world(mut cmd: Commands) {
     cmd.init_resource::<FrameCount>();
 }
 
-fn extract_meshlet_instances(
+pub(super) fn extract_meshlet_instances(
     mut instance_manager: ResMut<InstanceManager>,
     instances: Extract<Query<(&Instance, &GlobalTransform, Has<Selected>)>>,
     meshes: Extract<Res<Assets<GpuMesh>>>,
-    textures: Extract<Res<Assets<GpuTexture>>>,
+    material_sets: Extract<Res<Assets<MaterialSet>>>,
 ) {
     instance_manager.any_outlined = false;
     for (instance, transform, selected) in &instances {
-        if let Some(mesh) = meshes.get(&instance.mesh) {
+        if let Some(mesh) = meshes.get(&instance.mesh)
+            && let Some(material_set) = material_sets.get(&instance.material_set)
+        {
             if instance_manager.pending_instances.len() >= MAX_INSTANCES {
                 warn_once!("more than {MAX_INSTANCES} instances, the rest are not drawn");
                 break;
@@ -447,14 +447,14 @@ fn extract_meshlet_instances(
                 bvh_root: mesh.buffer.address,
                 header: mesh.header,
                 transform: mat,
-                material: instance.material.into_material(&textures),
+                material: material_set.address(instance.material_index),
                 flags,
             });
         }
     }
 }
 
-fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res<FrameCount>) {
+pub(super) fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res<FrameCount>) {
     let frame_in_flight = frame.frame_in_flight();
     for slot in 0..instances.pending_instances.len() {
         let instance = instances.pending_instances[slot];
@@ -469,7 +469,7 @@ fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res<FrameCount
             cull_data_offset: instance.header.cull_data_offset as u64 + instance.bvh_root,
         };
         instances.flags[slot + frame_in_flight * MAX_INSTANCES] = instance.flags.0;
-        instances.materials[slot + frame_in_flight * MAX_INSTANCES] = instance.material;
+        instances.instance_materials[slot + frame_in_flight * MAX_INSTANCES] = instance.material;
     }
     instances.instance_count = instances.pending_instances.len();
     instances.pending_instances.clear();

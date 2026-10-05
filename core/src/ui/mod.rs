@@ -1,4 +1,4 @@
-//! Custom UI core: style constants, window state, input, GPU resources and the UI plugin.
+//! Custom UI core: style constants, window state (closed unless built every frame, lazily restored from `windows.ron`), input, GPU resources and the UI plugin.
 use bevy::{
     app::{App, PostUpdate, PreUpdate, Update},
     ecs::schedule::IntoScheduleConfigs,
@@ -52,7 +52,13 @@ use bevy::{
     window::Window,
 };
 use fontdue::*;
-use std::{collections::HashMap, fs, num::NonZeroU64, range::Range, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fs,
+    num::NonZeroU64,
+    range::Range,
+    sync::{Mutex, atomic::Ordering},
+};
 
 use anyhow::Result;
 use bevy::{
@@ -85,7 +91,7 @@ use crate::{
         builder::TextCursor,
         dock::DockingNode,
         update_windows::ResizeEdges,
-        window::{Tab, TabState, UiOverlay, UiWindow},
+        window::{Tab, UiOverlay, UiWindow},
     },
 };
 use lava::bindings::UIVertex;
@@ -165,28 +171,44 @@ pub struct UiContext {
     pub drag_start: Vec2,
 }
 
-/// Structural window changes queued by `UiBuilder` and applied in order by `update_windows`.
-pub enum WindowCommand {
-    Add {
-        label: String,
-        pos: Option<Vec2>,
-        size: Option<Vec2>,
-    },
-    Close(String),
-    Open(String),
+/// A window requested by `UiBuilder` for a label without a tab, created by `update_windows`.
+pub struct WindowRequest {
+    pub label: String,
+    pub pos: Option<Vec2>,
+    pub size: Option<Vec2>,
+}
+
+/// A window from `windows.ron`, recreated with its rect, tab order and dock slot once one of
+/// its tabs is requested.
+pub struct SavedWindow {
+    pub rect: Rect,
+    pub tabs: Vec<String>,
+    pub active_tab: u32,
+    /// Slot of the window restored from this entry.
+    pub live: Option<usize>,
+}
+
+/// Dock leaf id standing in for saved window `saved` until it is restored.
+const fn pending_leaf(saved: usize) -> u32 {
+    u32::MAX - 1 - saved as u32
 }
 
 #[derive(Resource)]
 pub struct UiWindows {
-    pub commands: Mutex<SmallVec<[WindowCommand; 4]>>,
+    pub requests: Mutex<SmallVec<[WindowRequest; 4]>>,
     pub windows: Vec<Option<UiWindow>>,
     pub free_slots: Vec<usize>,
     /// Geometry drawn above every window, e.g. the drag-and-drop preview.
     pub overlay: Mutex<UiOverlay>,
+    pub saved: Vec<SavedWindow>,
+    /// Last rect of every closed tab, where it reopens.
+    pub closed: HashMap<String, Rect>,
+    /// The dock still holds `pending_leaf`s of saved windows nobody requested yet.
+    pub dock_pending: bool,
 }
 
 impl UiWindows {
-    /// Slot of the frontmost visible window whose rect contains `pos`.
+    /// Slot of the frontmost window whose rect contains `pos`.
     pub fn window_at(&self, pos: Vec2) -> Option<usize> {
         self.by_layer()
             .rev()
@@ -194,26 +216,24 @@ impl UiWindows {
             .map(|(i, _)| i)
     }
 
-    /// Visible windows, back to front.
+    /// Windows, back to front.
     pub fn by_layer_mut(&mut self) -> impl DoubleEndedIterator<Item = (usize, &mut UiWindow)> {
         self.windows
             .iter_mut()
             .enumerate()
             .filter_map(|w| w.1.as_mut().map(|o| (w.0, o)))
-            .filter(|w| !w.1.hidden)
             .sorted_by(|a, b| a.1.layer.cmp(&b.1.layer))
     }
-    /// Visible windows, back to front.
+    /// Windows, back to front.
     pub fn by_layer(&self) -> impl DoubleEndedIterator<Item = (usize, &UiWindow)> {
         self.windows
             .iter()
             .enumerate()
             .filter_map(|w| w.1.as_ref().map(|o| (w.0, o)))
-            .filter(|w| !w.1.hidden)
             .sorted_by(|a, b| a.1.layer.cmp(&b.1.layer))
     }
 
-    /// Window slot and tab index of the tab with this label, hidden windows included.
+    /// Window slot and tab index of the tab with this label.
     pub fn find_tab(&self, label: &str) -> Option<(usize, usize)> {
         self.windows.iter().enumerate().find_map(|(i, w)| {
             let j = w.as_ref()?.tabs.iter().position(|t| t.label == label)?;
@@ -221,54 +241,118 @@ impl UiWindows {
         })
     }
 
-    /// Hides the tab with this label. A tab that shares its window with others is split off
-    /// into its own hidden window, so a window never ends up with zero tabs.
-    pub fn close_tab(&mut self, label: &str, dock: &mut DockingNode) {
-        let Some((i, j)) = self.find_tab(label) else {
-            return;
-        };
-        let window = self.windows[i].as_mut().unwrap();
-        if window.hidden {
-            return;
-        }
-        if window.tabs.len() > 1 {
-            let tab = window.tabs.remove(j);
-            if (j as u32) < window.active_tab {
-                window.active_tab -= 1;
+    /// Closes every tab that wasn't built since the last call, and every window left without
+    /// tabs.
+    pub fn close_unbuilt(&mut self, dock: &mut DockingNode) {
+        for i in 0..self.windows.len() {
+            let Some(window) = self.windows[i].as_mut() else {
+                continue;
+            };
+            let active = window.active_tab as usize;
+            let mut removed_before_active = 0;
+            let mut j = 0;
+            window.tabs.retain(|tab| {
+                let built = tab.built.swap(false, Ordering::Relaxed);
+                if !built {
+                    self.closed.insert(tab.label.clone(), window.rect);
+                    if j < active {
+                        removed_before_active += 1;
+                    }
+                }
+                j += 1;
+                built
+            });
+            if window.tabs.is_empty() {
+                // `undock` reports an emptied node instead of removing it, which at the root
+                // means the closed window was the only docked one.
+                if dock.undock(i as u32) {
+                    *dock = DockingNode::default();
+                }
+                self.remove(i);
+            } else {
+                window.active_tab =
+                    ((active - removed_before_active) as u32).min(window.tabs.len() as u32 - 1);
             }
-            window.active_tab = window.active_tab.min(window.tabs.len() as u32 - 1);
-            let mut closed = UiWindow::new(vec![tab], window.rect, 0);
-            closed.hidden = true;
-            self.append(closed);
-        } else {
-            // `undock` reports an emptied node instead of removing it, which at the root
-            // means the closed window was the only docked one.
-            if dock.undock(i as u32) {
-                *dock = DockingNode::default();
-            }
-            window.hidden = true;
-            window.focused = None;
         }
     }
 
-    /// Shows a closed tab again, floating at its last rect.
-    pub fn open_tab(&mut self, label: &str) {
-        if let Some((i, _)) = self.find_tab(label) {
-            self.windows[i].as_mut().unwrap().hidden = false;
+    /// Opens a tab for `request`: at its last rect if it was closed, else where `windows.ron`
+    /// put it, else at the requested (or a default) position.
+    pub fn open(&mut self, request: WindowRequest, dock: &mut DockingNode, added: &mut u32) {
+        let WindowRequest { label, pos, size } = request;
+        if self.find_tab(&label).is_some() {
+            return;
         }
+        if let Some(rect) = self.closed.remove(&label) {
+            self.append(UiWindow::new(vec![Tab::new(label)], rect, 0));
+            return;
+        }
+        if let Some(s) = self.saved.iter().position(|w| w.tabs.contains(&label)) {
+            let saved = &self.saved[s];
+            let order = saved.tabs.iter().position(|t| *t == label).unwrap();
+            let is_active = order == saved.active_tab as usize;
+            if let Some(slot) = saved.live {
+                let before = &saved.tabs[..order];
+                let window = self.windows[slot].as_mut().unwrap();
+                let at = window
+                    .tabs
+                    .iter()
+                    .filter(|t| before.contains(&t.label))
+                    .count();
+                window.tabs.insert(at, Tab::new(label));
+                if is_active {
+                    window.active_tab = at as u32;
+                } else if at <= window.active_tab as usize && window.tabs.len() > 1 {
+                    window.active_tab += 1;
+                }
+            } else {
+                let rect = saved.rect;
+                let slot = self.append(UiWindow::new(vec![Tab::new(label)], rect, 0));
+                self.saved[s].live = Some(slot);
+                *dock =
+                    std::mem::take(dock).remap(&HashMap::from([(pending_leaf(s), slot as u32)]));
+            }
+            return;
+        }
+        let pos = pos.unwrap_or(Vec2::new(500.0 * *added as f32, 0.0));
+        let size = size.unwrap_or(Vec2::new(500.0, 500.0));
+        *added += 1;
+        self.append(UiWindow::new(
+            vec![Tab::new(label)],
+            Rect::from_corners(pos, pos + size),
+            0,
+        ));
+    }
+
+    /// Removes the dock leaves of saved windows that weren't requested, closing their gaps.
+    pub fn prune_pending_dock(&mut self, dock: &mut DockingNode) {
+        for (s, saved) in self.saved.iter().enumerate() {
+            if saved.live.is_none() && dock.undock(pending_leaf(s)) {
+                *dock = DockingNode::default();
+            }
+        }
+        self.dock_pending = false;
     }
 
     pub fn remove(&mut self, index: usize) -> UiWindow {
         let window = self.windows[index].take().unwrap();
         self.free_slots.push(index);
+        for saved in &mut self.saved {
+            if saved.live == Some(index) {
+                saved.live = None;
+            }
+        }
         window
     }
 
-    pub fn append(&mut self, window: UiWindow) {
+    /// Adds `window` and returns its slot.
+    pub fn append(&mut self, window: UiWindow) -> usize {
         if let Some(index) = self.free_slots.pop() {
             self.windows[index] = Some(window);
+            index
         } else {
             self.windows.push(Some(window));
+            self.windows.len() - 1
         }
     }
 
@@ -362,6 +446,8 @@ impl UiContext {
         let bytes = fs::read("/home/karsten/code/GameEngine/editor_font.ttf")?;
         let font = Font::from_bytes(bytes, FontSettings::default()).unwrap();
 
+        // Saved windows are only created once one of their tabs is requested; until then
+        // their dock leaves hold placeholders.
         let SaveState {
             docking_nodes,
             windows,
@@ -371,27 +457,27 @@ impl UiContext {
                 windows: Vec::new(),
             },
         );
+        let pending = (0..windows.len())
+            .map(|s| (s as u32, pending_leaf(s)))
+            .collect::<HashMap<_, _>>();
         let windows = UiWindows {
-            commands: Mutex::new(SmallVec::new()),
-            windows: windows
-                .iter()
-                .map(|w| {
-                    Some(UiWindow::new(
-                        w.tabs
-                            .iter()
-                            .map(|t| Tab {
-                                label: t.label.clone(),
-                                state: Mutex::new(TabState::default()),
-                            })
-                            .collect(),
-                        w.rect,
-                        w.active_tab,
-                    ))
-                })
-                .collect(),
+            requests: Mutex::new(SmallVec::new()),
+            windows: Vec::new(),
             free_slots: Vec::new(),
             overlay: Mutex::new(UiOverlay::default()),
+            dock_pending: !windows.is_empty(),
+            saved: windows
+                .into_iter()
+                .map(|w| SavedWindow {
+                    rect: w.rect,
+                    tabs: w.tabs.into_iter().map(|t| t.label).collect(),
+                    active_tab: w.active_tab,
+                    live: None,
+                })
+                .collect(),
+            closed: HashMap::new(),
         };
+        let docking_nodes = docking_nodes.remap(&pending);
 
         Ok((
             Self {
@@ -613,11 +699,11 @@ pub fn save_windows(
         return;
     }
 
-    // Hidden windows are not saved: `hidden` is runtime state and `build` recreates them.
+    // Only open windows are saved, compacted into consecutive indices.
     let mut remap = HashMap::new();
     let mut new_idx = 0;
     for (i, w) in windows.windows.iter().enumerate() {
-        if w.as_ref().is_some_and(|w| !w.hidden) {
+        if w.is_some() {
             remap.insert(i as u32, new_idx as u32);
             new_idx += 1;
         }
@@ -629,7 +715,6 @@ pub fn save_windows(
             .windows
             .iter()
             .filter_map(|w| w.as_ref())
-            .filter(|w| !w.hidden)
             .map(|w| SaveWindow {
                 tabs: w
                     .tabs

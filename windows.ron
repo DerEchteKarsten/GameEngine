@@ -9,30 +9,30 @@
                 window: 2,
             ),
             right: Leaf(
-                window: 4,
+                window: 3,
             ),
         ),
         right: Node(
             split: Horizontal,
-            extend: 0.63407755,
+            extend: 0.54410857,
             left: Node(
                 split: Vertical,
                 extend: 0.7680065,
                 left: Leaf(
-                    window: 5,
+                    window: 4,
                 ),
                 right: Leaf(
-                    window: 0,
+                    window: 1,
                 ),
             ),
             right: Node(
                 split: Vertical,
                 extend: 0.27323613,
                 left: Leaf(
-                    window: 1,
+                    window: 0,
                 ),
                 right: Leaf(
-                    window: 3,
+                    window: 5,
                 ),
             ),
         ),
@@ -40,8 +40,20 @@
     windows: [
         (
             rect: (
-                min: (704.8125, 1382.4117),
-                max: (2084.05, 1800.0),
+                min: (923.19366, 0.0),
+                max: (1408.0, 480.07593),
+            ),
+            tabs: [
+                (
+                    label: "Frame Histogram",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (344.575, 1349.3875),
+                max: (923.1936, 1757.0),
             ),
             tabs: [
                 (
@@ -58,20 +70,8 @@
         ),
         (
             rect: (
-                min: (2084.05, 0.0),
-                max: (2880.0, 491.82507),
-            ),
-            tabs: [
-                (
-                    label: "Frame Histogram",
-                ),
-            ],
-            active_tab: 0,
-        ),
-        (
-            rect: (
                 min: (0.0, 0.0),
-                max: (704.8125, 975.92615),
+                max: (344.57495, 952.61237),
             ),
             tabs: [
                 (
@@ -82,20 +82,8 @@
         ),
         (
             rect: (
-                min: (2084.05, 491.825),
-                max: (2880.0, 1800.0),
-            ),
-            tabs: [
-                (
-                    label: "Selected",
-                ),
-            ],
-            active_tab: 0,
-        ),
-        (
-            rect: (
-                min: (0.0, 975.92615),
-                max: (704.8125, 1800.0),
+                min: (0.0, 952.61237),
+                max: (344.57495, 1757.0),
             ),
             tabs: [
                 (
@@ -106,12 +94,24 @@
         ),
         (
             rect: (
-                min: (704.8125, 0.0),
-                max: (2084.05, 1382.4117),
+                min: (344.575, 0.0),
+                max: (923.1936, 1349.3875),
             ),
             tabs: [
                 (
                     label: "Viewport",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (923.19366, 480.07587),
+                max: (1408.0, 1757.0),
+            ),
+            tabs: [
+                (
+                    label: "Selected",
                 ),
             ],
             active_tab: 0,

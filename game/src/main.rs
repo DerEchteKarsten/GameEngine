@@ -45,7 +45,6 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
 //     let progress = path.and_then(|p| tracker.get(p));
 
 //     if matches!(state, LoadState::Loaded) {
-//         ui.close("Loading");
 //         return;
 //     }
 
@@ -86,7 +85,7 @@ fn update_mesh(
     // viewport: ViewPortProxy,
     time: Res<Time>,
 ) {
-    // log::info!("time: {:#?}", time.elapsed());
+    // println!("time: {:#?}", time.delta());
     // if let Some(pos) = window.cursor_position() {
     //     let cam_pos = settings.freez_pos.unwrap_or(camera.1.translation().extend(0.0)).xyz();
     //     gizzmos.draw_gizzmo(&ArrowGizzmo {

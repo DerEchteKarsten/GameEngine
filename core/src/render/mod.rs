@@ -1,6 +1,5 @@
-//! Render sub-app, windowed (pipelined) or headless: schedules, main-world extraction and Vulkan initialization.
+//! Windowed render sub-app (pipelined): schedules, main-world extraction and Vulkan initialization.
 use crate::render::{
-    headless::HeadlessSize,
     render::{RenderPassesPlugin, resize_swapchain},
     world::WorldPlugin,
 };
@@ -23,7 +22,6 @@ use bevy::{
     utils::default,
     window::{PrimaryWindow, RawHandleWrapperHolder},
 };
-use glam::UVec2;
 use std::ops::{Deref, DerefMut};
 
 pub mod extract_param;
@@ -274,18 +272,11 @@ fn init(
 }
 
 #[derive(Default, Debug)]
-pub struct RenderPlugin {
-    pub headless: Option<UVec2>,
-}
+pub struct RenderPlugin;
 
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
-        match self.headless {
-            Some(size) => app
-                .add_systems(PreStartup, headless::init)
-                .insert_resource(HeadlessSize(size)),
-            None => app.add_systems(PreStartup, init),
-        };
+        app.add_systems(PreStartup, init);
         app.init_resource::<ScratchMainWorld>();
 
         let mut render_app = SubApp::new();
@@ -319,15 +310,9 @@ impl Plugin for RenderPlugin {
 
                 extract(main_world, render_world);
             })
-            .add_plugins(WorldPlugin);
-        match self.headless {
-            Some(size) => headless::build(&mut render_app, size),
-            None => {
-                render_app
-                    .add_systems(ExtractSchedule, resize_swapchain)
-                    .add_plugins(RenderPassesPlugin);
-            }
-        }
+            .add_plugins(WorldPlugin)
+            .add_systems(ExtractSchedule, resize_swapchain)
+            .add_plugins(RenderPassesPlugin);
 
         app.insert_sub_app(RenderApp, render_app);
     }

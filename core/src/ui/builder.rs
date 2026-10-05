@@ -4,7 +4,7 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
     num::NonZeroU64,
     ops::Rem,
-    sync::Mutex,
+    sync::{Mutex, atomic::Ordering},
 };
 
 use bevy::{
@@ -28,7 +28,7 @@ use itertools::Itertools;
 use lava::{bindings::UIVertex, bindless::BindlessHandle};
 
 use crate::ui::{
-    Draggable, FocusedState, MultiInput, UiContext, UiWindows, WindowCommand,
+    Draggable, FocusedState, MultiInput, UiContext, UiWindows, WindowRequest,
     dragdrop::{AssetDrag, DragDrop},
     from_pos_size,
     scrollable::Scrollable,
@@ -60,30 +60,13 @@ impl<'s, 'w> UiBuilder<'w, 's> {
     }
 
     /// Starts a window that can be given an initial position and size before it is built.
+    /// A window stays open only as long as it is built every frame.
     pub fn window<'a>(&'a mut self, label: &'a str) -> UiWindowConfig<'a, 'w, 's> {
         UiWindowConfig {
             ui: self,
             label,
             pos: None,
             size: None,
-        }
-    }
-
-    /// Hides the window (or tab) with this label until `open` is called. Later `build` calls
-    /// for it are skipped. Does nothing for unknown labels, so it can be called every frame.
-    pub fn close(&self, label: impl AsRef<str>) {
-        self.push_command(WindowCommand::Close(label.as_ref().to_string()));
-    }
-
-    /// Shows a closed window again, floating at its last rect. Does nothing for unknown
-    /// labels, so it can be called every frame.
-    pub fn open(&self, label: impl AsRef<str>) {
-        self.push_command(WindowCommand::Open(label.as_ref().to_string()));
-    }
-
-    fn push_command(&self, command: WindowCommand) {
-        if let Ok(mut commands) = self.windows.commands.lock() {
-            commands.push(command);
         }
     }
 }
@@ -123,9 +106,7 @@ impl<'a, 'w, 's> UiWindowConfig<'a, 'w, 's> {
             let Some(w) = w else { continue };
             for (i, t) in w.tabs.iter().enumerate() {
                 if t.label.as_str() == label {
-                    if w.hidden {
-                        return;
-                    }
+                    t.built.store(true, Ordering::Relaxed);
                     window = Some(w);
                     tab = Some(t);
 
@@ -135,20 +116,19 @@ impl<'a, 'w, 's> UiWindowConfig<'a, 'w, 's> {
                     break;
                 }
             }
-            if !w.hidden
-                && w.rect.contains(input.cursor_pos.unwrap_or_default())
-                && window.is_none()
-            {
+            if w.rect.contains(input.cursor_pos.unwrap_or_default()) && window.is_none() {
                 hovered = false;
             }
         }
 
         let Some(tab) = tab else {
-            ui.push_command(WindowCommand::Add {
-                label: label.to_string(),
-                pos,
-                size,
-            });
+            if let Ok(mut requests) = ui.windows.requests.lock() {
+                requests.push(WindowRequest {
+                    label: label.to_string(),
+                    pos,
+                    size,
+                });
+            }
             return;
         };
         let window = window.unwrap();

@@ -3,5 +3,5 @@
 /lava/src/bindings.rs
 /shaders/bin/*
 /game/assets
-/game/imported_assets
+/game/unbaked_assets
 /.claude/context

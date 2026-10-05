@@ -1,22 +1,18 @@
-//! Asset plugin registering the glTF mesh processor/loaders, plus binary read/write helpers.
+//! Asset plugin registering the loaders of the baked scene, mesh and texture files, plus binary read/write helpers.
 use core::slice;
-use std::alloc::Layout;
+use std::{alloc::Layout, io::Write};
 
 use anyhow::{Ok, Result};
-use bevy::{
-    asset::{AsyncReadExt, AsyncWriteExt, processor::LoadTransformAndSave},
-    prelude::*,
-};
+use bevy::{asset::AsyncReadExt, prelude::*};
 use bytemuck::Pod;
 use futures::AsyncRead;
 
 use crate::assets::{
-    mesh::{GltfMesh, GltfMeshLoader, GpuMesh, MeshLoader, MeshSaver, MeshTransformer, Scene},
-    texture::GpuTexture,
+    mesh::{GpuMesh, GpuMeshLoader, MaterialSet, Scene, SceneLoader},
+    texture::{GpuTexture, TextureLoader},
 };
 
-use lava::buffer::slice::BufferSlice;
-
+pub mod bake;
 pub mod material;
 pub mod mesh;
 pub mod texture;
@@ -24,30 +20,30 @@ pub mod texture;
 pub struct MeshAssets;
 impl Plugin for MeshAssets {
     fn build(&self, app: &mut App) {
-        app
-            .register_asset_processor::<LoadTransformAndSave<GltfMeshLoader, MeshTransformer, MeshSaver>>(
-                LoadTransformAndSave::new(MeshTransformer, MeshSaver),
-            )
-            .set_default_asset_processor::<LoadTransformAndSave<GltfMeshLoader, MeshTransformer, MeshSaver>>("glb")
-            .register_asset_loader(GltfMeshLoader)
-            .init_asset_loader::<MeshLoader>()
+        app.init_asset_loader::<SceneLoader>()
+            .init_asset_loader::<GpuMeshLoader>()
+            .init_asset_loader::<TextureLoader>()
             .init_asset::<Scene>()
-            .init_asset::<GltfMesh>()
             .init_asset::<GpuMesh>()
+            .init_asset::<MaterialSet>()
             .init_asset::<GpuTexture>();
     }
 }
 
-async fn write_slice<T: Pod>(field: &[T], writer: &mut bevy::asset::io::Writer) -> Result<()> {
+/// Decoding is as fast at any level, so this only trades bake time for file size.
+const ZSTD_LEVEL: i32 = 12;
+
+fn write_slice<T: Pod>(field: &[T], writer: &mut impl Write) -> Result<()> {
     let len = field.len() as u64;
-    writer.write_all(&len.to_le_bytes()).await?;
-    let byte_slice = bytemuck::cast_slice(field);
-    writer.write_all(byte_slice).await?;
+    writer.write_all(&len.to_le_bytes())?;
+    writer.write_all(bytemuck::cast_slice(field))?;
     Ok(())
 }
-/// Bytes `write_slice` writes for `field`.
-fn slice_bytes<T>(field: &[T]) -> u64 {
-    (size_of::<u64>() + size_of_val(field)) as u64
+
+/// Writes the length of `bytes`, then `bytes` zstd-compressed as a slice.
+fn write_compressed(bytes: &[u8], writer: &mut impl Write) -> Result<()> {
+    writer.write_all(&(bytes.len() as u64).to_le_bytes())?;
+    write_slice(&zstd::bulk::compress(bytes, ZSTD_LEVEL)?, writer)
 }
 
 async fn read_u64(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> Result<u64> {
@@ -84,9 +80,23 @@ async fn read_len_slice<T: Pod>(
     Ok(unsafe { Vec::from_raw_parts(slice.as_mut_ptr().cast::<T>(), len, len) })
 }
 
+/// Reads what `write_compressed` wrote.
+async fn read_compressed(
+    reader: &mut (impl AsyncRead + Unpin + ?Sized),
+    alignment: Option<usize>,
+) -> Result<Vec<u8>> {
+    let len = read_u64(reader).await? as usize;
+    let compressed: Vec<u8> = read_slice(reader, None).await?;
+    let bytes = zstd::bulk::decompress(&compressed, len)?;
+    match alignment {
+        None => Ok(bytes),
+        Some(_) => read_len_slice(&mut bytes.as_slice(), len, alignment).await,
+    }
+}
+
 /// Writes a name as its byte length followed by its UTF-8 bytes.
-async fn write_name(name: &str, writer: &mut bevy::asset::io::Writer) -> Result<()> {
-    write_slice(name.as_bytes(), writer).await
+fn write_name(name: &str, writer: &mut impl Write) -> Result<()> {
+    write_slice(name.as_bytes(), writer)
 }
 
 async fn read_name(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> Result<String> {
@@ -102,13 +112,4 @@ async fn read_names(
         names.push(read_name(reader).await?);
     }
     Ok(names)
-}
-
-async fn read_slice_to_buffer<'a>(
-    reader: &mut (impl AsyncRead + Unpin + ?Sized),
-    slice: BufferSlice<'a, u8>,
-) -> Result<()> {
-    let mem_slice = unsafe { slice::from_raw_parts_mut(slice.ptr(), slice.len()) };
-    reader.read_exact(mem_slice).await?;
-    Ok(())
 }
