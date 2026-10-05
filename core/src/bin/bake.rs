@@ -12,13 +12,6 @@ use core::{
     assets::{bake::bake_gltf, mesh::SCENE_EXTENSION},
 };
 
-const USAGE: &str = "usage: bake [--force] [FILE...]
-
-Bakes the glTF files (.glb, .gltf) in the unbaked asset directory that are newer
-than their baked scene into the asset directory.
-  FILE...  bake only these files (paths relative to the unbaked asset directory)
-  --force  bake them even if they are not newer";
-
 /// The glTF files below `dir`, relative to it.
 fn sources(dir: &Path) -> Vec<PathBuf> {
     fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
@@ -37,42 +30,29 @@ fn sources(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Peak resident memory of this process in MiB.
-fn peak_memory() -> Option<u64> {
-    let status = fs::read_to_string("/proc/self/status").ok()?;
-    let line = status.lines().find(|line| line.starts_with("VmHWM:"))?;
-    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kib / 1024)
-}
-
 fn main() -> ExitCode {
     let mut force = false;
-    let mut named = Vec::new();
+    let mut files = Vec::new();
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--force" => force = true,
-            flag if flag.starts_with('-') => {
-                eprintln!("{USAGE}");
-                return ExitCode::FAILURE;
-            }
-            file => named.push(PathBuf::from(file)),
+            file => files.push(PathBuf::from(file)),
         }
     }
-    let sources = sources(Path::new(UNBAKED_ASSET_DIR));
-    if let Some(unknown) = named.iter().find(|file| !sources.contains(file)) {
-        eprintln!("no such asset: {}", unknown.display());
-        return ExitCode::FAILURE;
+    if files.is_empty() {
+        files = sources(Path::new(UNBAKED_ASSET_DIR));
     }
 
     // The meshlet builder and the bake run their jobs on this pool.
     AsyncComputeTaskPool::get_or_init(TaskPool::new);
     let start = Instant::now();
     let mut failed = false;
-    for file in if named.is_empty() { &sources } else { &named } {
+    for file in &files {
         let source = Path::new(UNBAKED_ASSET_DIR).join(file);
         let scene = Path::new(ASSET_DIR).join(file.with_extension(SCENE_EXTENSION));
         let modified = |path: &Path| fs::metadata(path).and_then(|meta| meta.modified()).ok();
-        if !force && modified(&scene) > modified(&source) {
+        // A source that isn't there is left to fail in the bake.
+        if !force && modified(&source).is_some_and(|source| modified(&scene) > Some(source)) {
             println!("{}: up to date", file.display());
             continue;
         }
@@ -90,11 +70,7 @@ fn main() -> ExitCode {
         }
     }
 
-    print!("finished in {:.1} s", start.elapsed().as_secs_f32());
-    match peak_memory() {
-        Some(peak) => println!(", peak memory {peak} MiB"),
-        None => println!(),
-    }
+    println!("finished in {:.1} s", start.elapsed().as_secs_f32());
     if failed {
         ExitCode::FAILURE
     } else {

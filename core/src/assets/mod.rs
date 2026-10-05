@@ -1,6 +1,5 @@
 //! Asset plugin registering the loaders of the baked scene, mesh and texture files, plus binary read/write helpers.
-use core::slice;
-use std::{alloc::Layout, io::Write};
+use std::io::Write;
 
 use anyhow::{Ok, Result};
 use bevy::{asset::AsyncReadExt, prelude::*};
@@ -13,7 +12,6 @@ use crate::assets::{
 };
 
 pub mod bake;
-pub mod material;
 pub mod mesh;
 pub mod texture;
 
@@ -52,64 +50,32 @@ async fn read_u64(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> Result<u64>
     Ok(u64::from_le_bytes(bytes))
 }
 
-async fn read_slice<T: Pod>(
-    reader: &mut (impl AsyncRead + Unpin + ?Sized),
-    alignment: Option<usize>,
-) -> Result<Vec<T>> {
-    let len = read_u64(reader).await?;
-    read_len_slice(reader, len as usize, alignment).await
-}
-
-async fn read_len_slice<T: Pod>(
-    reader: &mut (impl AsyncRead + Unpin + ?Sized),
-    len: usize,
-    alignment: Option<usize>,
-) -> Result<Vec<T>> {
-    // Nothing to read, and a zero-sized allocation is not allowed.
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-    let slice = unsafe {
-        let size = len * size_of::<T>();
-        let align = alignment.unwrap_or(align_of::<T>());
-        let layout = Layout::from_size_align(size, align).unwrap();
-        let mem = std::alloc::alloc(layout);
-        slice::from_raw_parts_mut(mem, size)
-    };
-    reader.read_exact(slice).await?;
-    Ok(unsafe { Vec::from_raw_parts(slice.as_mut_ptr().cast::<T>(), len, len) })
+async fn read_slice<T: Pod>(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> Result<Vec<T>> {
+    let mut slice = vec![T::zeroed(); read_u64(reader).await? as usize];
+    reader.read_exact(bytemuck::cast_slice_mut(&mut slice)).await?;
+    Ok(slice)
 }
 
 /// Reads what `write_compressed` wrote.
-async fn read_compressed(
-    reader: &mut (impl AsyncRead + Unpin + ?Sized),
-    alignment: Option<usize>,
-) -> Result<Vec<u8>> {
+async fn read_compressed(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> Result<Vec<u8>> {
     let len = read_u64(reader).await? as usize;
-    let compressed: Vec<u8> = read_slice(reader, None).await?;
-    let bytes = zstd::bulk::decompress(&compressed, len)?;
-    match alignment {
-        None => Ok(bytes),
-        Some(_) => read_len_slice(&mut bytes.as_slice(), len, alignment).await,
+    let compressed: Vec<u8> = read_slice(reader).await?;
+    Ok(zstd::bulk::decompress(&compressed, len)?)
+}
+
+/// Writes how many names there are, then each as a slice of its UTF-8 bytes.
+fn write_names(names: &[String], writer: &mut impl Write) -> Result<()> {
+    writer.write_all(&(names.len() as u64).to_le_bytes())?;
+    for name in names {
+        write_slice(name.as_bytes(), writer)?;
     }
+    Ok(())
 }
 
-/// Writes a name as its byte length followed by its UTF-8 bytes.
-fn write_name(name: &str, writer: &mut impl Write) -> Result<()> {
-    write_slice(name.as_bytes(), writer)
-}
-
-async fn read_name(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> Result<String> {
-    Ok(String::from_utf8(read_slice(reader, None).await?)?)
-}
-
-async fn read_names(
-    reader: &mut (impl AsyncRead + Unpin + ?Sized),
-    count: usize,
-) -> Result<Vec<String>> {
-    let mut names = Vec::with_capacity(count);
-    for _ in 0..count {
-        names.push(read_name(reader).await?);
+async fn read_names(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for _ in 0..read_u64(reader).await? {
+        names.push(String::from_utf8(read_slice(reader).await?)?);
     }
     Ok(names)
 }

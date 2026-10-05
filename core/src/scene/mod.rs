@@ -8,11 +8,9 @@ use bevy::{
         message::MessageReader,
         name::Name,
         resource::Resource,
-        change_detection::DetectChangesMut,
         query::{Changed, With, Without},
         schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
-        world::Mut,
     },
     reflect::{Reflect, TypeRegistry},
     transform::components::Transform,
@@ -20,14 +18,13 @@ use bevy::{
 
 use glam::{Vec3, Vec4};
 use lava::{
-    bindless::NULL_HANDLE,
+    bindings::Material,
     image::{Image, format, usage},
 };
 
 use crate::{
     assets::{
-        material::{Material, MaterialTextures},
-        mesh::{GpuMesh, MaterialSet, Scene},
+        mesh::{GpuMesh, MaterialSet, MaterialTextures, Scene},
         texture::GpuTexture,
     },
     editor::{picking::Selected, selected::EditorView},
@@ -85,7 +82,13 @@ impl Default for MaterialSettings {
 
 impl MaterialSettings {
     fn from_material(material: &Material, textures: &MaterialTextures) -> Self {
-        let textures = textures.clone();
+        let [
+            color_texture,
+            metallic_roughness_texture,
+            normal_texture,
+            occlusion_texture,
+            emissive_texture,
+        ] = textures.clone();
         Self {
             color: material.color,
             emissive: material.emissive,
@@ -94,33 +97,26 @@ impl MaterialSettings {
             normal_scale: material.normal_scale,
             occlusion_strength: material.occlusion_strength,
             alpha_cutoff: material.alpha_cutoff,
-            color_texture: textures.color,
-            metallic_roughness_texture: textures.metallic_roughness,
-            normal_texture: textures.normal,
-            occlusion_texture: textures.occlusion,
-            emissive_texture: textures.emissive,
+            color_texture,
+            metallic_roughness_texture,
+            normal_texture,
+            occlusion_texture,
+            emissive_texture,
         }
     }
 
     fn textures(&self) -> MaterialTextures {
-        MaterialTextures {
-            color: self.color_texture.clone(),
-            metallic_roughness: self.metallic_roughness_texture.clone(),
-            normal: self.normal_texture.clone(),
-            occlusion: self.occlusion_texture.clone(),
-            emissive: self.emissive_texture.clone(),
-        }
+        [
+            self.color_texture.clone(),
+            self.metallic_roughness_texture.clone(),
+            self.normal_texture.clone(),
+            self.occlusion_texture.clone(),
+            self.emissive_texture.clone(),
+        ]
     }
 
-    pub(crate) fn into_material(&self, textures: &Assets<GpuTexture>) -> Material {
-        // A texture that is unset or still loading falls back to the null handle.
-        let index = |texture: &Option<Handle<GpuTexture>>| {
-            texture
-                .as_ref()
-                .and_then(|t| textures.get(t))
-                .map(|t| t.descriptor_index())
-                .unwrap_or(NULL_HANDLE)
-        };
+    /// `base` with the settings written over it, which leaves its texture indices.
+    pub(crate) fn into_material(&self, base: Material) -> Material {
         Material {
             color: self.color,
             emissive: self.emissive,
@@ -129,12 +125,7 @@ impl MaterialSettings {
             normal_scale: self.normal_scale,
             occlusion_strength: self.occlusion_strength,
             alpha_cutoff: self.alpha_cutoff,
-            color_texture: index(&self.color_texture),
-            metallic_roughness_texture: index(&self.metallic_roughness_texture),
-            normal_texture: index(&self.normal_texture),
-            occlusion_texture: index(&self.occlusion_texture),
-            emissive_texture: index(&self.emissive_texture),
-            pad: Vec3::ZERO,
+            ..base
         }
     }
 }
@@ -209,38 +200,19 @@ fn resolve_material_textures(
 
 /// Writes edited settings into the material set, which is what the renderer reads.
 fn write_material_settings(
-    mut query: Query<(&Instance, Mut<MaterialSettings>), Changed<MaterialSettings>>,
+    query: Query<(&Instance, &MaterialSettings), Changed<MaterialSettings>>,
     mut material_sets: ResMut<Assets<MaterialSet>>,
-    textures: Res<Assets<GpuTexture>>,
 ) {
-    for (instance, mut settings) in &mut query {
-        let Some(set) = material_sets.get(&instance.material_set) else {
+    for (instance, settings) in &query {
+        // This marks the set as modified, so `resolve_material_textures` writes the indices
+        // of its new textures.
+        let Some(set) = material_sets.get_mut(&instance.material_set) else {
             continue;
         };
+        let index = instance.material_index as usize;
+        set.textures[index] = settings.textures();
         let mut materials = set.buffer.range(..);
-        materials[instance.material_index as usize] = settings.into_material(&textures);
-
-        // A texture that is still loading was written as the null handle: try again.
-        let loading = [
-            &settings.color_texture,
-            &settings.metallic_roughness_texture,
-            &settings.normal_texture,
-            &settings.occlusion_texture,
-            &settings.emissive_texture,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|t| !textures.contains(t));
-        // The set keeps the textures alive once the settings are gone.
-        let new_textures = settings.textures();
-        if set.textures[instance.material_index as usize] != new_textures
-            && let Some(set) = material_sets.get_mut(&instance.material_set)
-        {
-            set.textures[instance.material_index as usize] = new_textures;
-        }
-        if loading {
-            settings.set_changed();
-        }
+        materials[index] = settings.into_material(materials[index]);
     }
 }
 

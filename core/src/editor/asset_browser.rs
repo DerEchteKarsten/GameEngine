@@ -22,6 +22,7 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
     window::Window,
 };
+use bytemuck::Zeroable;
 use glam::{UVec2, Vec2, Vec4};
 use lava::{
     bindless::BindlessHandle,
@@ -33,7 +34,6 @@ use tracing::warn;
 use crate::{
     ASSET_DIR,
     assets::{
-        material::MaterialTextures,
         mesh::{GpuMesh, MESH_EXTENSION, MaterialSet, SCENE_EXTENSION, Scene},
         texture::{GpuTexture, PREVIEW_SIZE, TEXTURE_EXTENSION, read_preview},
     },
@@ -568,15 +568,15 @@ pub(crate) fn drop_in_viewport(
         cmd.spawn((transform, Name::new(name), SpawnScene { scene }))
             .id()
     } else if let Some(mesh) = dnd.take_asset::<GpuMesh>() {
+        // A mesh on its own has no scene to take a material from.
+        let material = MaterialSettings::default().into_material(Zeroable::zeroed());
+        let set = MaterialSet::new(&[material], vec![Default::default()]);
+        set.resolve_textures(&textures);
         cmd.spawn((
             transform,
             Instance {
                 mesh,
-                // A mesh on its own has no scene to take a material from.
-                material_set: material_sets.add(MaterialSet::new(
-                    &[MaterialSettings::default().into_material(&textures)],
-                    vec![MaterialTextures::default()],
-                )),
+                material_set: material_sets.add(set),
                 material_index: 0,
                 flags: InstanceFlags::empty(),
             },

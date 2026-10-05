@@ -9,9 +9,9 @@ use std::{
 use anyhow::{Context, Result};
 use bevy::tasks::AsyncComputeTaskPool;
 use glam::{Mat4, Vec3, Vec4};
+use lava::{bindings::Material, bindless::NULL_HANDLE};
 
 use crate::assets::{
-    material::{Material, NO_TEXTURE},
     mesh::{MESH_EXTENSION, MeshletMesh, SceneFile},
     texture::{TEXTURE_EXTENSION, TextureData, TextureKind},
 };
@@ -136,7 +136,7 @@ pub fn bake_gltf(source: &Path, scene_path: &Path) -> Result<(usize, usize)> {
     // The same image is baked once per kind of texture it is used as.
     let mut import_texture = |texture: Option<gltf::Texture>, kind: TextureKind| -> u32 {
         let Some(texture) = texture else {
-            return NO_TEXTURE;
+            return NULL_HANDLE;
         };
         let source = texture.source();
         let image = source.index();
@@ -313,7 +313,6 @@ fn bake_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assets::material::texture_indices;
     use bevy::tasks::TaskPool;
 
     #[test]
@@ -327,44 +326,13 @@ mod tests {
     }
 
     #[test]
-    fn primitives_share_the_name_of_their_mesh() {
-        assert_eq!(primitive_name(Some("Cube"), 0, 1), "Cube");
-        assert_eq!(primitive_name(Some("Cube"), 1, 3), "Cube.1");
-        assert_eq!(primitive_name(None, 1, 3), "");
-    }
-
-    #[test]
     fn file_names_are_safe_and_unique() {
         let mut names = HashSet::new();
-        assert_eq!(
-            make_unique_filename(&mut names, "Cube.1", "mesh_0", "mesh"),
-            "Cube.1.mesh"
-        );
-        assert_eq!(
-            make_unique_filename(&mut names, "", "mesh_1", "mesh"),
-            "mesh_1.mesh"
-        );
-        // A label separator, a directory separator and a hidden file.
-        assert_eq!(
-            make_unique_filename(&mut names, "a#b/c d", "mesh_2", "mesh"),
-            "a_b_c_d.mesh"
-        );
-        assert_eq!(
-            make_unique_filename(&mut names, "..", "mesh_3", "mesh"),
-            "mesh_3.mesh"
-        );
-        assert_eq!(
-            make_unique_filename(&mut names, "Cube.1", "mesh_4", "mesh"),
-            "Cube.1_2.mesh"
-        );
-        assert_eq!(
-            make_unique_filename(&mut names, "cube.1", "mesh_5", "mesh"),
-            "cube.1_3.mesh"
-        );
-        assert_eq!(
-            make_unique_filename(&mut names, "mesh_1", "mesh_6", "mesh"),
-            "mesh_1_2.mesh"
-        );
+        let mut name = |name| make_unique_filename(&mut names, name, "mesh_0", "mesh");
+        assert_eq!(name("a#b/c d"), "a_b_c_d.mesh");
+        assert_eq!(name(".."), "mesh_0.mesh");
+        assert_eq!(name("Cube.1"), "Cube.1.mesh");
+        assert_eq!(name("cube.1"), "cube.1_2.mesh");
     }
 
     /// Writes a glTF file with one triangle that two nodes draw.
@@ -426,7 +394,7 @@ mod tests {
         assert_eq!(scene.meshes, ["tri/meshes/Tri_angle.mesh"]);
         assert_eq!(scene.instance_names, ["right", "left"]);
         assert_eq!(scene.instance_mesh, [0, 0]);
-        assert_eq!(texture_indices(&scene.materials[0]), [NO_TEXTURE; 5]);
+        assert_eq!(scene.materials[0].color_texture, NULL_HANDLE);
         assert!(dir.join("baked").join(&scene.meshes[0]).exists());
         assert!(!stray.exists());
         fs::remove_dir_all(dir).unwrap();

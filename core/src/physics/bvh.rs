@@ -76,11 +76,11 @@ fn aabb_to_pod(aabb: Aabb3d) -> [u8; 32] {
 }
 
 fn aabb_from_pod(pod: &[u8]) -> Aabb3d {
-    let max = bytemuck::from_bytes::<[f32; 4]>(&pod[..4 * 4]);
-    let min = bytemuck::from_bytes::<[f32; 4]>(&pod[4 * 4..8 * 4]);
+    let max = bytemuck::pod_read_unaligned::<[f32; 4]>(&pod[..4 * 4]);
+    let min = bytemuck::pod_read_unaligned::<[f32; 4]>(&pod[4 * 4..8 * 4]);
     Aabb3d {
-        max: Vec4::from_array(*max).xyz().into(),
-        min: Vec4::from_array(*min).xyz().into(),
+        max: Vec4::from_array(max).xyz().into(),
+        min: Vec4::from_array(min).xyz().into(),
     }
 }
 impl NodeBuilder {
@@ -151,7 +151,7 @@ impl<'a> NodeView<'a> {
         NodeView { offset, data }
     }
     fn get_child_mask(&self) -> u64 {
-        *bytemuck::from_bytes::<u64>(&self.data[self.offset..self.offset + 8])
+        bytemuck::pod_read_unaligned::<u64>(&self.data[self.offset..self.offset + 8])
     }
     fn child_count(&self) -> usize {
         let child_mask = self.get_child_mask();
@@ -172,9 +172,9 @@ impl<'a> NodeView<'a> {
         let slice = &self.data[self.offset + offset..self.offset + offset + stype.size()];
         match stype {
             ChildType::Empty => None,
-            ChildType::HasBlas => Some(ChildData::HasBlas(*bytemuck::from_bytes(slice))),
-            ChildType::HasLeaf => Some(ChildData::HasLeaf(*bytemuck::from_bytes(slice))),
-            ChildType::HasNode => Some(ChildData::HasNode(*bytemuck::from_bytes(slice))),
+            ChildType::HasBlas => Some(ChildData::HasBlas(bytemuck::pod_read_unaligned(slice))),
+            ChildType::HasLeaf => Some(ChildData::HasLeaf(bytemuck::pod_read_unaligned(slice))),
+            ChildType::HasNode => Some(ChildData::HasNode(bytemuck::pod_read_unaligned(slice))),
         }
     }
     fn get_aabb(&self, i: usize) -> Aabb3d {

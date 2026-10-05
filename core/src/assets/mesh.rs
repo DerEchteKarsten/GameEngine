@@ -26,10 +26,9 @@ use tracing::debug_span;
 
 use crate::{
     assets::{
-        material::{Material, MaterialTextures, NO_TEXTURE, set_texture_indices, texture_indices},
-        read_compressed, read_names, read_slice, read_u64,
+        read_compressed, read_names, read_slice,
         texture::GpuTexture,
-        write_compressed, write_name, write_slice,
+        write_compressed, write_names, write_slice,
     },
     physics::bvh::{
         ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
@@ -37,7 +36,10 @@ use crate::{
     render::world::InstanceFlags,
     scene::Instance,
 };
-use lava::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
+use lava::{
+    bindings::{AabbError, AabbPtr, BvhNode, CullData, Material, Meshlet, Vertex},
+    bindless::NULL_HANDLE,
+};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 
@@ -85,7 +87,7 @@ impl AssetLoader for GpuMeshLoader {
     ) -> Result<GpuMesh> {
         let mut header = MeshHeader::zeroed();
         reader.read_exact(bytes_of_mut(&mut header)).await?;
-        let mut data = read_compressed(reader, None).await?;
+        let mut data = read_compressed(reader).await?;
 
         let buffer = Buffer::new(data.len(), true)?;
         let address = buffer.address;
@@ -122,7 +124,7 @@ impl AssetLoader for GpuMeshLoader {
         Ok(GpuMesh {
             header,
             buffer,
-            colission_bvh: read_compressed(reader, Some(8)).await?,
+            colission_bvh: read_compressed(reader).await?,
         })
     }
 
@@ -130,6 +132,9 @@ impl AssetLoader for GpuMeshLoader {
         &[MESH_EXTENSION]
     }
 }
+
+/// The color, metallic-roughness, normal, occlusion and emissive texture of a material.
+pub type MaterialTextures = [Option<Handle<GpuTexture>>; 5];
 
 /// Every material of a scene in one host-mapped buffer. Instances point into it, so a write
 /// to the buffer is what the next frame draws.
@@ -141,17 +146,12 @@ pub struct MaterialSet {
 }
 
 impl MaterialSet {
-    /// The texture indices of `materials` are not used: textures load on their own, and
-    /// [`Self::resolve_textures`] writes the index of each one that is there.
+    /// The texture indices of `materials` have to be the null handle: textures load on their
+    /// own, and [`Self::resolve_textures`] writes the index of each one that is there.
     pub fn new(materials: &[Material], textures: Vec<MaterialTextures>) -> Self {
         assert_eq!(materials.len(), textures.len());
         let buffer = Buffer::new(materials.len().max(1), true).unwrap();
-        let mut slots = buffer.range(..materials.len());
-        for (index, material) in materials.iter().enumerate() {
-            let mut material = *material;
-            set_texture_indices(&mut material, [NO_TEXTURE; _]);
-            slots[index] = material;
-        }
+        buffer.range(..materials.len()).copy_from(materials);
         Self { buffer, textures }
     }
 
@@ -159,13 +159,20 @@ impl MaterialSet {
     /// unset or still loading is the null handle.
     pub fn resolve_textures(&self, textures: &Assets<GpuTexture>) {
         let mut materials = self.buffer.range(..self.textures.len());
-        for (index, slots) in self.textures.iter().enumerate() {
-            let indices = slots.handles().map(|texture| {
-                texture
-                    .and_then(|texture| textures.get(texture))
-                    .map_or(NO_TEXTURE, GpuTexture::descriptor_index)
+        for (index, handles) in self.textures.iter().enumerate() {
+            let material = &mut materials[index];
+            [
+                material.color_texture,
+                material.metallic_roughness_texture,
+                material.normal_texture,
+                material.occlusion_texture,
+                material.emissive_texture,
+            ] = handles.each_ref().map(|handle| {
+                handle
+                    .as_ref()
+                    .and_then(|handle| textures.get(handle))
+                    .map_or(NULL_HANDLE, GpuTexture::descriptor_index)
             });
-            set_texture_indices(&mut materials[index], indices);
         }
     }
 
@@ -221,36 +228,21 @@ impl SceneFile {
         write_slice(&self.materials, writer)?;
         write_slice(&self.instance_mesh, writer)?;
         write_slice(&self.instance_materials, writer)?;
-        for name in &self.instance_names {
-            write_name(name, writer)?;
-        }
-        for paths in [&self.meshes, &self.textures] {
-            writer.write_all(&(paths.len() as u64).to_le_bytes())?;
-            for path in paths {
-                write_name(path, writer)?;
-            }
-        }
-        Ok(())
+        write_names(&self.instance_names, writer)?;
+        write_names(&self.meshes, writer)?;
+        write_names(&self.textures, writer)
     }
 
     pub async fn read(reader: &mut dyn Reader) -> Result<Self> {
-        let instance_transforms: Vec<Mat4> = read_slice(reader, None).await?;
-        let materials = read_slice(reader, None).await?;
-        let instance_mesh = read_slice(reader, None).await?;
-        let instance_materials = read_slice(reader, None).await?;
-        let instance_names = read_names(reader, instance_transforms.len()).await?;
-        let num_meshes = read_u64(reader).await? as usize;
-        let meshes = read_names(reader, num_meshes).await?;
-        let num_textures = read_u64(reader).await? as usize;
-        let textures = read_names(reader, num_textures).await?;
+        // In the order `write` wrote them.
         Ok(Self {
-            instance_transforms,
-            materials,
-            instance_materials,
-            instance_mesh,
-            instance_names,
-            meshes,
-            textures,
+            instance_transforms: read_slice(reader).await?,
+            materials: read_slice(reader).await?,
+            instance_mesh: read_slice(reader).await?,
+            instance_materials: read_slice(reader).await?,
+            instance_names: read_names(reader).await?,
+            meshes: read_names(reader).await?,
+            textures: read_names(reader).await?,
         })
     }
 }
@@ -267,7 +259,7 @@ impl AssetLoader for SceneLoader {
         _settings: &(),
         load_context: &mut LoadContext<'_>,
     ) -> Result<Scene> {
-        let scene = SceneFile::read(reader).await?;
+        let mut scene = SceneFile::read(reader).await?;
 
         // The meshes and textures load on their own, and are shared with everything else
         // that loads the same files.
@@ -282,21 +274,22 @@ impl AssetLoader for SceneLoader {
             meshes.push(load_context.load(path));
         }
 
+        // The materials of the file index its textures, those of the set get bindless indices.
         let material_textures = scene
             .materials
-            .iter()
+            .iter_mut()
             .map(|material| {
-                let [color, metallic_roughness, normal, occlusion, emissive] =
-                    texture_indices(material).map(|index| {
-                        (index != NO_TEXTURE).then(|| textures[index as usize].clone())
-                    });
-                MaterialTextures {
-                    color,
-                    metallic_roughness,
-                    normal,
-                    occlusion,
-                    emissive,
-                }
+                [
+                    &mut material.color_texture,
+                    &mut material.metallic_roughness_texture,
+                    &mut material.normal_texture,
+                    &mut material.occlusion_texture,
+                    &mut material.emissive_texture,
+                ]
+                .map(|index| {
+                    let texture = std::mem::replace(index, NULL_HANDLE);
+                    (texture != NULL_HANDLE).then(|| textures[texture as usize].clone())
+                })
             })
             .collect();
         let materials = load_context.add_labeled_asset(
