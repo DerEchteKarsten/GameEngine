@@ -17,7 +17,7 @@ pub struct Camera {
     pub z_far: f32,
 }
 
-#[derive(Bundle, Resource)]
+#[derive(Bundle)]
 pub struct CameraBundle {
     pub camera: Camera,
     pub transform: Transform,

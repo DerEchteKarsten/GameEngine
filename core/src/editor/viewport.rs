@@ -1,4 +1,5 @@
 //! Editor 3D viewport: the dockable tab showing the scene image, and window-to-viewport helpers.
+use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use bevy::{
     ecs::{
         resource::Resource,
@@ -14,11 +15,13 @@ use lava::bindless::BindlessHandle;
 use crate::render::headless::HeadlessSize;
 use crate::ui::{UiWindows, builder::UiBuilder, window::Drawable};
 
-#[derive(Resource, Debug)]
+#[derive(Resource, Debug, Reflect)]
+#[reflect(Resource)]
 pub struct ViewPort {
     pub rect: Rect,
     pub focused: bool,
     pub hovered: bool,
+    #[reflect(ignore, clone)]
     pub image: BindlessHandle,
     pub image_size: Vec2,
 }

@@ -1,6 +1,6 @@
 # GameEngine
 
-Vulkan game engine in Rust (edition 2024, uses unstable `#![feature]`s), built on bevy 0.18 ECS **without** bevy's renderer.
+Vulkan game engine in Rust (edition 2024, uses unstable `#![feature]`s), built on bevy 0.19 ECS **without** bevy's renderer.
 
 ## Orientation: read this before exploring
 - A **code map** (each file's purpose, key types, and plugins, plus a shader table and live git state) is injected at session start by a `SessionStart` hook. Check it before running `ls`/`rg`.
@@ -28,6 +28,7 @@ If you find that something in this file or the injected code map is wrong or out
 - Without `EditorPlugin` there is no `ViewPort`, and the same passes draw straight into the swapchain image.
 - Lava hands released bindless slots out again when an `Image` is dropped.
 - An empty `DockingNode` leaf (`window: u32::MAX`) is just free space; a window dropped on it fills it.
+- Since bevy 0.19 resources are entities: the Hierarchy tab lists them by type name (`IsResource`), the Selected tab edits the reflected ones like any component, and the Delete key skips them. To make a resource editable, derive `Reflect` with `#[reflect(Resource)]` (auto-registered); a field that can't be reflected needs `#[reflect(ignore, clone)]`, because the tab works on a `reflect_clone` of the value every frame.
 - UI windows have no open/close calls: `ui.build(label, …)` requests a missing tab (created next `PreUpdate`), and `update_windows` closes every tab that wasn't built during the previous frame. `windows.ron` is only layout memory: a saved window (rect, tab group, dock slot) is created when one of its tabs is first requested, and dock slots nobody requested in the first frame are pruned. A reopened tab returns to its last rect; on exit only open windows are saved.
 
 ## Headless tools (use these to check your work)

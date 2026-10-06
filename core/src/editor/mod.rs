@@ -11,6 +11,7 @@ use bevy::{
     math::Rect,
     time::Time,
 };
+use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use glam::Vec2;
 use lava::bindless::BindlessHandle;
 
@@ -58,7 +59,8 @@ impl Default for EditorPlugin {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 struct UiState {
     delta_time_histogram: [f32; 300],
     cursor: usize,

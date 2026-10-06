@@ -1,4 +1,5 @@
 //! Editor fly camera: mouse/keyboard input handling and camera settings resource.
+use bevy::ecs::reflect::ReflectResource;
 use std::f32::consts::PI;
 
 use bevy::{
@@ -22,7 +23,8 @@ use glam::{Quat, Vec3};
 
 use crate::{editor::viewport::ViewPortProxy, scene::camera::Camera};
 
-#[derive(Default, Debug, Clone, Copy, Resource)]
+#[derive(Default, Debug, Clone, Copy, Resource, Reflect)]
+#[reflect(Resource)]
 pub struct CameraSettings {
     pub move_speed: f32,
     pub sensitivity: f32,

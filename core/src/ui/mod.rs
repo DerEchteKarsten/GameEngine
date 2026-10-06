@@ -1,9 +1,10 @@
 //! Custom UI core: style constants, window state (closed unless built every frame, lazily restored from `windows.ron`), input, GPU resources and the UI plugin.
 use bevy::{
-    app::{App, PostUpdate, PreUpdate, Update},
+    app::{App, Last, PostUpdate, PreUpdate, Update},
     ecs::schedule::IntoScheduleConfigs,
     input::InputSystems,
 };
+use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 
 use crate::{
     editor::viewport::ViewPort,
@@ -163,8 +164,10 @@ impl Default for FocusedState {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct UiContext {
+    #[reflect(ignore, clone)]
     pub font: Option<fontdue::Font>,
     pub resize_path: u64,
     pub resize_depth: u32,
@@ -750,5 +753,6 @@ pub fn UiPlugin(app: &mut App) {
         .insert_resource(windows)
         .insert_resource(dock)
         .init_resource::<DragDrop>()
-        .add_systems(PostUpdate, (save_windows, end_drag));
+        .add_systems(PostUpdate, end_drag)
+        .add_systems(Last, save_windows.after(bevy::window::ExitSystems));
 }

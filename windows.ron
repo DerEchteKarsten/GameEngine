@@ -1,12 +1,12 @@
 (
     docking_nodes: Node(
         split: Horizontal,
-        extend: 0.1,
+        extend: 0.1961849,
         left: Node(
             split: Vertical,
             extend: 0.5421812,
             left: Leaf(
-                window: 2,
+                window: 1,
             ),
             right: Leaf(
                 window: 3,
@@ -14,7 +14,7 @@
         ),
         right: Node(
             split: Horizontal,
-            extend: 0.9,
+            extend: 0.68301904,
             left: Node(
                 split: Vertical,
                 extend: 0.8045729,
@@ -22,12 +22,12 @@
                     window: 4,
                 ),
                 right: Leaf(
-                    window: 1,
+                    window: 2,
                 ),
             ),
             right: Node(
                 split: Vertical,
-                extend: 0.27323613,
+                extend: 0.1682342,
                 left: Leaf(
                     window: 0,
                 ),
@@ -40,8 +40,8 @@
     windows: [
         (
             rect: (
-                min: (2620.8, 0.0),
-                max: (2880.0, 491.82507),
+                min: (1049.25, 0.0),
+                max: (1408.0, 295.58752),
             ),
             tabs: [
                 (
@@ -52,8 +52,20 @@
         ),
         (
             rect: (
-                min: (288.0, 1448.2312),
-                max: (2620.7998, 1800.0),
+                min: (0.0, 0.0),
+                max: (276.22827, 952.61237),
+            ),
+            tabs: [
+                (
+                    label: "Hierarchy",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (276.22833, 1413.6345),
+                max: (1049.2499, 1757.0),
             ),
             tabs: [
                 (
@@ -70,20 +82,8 @@
         ),
         (
             rect: (
-                min: (0.0, 0.0),
-                max: (288.0, 975.92615),
-            ),
-            tabs: [
-                (
-                    label: "Hierarchy",
-                ),
-            ],
-            active_tab: 0,
-        ),
-        (
-            rect: (
-                min: (0.0, 975.92615),
-                max: (288.0, 1800.0),
+                min: (0.0, 952.61237),
+                max: (276.22827, 1757.0),
             ),
             tabs: [
                 (
@@ -94,8 +94,8 @@
         ),
         (
             rect: (
-                min: (288.0, 0.0),
-                max: (2620.7998, 1448.2312),
+                min: (276.22833, 0.0),
+                max: (1049.2499, 1413.6345),
             ),
             tabs: [
                 (
@@ -106,8 +106,8 @@
         ),
         (
             rect: (
-                min: (2620.8, 491.825),
-                max: (2880.0, 1800.0),
+                min: (1049.25, 295.5875),
+                max: (1408.0, 1757.0),
             ),
             tabs: [
                 (

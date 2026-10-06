@@ -1,4 +1,5 @@
 //! Scene entities: mesh instances, the selected instance's editable material settings and spawning of imported scenes.
+use bevy::ecs::reflect::ReflectResource;
 use bevy::{
     app::{App, Last, PostUpdate, Update},
     asset::{AssetEvent, Assets, Handle},
@@ -7,8 +8,8 @@ use bevy::{
         entity::Entity,
         message::MessageReader,
         name::Name,
-        resource::Resource,
         query::{Changed, With, Without},
+        resource::Resource,
         schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
     },
@@ -206,7 +207,7 @@ fn write_material_settings(
     for (instance, settings) in &query {
         // This marks the set as modified, so `resolve_material_textures` writes the indices
         // of its new textures.
-        let Some(set) = material_sets.get_mut(&instance.material_set) else {
+        let Some(mut set) = material_sets.get_mut(&instance.material_set) else {
             continue;
         };
         let index = instance.material_index as usize;
@@ -266,7 +267,8 @@ pub fn ScenePlugin(app: &mut App) {
         .register_type::<Camera>();
 }
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct Skybox {
     image: Handle<GpuTexture>,
 }

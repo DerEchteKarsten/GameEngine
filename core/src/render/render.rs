@@ -1,4 +1,5 @@
 //! Per-frame rendering: swapchain, sync, render resources/settings, the shared scene passes and windowed frame recording.
+use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use std::{
     collections::HashMap,
     mem::offset_of,
@@ -219,13 +220,15 @@ pub struct RenderResources {
     variables: Buffer<TraversalVariables, StorageIndirect>,
 }
 
-#[derive(Resource, Default, Clone)]
+#[derive(Resource, Default, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct RenderValues {
     meshlet_count: u32,
     instance_count: u32,
 }
 
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Reflect)]
+#[reflect(Resource)]
 pub struct RenderSettings {
     pub freez_proj: Option<Mat4>,
     pub freez_view: Option<Mat4>,
@@ -332,7 +335,7 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
         let frame = slots.slots[frame_in_flight].begin().unwrap();
         world.run_schedule(RenderSystems::AquireSwapchainImage);
         world.run_schedule(RenderSystems::PreRender);
-        record_frame(frame, frame_in_flight, params.get_mut(world));
+        record_frame(frame, frame_in_flight, params.get_mut(world).unwrap());
     });
 }
 

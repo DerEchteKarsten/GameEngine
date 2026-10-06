@@ -1,4 +1,5 @@
 //! Editor log console: tracing/Vulkan validation capture layer, Tracy setup and console UI.
+use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -251,15 +252,18 @@ where
 
 const MAX_ENTIRES: usize = 10_000;
 
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct ConsoleUiState {
     pub filter_text: String,
     pub auto_scroll: bool,
     pub min_level: u8,
+    #[reflect(ignore, clone)]
     pub filter_buf: Vec<u32>,
     pub filter_buf_head: usize,
     pub matches: usize,
     pub old_head: usize,
+    #[reflect(ignore, clone)]
     pub inspecting: Option<(LogEntry, u32)>,
 }
 

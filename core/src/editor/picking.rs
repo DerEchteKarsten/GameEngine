@@ -15,12 +15,13 @@ use crate::{
 use bevy::{
     asset::Assets,
     ecs::{
-        component::Component,
+        component::{Component, Components},
         entity::Entity,
         hierarchy::{ChildOf, Children},
         name::Name,
         query::{Has, With},
         reflect::ReflectComponent,
+        resource::IsResource,
         system::{Commands, Local, Query, Res, Single},
     },
     input::{ButtonInput, keyboard::KeyCode, mouse::MouseButton, touch::Touches},
@@ -49,9 +50,11 @@ pub(crate) fn hierarchy_ui(
         Option<&Children>,
         Option<&ChildOf>,
         Option<&Instance>,
+        Option<&IsResource>,
     )>,
     selected: Query<Entity, With<Selected>>,
     keys: Res<ButtonInput<KeyCode>>,
+    components: &Components,
 ) {
     ui.build("Hierarchy", |ui| {
         if ui.button("insert") {
@@ -63,8 +66,8 @@ pub(crate) fn hierarchy_ui(
             |ui| {
                 let mut roots: Vec<Entity> = instances
                     .iter()
-                    .filter(|(_, _, _, _, parent, _)| parent.is_none())
-                    .map(|(e, _, _, _, _, _)| e)
+                    .filter(|(_, _, _, _, parent, _, _)| parent.is_none())
+                    .map(|(e, _, _, _, _, _, _)| e)
                     .collect();
 
                 roots.sort();
@@ -77,13 +80,17 @@ pub(crate) fn hierarchy_ui(
                         root,
                         &mut instances,
                         &selected,
+                        components,
                         &mut content_max,
                     );
                 }
                 ui.content_max = ui.content_max.max(content_max);
                 if keys.just_pressed(KeyCode::Delete) && ui.ctx.focused.is_some() {
                     for e in selected {
-                        cmd.entity(e).despawn();
+                        // Despawning a resource panics the next system that reads it.
+                        if instances.get(e).is_ok_and(|i| i.6.is_none()) {
+                            cmd.entity(e).despawn();
+                        }
                     }
                 }
                 ui.content_max = ui
@@ -108,11 +115,14 @@ fn draw_entity_node(
         Option<&Children>,
         Option<&ChildOf>,
         Option<&Instance>,
+        Option<&IsResource>,
     )>,
     selected: &Query<Entity, With<Selected>>,
+    components: &Components,
     content_max: &mut Vec2,
 ) {
-    let Ok((_, is_selected, name, children, _, instance)) = instances.get(this_entity) else {
+    let Ok((_, is_selected, name, children, _, instance, resource)) = instances.get(this_entity)
+    else {
         return;
     };
 
@@ -123,6 +133,9 @@ fn draw_entity_node(
             .path()
             .map(|p| p.to_string())
             .unwrap_or_else(|| format!("Entity {}", this_entity.index()))
+    } else if let Some(name) = resource.and_then(|r| components.get_name(r.resource_component_id()))
+    {
+        name.shortname().to_string()
     } else {
         format!("Entity {}", this_entity.index())
     };
@@ -139,7 +152,8 @@ fn draw_entity_node(
                     ui.content_max = if has_children {
                         ui.collapsable(true, this_entity, &label, |ui| {
                             let size = ui.content_max;
-                            let Ok((_, _, _, children, _, _)) = instances.get(this_entity) else {
+                            let Ok((_, _, _, children, _, _, _)) = instances.get(this_entity)
+                            else {
                                 return size;
                             };
                             let mut children = children
@@ -150,7 +164,15 @@ fn draw_entity_node(
                                 .collect::<Vec<_>>();
                             children.sort();
                             for child in children {
-                                draw_entity_node(cmd, ui, child, instances, selected, content_max);
+                                draw_entity_node(
+                                    cmd,
+                                    ui,
+                                    child,
+                                    instances,
+                                    selected,
+                                    components,
+                                    content_max,
+                                );
                             }
                             *content_max = content_max.max(ui.content_max);
                             size

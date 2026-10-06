@@ -738,7 +738,7 @@ pub(crate) fn selected_ui(world: &mut World, state: &mut SystemState<UiBuilder<'
 
     let mut mutations: Vec<(ComponentId, Box<dyn PartialReflect>)> = vec![];
 
-    let mut ui = state.get_mut(world);
+    let mut ui = state.get_mut(world).unwrap();
     ui.build("Selected", |ui| {
         if let Some(entity) = entity {
             ui.text(format!("Entity: {:?}", entity));

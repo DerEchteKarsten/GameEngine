@@ -9,8 +9,8 @@ edition = "2024"
 [workspace.dependencies]
 anyhow = "1.0.99"
 bytemuck = { version = "1.24.0", features = ["derive"] }
-glam = { version = "0.30.5", features = ["bytemuck", "mint"] }
-bevy = {version = "0.18.0", default-features = false, features = [
+glam = { version = "0.32", features = ["bytemuck", "mint"] }
+bevy = {version = "0.19.1", default-features = false, features = [
     "debug",
     "wayland",
     "embedded_watcher",

@@ -3,6 +3,7 @@ use bevy::{
     app::{App, Plugin},
     ecs::{resource::Resource, system::RunSystemOnce, world::World},
 };
+use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use glam::UVec2;
 use lava::{
     buffer::Buffer,
@@ -17,7 +18,8 @@ use crate::render::{
 };
 
 /// Size of the headless render target. In the main world it stands in for the window size.
-#[derive(Resource, Clone, Copy)]
+#[derive(Resource, Clone, Copy, Reflect)]
+#[reflect(Resource)]
 pub struct HeadlessSize(pub UVec2);
 
 /// Initialises Vulkan without a display. Frames are drawn on demand by [`render_frame`].

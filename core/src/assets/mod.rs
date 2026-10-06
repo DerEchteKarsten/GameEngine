@@ -62,12 +62,12 @@ impl AssetLoader for SceneLoader {
         // that loads the same files.
         let mut textures: Vec<Handle<GpuTexture>> = Vec::with_capacity(scene.textures.len());
         for path in &scene.textures {
-            let path = load_context.path().resolve_embed(path)?;
+            let path = load_context.path().resolve_embed_str(path)?;
             textures.push(load_context.load(path));
         }
         let mut meshes: Vec<Handle<GpuMesh>> = Vec::with_capacity(scene.meshes.len());
         for path in &scene.meshes {
-            let path = load_context.path().resolve_embed(path)?;
+            let path = load_context.path().resolve_embed_str(path)?;
             meshes.push(load_context.load(path));
         }
 

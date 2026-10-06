@@ -289,7 +289,7 @@ pub(crate) fn extract_gizzmos(
         *system_state = Some(SystemState::new(&mut main_world));
     }
     let system_state = system_state.as_mut().unwrap();
-    let mut draw_gizzmos = system_state.get_mut(&mut main_world);
+    let mut draw_gizzmos = system_state.get_mut(&mut main_world).unwrap();
     gizzmos.pendings_gizzmos.clear();
 
     let start = 0;

@@ -429,7 +429,6 @@ pub(crate) fn asset_browser(
     asset_server: Res<AssetServer>,
     mut state: Local<BrowserState>,
 ) {
-    let start = Instant::now();
     let state = &mut *state;
     state.apply_changes();
 
@@ -516,7 +515,6 @@ pub(crate) fn asset_browser(
     if let Some(nav) = nav {
         state.navigate(nav);
     }
-    tracing::info!("{:#?}", start.elapsed());
 }
 
 /// Spawns an asset released over the 3D viewport at the point under the cursor.
