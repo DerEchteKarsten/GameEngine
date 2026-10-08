@@ -40,6 +40,7 @@ use crate::{
 pub mod assets;
 pub mod bindless;
 pub mod editor;
+#[cfg(feature = "profiling")]
 pub mod profiler;
 pub mod render;
 pub mod scene;

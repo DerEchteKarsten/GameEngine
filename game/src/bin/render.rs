@@ -13,10 +13,11 @@ use bevy::{
     ecs::query::With,
     transform::{TransformPlugin, components::Transform},
 };
+#[cfg(feature = "profiling")]
+use core::profiler::{Profiler, ProfilerPlugin, capture::ProfileLayer};
 use core::{
     ASSET_DIR, asset_plugin,
     assets::{MeshAssets, texture::GpuTexture},
-    profiler::{Profiler, ProfilerPlugin, capture::ProfileLayer},
     render::{
         headless::{HeadlessRenderPlugin, read_pixels, render_frame},
         render::RenderSettings,
@@ -39,7 +40,8 @@ and writes the image to OUTPUT.png.
   --fov DEG      vertical field of view in degrees (default 65)
   --frames N     render N frames once the scene is loaded (default 1); the image is the last
   --profile DIR  profile those frames: write DIR/profile.txt (summary, also printed) and
-                 DIR/profile.json (Chrome trace for Perfetto or chrome://tracing)";
+                 DIR/profile.json (Chrome trace for Perfetto or chrome://tracing);
+                 needs the `profiling` feature";
 
 struct Args {
     scene: PathBuf,
@@ -134,8 +136,13 @@ fn run(args: &Args) -> Result<(), String> {
         ScenePlugin,
         HeadlessRenderPlugin { size: SIZE },
     ));
+    #[cfg(feature = "profiling")]
     if args.profile.is_some() {
         app.add_plugins(ProfilerPlugin::default());
+    }
+    #[cfg(not(feature = "profiling"))]
+    if args.profile.is_some() {
+        return Err("--profile needs the `profiling` feature".into());
     }
 
     // The camera looks along its local +X: yaw turns it around +Z, a positive pitch looks up.
@@ -160,6 +167,7 @@ fn run(args: &Args) -> Result<(), String> {
         [(&scene_path, scene.untyped()), (SKYBOX, sky.untyped())];
     app.finish();
     app.cleanup();
+    #[cfg(feature = "profiling")]
     if let Some(mut profiler) = app.world_mut().get_resource_mut::<Profiler>() {
         profiler.set_paused(true);
     }
@@ -200,6 +208,7 @@ fn run(args: &Args) -> Result<(), String> {
     app.update();
 
     let loaded = start.elapsed();
+    #[cfg(feature = "profiling")]
     if let Some(mut profiler) = app.world_mut().get_resource_mut::<Profiler>() {
         profiler.set_paused(false);
     }
@@ -212,6 +221,7 @@ fn run(args: &Args) -> Result<(), String> {
     let frame = frame.expect("at least one frame is rendered");
     write_png(output, frame.size, &read_pixels(app.world()))
         .map_err(|err| format!("{}: {err}", output.display()))?;
+    #[cfg(feature = "profiling")]
     if let Some(dir) = &args.profile {
         let profiler = app.world().resource::<Profiler>();
         profiler
@@ -247,14 +257,14 @@ fn main() -> ExitCode {
     let log = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_filter(LevelFilter::WARN);
-    let profile = args
-        .profile
-        .is_some()
-        .then(|| ProfileLayer.with_filter(LevelFilter::INFO));
-    tracing_subscriber::registry()
-        .with(log)
-        .with(profile)
-        .init();
+    let subscriber = tracing_subscriber::registry().with(log);
+    #[cfg(feature = "profiling")]
+    let subscriber = subscriber.with(
+        args.profile
+            .is_some()
+            .then(|| ProfileLayer.with_filter(LevelFilter::INFO)),
+    );
+    subscriber.init();
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

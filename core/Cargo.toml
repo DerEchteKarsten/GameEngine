@@ -9,7 +9,7 @@ bevy = {workspace = true}
 anyhow = {workspace = true}
 bytemuck = { workspace = true }
 
-lava = { version = "0.1.0", path = "../lava" }
+lava = { version = "0.1.0", path = "../lava", default-features = false }
 
 bytemuck_derive = {workspace = true}
 gltf = {workspace = true}
@@ -23,8 +23,8 @@ futures = {workspace = true}
 tracing = {workspace = true}
 tracing-subscriber = {workspace = true}
 tracing-log = {workspace = true}
-tracing-tracy = {workspace = true}
-tracy-client = {workspace = true}
+tracing-tracy = {workspace = true, optional = true}
+tracy-client = {workspace = true, optional = true}
 tracing-core = {workspace = true}
 fontdue = {workspace = true}
 ron = {workspace = true}
@@ -38,7 +38,9 @@ exr = {workspace = true}
 half = {workspace = true}
 
 [features]
-default = []
+default = ["profiling"]
+# The profiler (CPU spans, GPU timings, shader clocks, its editor tab) and Tracy.
+profiling = ["lava/profiling", "dep:tracing-tracy", "dep:tracy-client"]
 dynamic_linking = ["bevy/dynamic_linking"]
 
 [build-dependencies]

@@ -1,4 +1,4 @@
-//! Editor log console and the tracing subscriber: the console's capture layer (logs and Vulkan validation), Tracy and the profiler's span layer, plus the console UI.
+//! Editor log console and the tracing subscriber: the console's capture layer (logs and Vulkan validation), with `profiling` also Tracy and the profiler's span layer, plus the console UI.
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
@@ -16,7 +16,6 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{Layer, fmt};
 
 use crate::id;
-use crate::profiler::capture::ProfileLayer;
 use crate::ui::UiContext;
 use crate::ui::builder::UiBuilder;
 use crate::ui::window::{BorderSettings, DrawSettings};
@@ -290,9 +289,11 @@ struct ConsoleBuffer {
 
 pub struct ConsolePlugin;
 
+#[cfg(feature = "profiling")]
 #[derive(Default)]
 struct TracyConfig(tracing_subscriber::fmt::format::DefaultFields);
 
+#[cfg(feature = "profiling")]
 impl tracing_tracy::Config for TracyConfig {
     type Formatter = tracing_subscriber::fmt::format::DefaultFields;
     fn format_fields_in_zone_name(&self) -> bool {
@@ -312,10 +313,10 @@ impl tracing_tracy::Config for TracyConfig {
 /// The console's log buffer, filled by the layer [`register_tracing`] installs.
 static LOG: OnceLock<Arc<SharedBuffer>> = OnceLock::new();
 
-/// Installs the global tracing subscriber: logs go to the console and stderr, spans to the
-/// profiler and Tracy. `RUST_LOG` overrides the level. Call it first thing in `main`: bevy
-/// creates a system's span when the system is added, and a span created before there is a
-/// subscriber never records. [`ConsolePlugin`] calls it if `main` didn't; later calls do nothing.
+/// Installs the global tracing subscriber: logs go to the console and stderr, spans (with the
+/// `profiling` feature) to the profiler and Tracy. `RUST_LOG` overrides the level. Call it
+/// first thing in `main`: bevy creates a system's span when the system is added, and a span
+/// created before there is a subscriber never records. [`ConsolePlugin`] calls it if `main` didn't; later calls do nothing.
 pub fn register_tracing() {
     LOG.get_or_init(|| {
         use tracing_subscriber::prelude::*;
@@ -337,9 +338,11 @@ pub fn register_tracing() {
             .with(ConsoleLayer {
                 buffer: buffer.clone(),
             })
-            .with(ProfileLayer)
-            .with(tracing_tracy::TracyLayer::new(TracyConfig::default()))
             .with(fmt);
+        #[cfg(feature = "profiling")]
+        let subscriber = subscriber
+            .with(crate::profiler::capture::ProfileLayer)
+            .with(tracing_tracy::TracyLayer::new(TracyConfig::default()));
         if tracing::subscriber::set_global_default(subscriber).is_err() {
             eprintln!("WARNING: global tracing subscriber already set — the console stays empty");
         }

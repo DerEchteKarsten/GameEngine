@@ -13,6 +13,7 @@ use lava::{
 };
 
 use crate::bindless;
+#[cfg(feature = "profiling")]
 use crate::profiler::{GpuFrame, Profiler, capture::now_ns};
 use crate::render::{
     MainWorld,
@@ -89,7 +90,10 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
                 pending: PendingAccesses::default(),
             }
         });
-    let profiling = main_world.get_resource::<Profiler>().is_some_and(|p| p.enabled);
+    #[cfg(feature = "profiling")]
+    let profiling = main_world
+        .get_resource::<Profiler>()
+        .is_some_and(|p| p.enabled);
 
     let render_world = &mut renderer.render_world;
     render_world.insert_resource(MainWorld(std::mem::take(main_world)));
@@ -106,11 +110,13 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     let sky = render_world.resource::<RenderSkybox>();
     let instances = render_world.resource::<InstanceManager>();
 
+    #[cfg(feature = "profiling")]
     renderer.slot.set_profiling(profiling);
     let mut frame = renderer.slot.begin().unwrap();
     RenderResources::fit(&mut renderer.resources, size, size, &mut frame);
     let resources = renderer.resources.as_mut().unwrap();
     let (image, readback) = (&renderer.image, &renderer.readback);
+    #[cfg(feature = "profiling")]
     let submit_ns = now_ns();
     renderer.pending = frame
         .execute(
@@ -137,6 +143,7 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
         .unwrap();
     // Beginning a frame waits for the one the slot submitted before.
     let frame = renderer.slot.begin().unwrap();
+    #[cfg(feature = "profiling")]
     if let Some(timings) = frame.last_timings()
         && let Some(mut profiler) = main_world.get_resource_mut::<Profiler>()
     {

@@ -1,10 +1,8 @@
-//! Editor plugin wiring up editor tools and panels, including the profiler tab.
+//! Editor plugin wiring up editor tools and panels, including the profiler tab (with `profiling`).
 use bevy::{
     app::{Plugin, PreUpdate, Update},
     asset::Handle,
-    ecs::{
-        entity::Entity, schedule::IntoScheduleConfigs, schedule::common_conditions::resource_exists,
-    },
+    ecs::{entity::Entity, schedule::IntoScheduleConfigs},
     math::Rect,
 };
 use glam::Vec2;
@@ -23,9 +21,13 @@ use crate::{
         viewport::{ViewPort, viewport_ui},
     },
     physics::bvh::debug_draw_scene_bvh,
-    profiler::{Profiler, ui::profiler_ui},
     render::{ExtractSchedule, RenderApp, RenderStartup, RenderSystems, render::RenderDebugUi},
     scene::file::Scene,
+};
+#[cfg(feature = "profiling")]
+use {
+    crate::profiler::{Profiler, ui::profiler_ui},
+    bevy::ecs::schedule::common_conditions::resource_exists,
 };
 
 pub mod asset_browser;
@@ -79,16 +81,21 @@ impl Plugin for EditorPlugin {
                 update_camera,
                 selected_ui,
                 hierarchy_ui,
-                profiler_ui.run_if(resource_exists::<Profiler>),
                 asset_browser,
                 viewport_ui,
                 drop_in_viewport,
                 picking
                     .after(update_camera)
                     .after(selected_ui)
-                    .after(hierarchy_ui)
-                    .after(profiler_ui),
+                    .after(hierarchy_ui),
             ),
+        );
+        #[cfg(feature = "profiling")]
+        app.add_systems(
+            Update,
+            profiler_ui
+                .run_if(resource_exists::<Profiler>)
+                .before(picking),
         );
         app.get_sub_app_mut(RenderApp)
             .unwrap()

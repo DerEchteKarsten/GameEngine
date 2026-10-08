@@ -95,7 +95,10 @@ fn busy_per_thread<'a>(
         if interval.0 >= interval.1 {
             continue;
         }
-        let i = match threads.iter().position(|(thread, ..)| *thread == span.thread) {
+        let i = match threads
+            .iter()
+            .position(|(thread, ..)| *thread == span.thread)
+        {
             Some(i) => i,
             None => {
                 threads.push((span.thread, Vec::new(), Vec::new()));
@@ -271,7 +274,11 @@ fn end_frame(mut profiler: ResMut<Profiler>) {
     for i in frames.len().saturating_sub(GPU_LATENCY + 1)..frames.len() {
         let earlier = if i > 0 { &frames[i - 1].cpu[..] } else { &[] };
         let frame = &frames[i];
-        let busy = busy_per_thread(earlier.iter().chain(&frame.cpu), frame.start_ns, frame.end_ns);
+        let busy = busy_per_thread(
+            earlier.iter().chain(&frame.cpu),
+            frame.start_ns,
+            frame.end_ns,
+        );
         frames[i].busy = busy;
     }
     profiler.gpu_pending.retain_mut(|gpu| {

@@ -1,5 +1,5 @@
 //! Per-frame rendering: swapchain, sync, render resources/settings, the shared scene passes and windowed frame recording.
-use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
+use bevy::{ecs::reflect::ReflectResource, reflect::Reflect, time::Time};
 use std::{
     collections::HashMap,
     mem::offset_of,
@@ -7,6 +7,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use bevy::{
@@ -47,13 +48,14 @@ use lava::{
     },
 };
 
+#[cfg(feature = "profiling")]
+use crate::profiler::{GpuFrame, GpuTimings, capture::now_ns};
 use crate::{
     INITIAL_WINDOW_SIZE,
     assets::texture::{GpuTexture, texture_index},
     bindless,
     editor::{gizzmos::GizzmoResources, viewport::ViewPort},
     id,
-    profiler::{GpuFrame, GpuTimings, capture::now_ns},
     render::{
         ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, PrimarySurface, Render, RenderApp,
         RenderStartup, RenderSystems,
@@ -312,10 +314,22 @@ impl Default for RenderSettings {
 pub(crate) fn settings_ui(
     mut ui: UiBuilder,
     res: Res<RenderValues>,
+    time: Res<Time>,
     mut settings: ResMut<RenderSettings>,
     cam: Single<(&Camera, &GlobalTransform)>,
+    mut last_times: Local<([Duration; 32], u64)>,
 ) {
     ui.build("Render Settings", |ui| {
+        last_times.1 = (last_times.1 + 1) % 32;
+
+        let idx = last_times.1 as usize;
+        last_times.0[idx] = time.delta();
+
+        ui.text(format!(
+            "{:#?}",
+            last_times.0.iter().cloned().sum::<Duration>().div_f32(32.0)
+        ));
+
         ui.text(format!("Num Meshlets: {}", res.meshlet_count));
         ui.text(format!("Num Instances: {}", res.instance_count));
         if ui.button("Freez Cam") {
@@ -389,12 +403,14 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
             frame.frame_in_flight()
         };
         let slot = &mut slots.slots[frame_in_flight];
+        #[cfg(feature = "profiling")]
         slot.set_profiling(
             world
                 .get_resource::<GpuTimings>()
                 .is_some_and(|t| t.enabled),
         );
         let frame = slot.begin().unwrap();
+        #[cfg(feature = "profiling")]
         if let Some(last) = frame.last_timings() {
             let mut timings = world.resource_mut::<GpuTimings>();
             let submit_ns = timings.submitted[frame_in_flight];
@@ -407,6 +423,7 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
         world.run_schedule(RenderSystems::AquireSwapchainImage);
         world.run_schedule(RenderSystems::PreRender);
         record_frame(frame, frame_in_flight, params.get_mut(world).unwrap());
+        #[cfg(feature = "profiling")]
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
             timings.submitted[frame_in_flight] = now_ns();
         }
