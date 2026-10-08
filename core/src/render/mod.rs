@@ -193,7 +193,7 @@ impl Plugin for PipelinedRenderingPlugin {
             render_to_app_receiver,
         ));
 
-        std::thread::spawn(move || {
+        let render_thread = move || {
             let _span = log::info_span!("render thread").entered();
             let compute_task_pool = ComputeTaskPool::get();
             loop {
@@ -218,7 +218,11 @@ impl Plugin for PipelinedRenderingPlugin {
             }
 
             log::debug!("exiting pipelined rendering thread");
-        });
+        };
+        let render_thread = std::thread::Builder::new()
+            .name("render thread".into())
+            .spawn(render_thread);
+        render_thread.unwrap();
     }
 }
 

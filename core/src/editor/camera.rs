@@ -86,28 +86,28 @@ pub fn update_camera(
     );
 
     *yaw = yaw.rem_euclid(2.0 * PI);
-    transform.rotation =
-        Quat::from_axis_angle(Vec3::Y, *yaw) * Quat::from_axis_angle(Vec3::X, *pitch);
+    // Yaw turns right around +Z; a positive pitch around the right axis (+Y) looks up.
+    transform.rotation = Quat::from_rotation_z(*yaw) * Quat::from_rotation_y(-*pitch);
 
     if vp.focused() {
         let mut direction = Vec3::ZERO;
         if keys.pressed(KeyCode::KeyW) {
-            direction += *transform.forward();
+            direction += *transform.local_x();
         }
         if keys.pressed(KeyCode::KeyS) {
-            direction += *transform.back();
+            direction -= *transform.local_x();
         }
         if keys.pressed(KeyCode::KeyA) {
-            direction += *transform.right();
+            direction -= *transform.local_y();
         }
         if keys.pressed(KeyCode::KeyD) {
-            direction += *transform.left();
+            direction += *transform.local_y();
         }
         if keys.pressed(KeyCode::Space) {
-            direction += Vec3::Y;
+            direction += Vec3::Z;
         }
         if keys.pressed(KeyCode::ShiftLeft) {
-            direction += Vec3::NEG_Y;
+            direction -= Vec3::Z;
         }
 
         let direction = if direction.length_squared() == 0.0 {

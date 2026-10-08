@@ -5,10 +5,13 @@ struct BvhCullBindings {
     MutBuf<InstanceBvhRoot> queue;
     MutBuf<TraversalVariables> queue_state;
     MutBuf<InstancedMeshlet> visible_meshlets;
+    MutBuf<InstancedMeshlet> blended_meshlets;
+    MutBuf<InstancedMeshlet> outlined_meshlets;
     MutBuf<InstanceMeshletIndex> canidate_meshlets;
     MutBuf<uint> meshlet_batch_buffer;
     Buf<float4x4> instance_transforms;
     Buf<InstanceHeader> instance_headers;
+    Buf<uint> instance_flags;
     float4 camera_pos;
     float4x4 proj;
     float4x4 clip_from_world;
@@ -17,6 +20,8 @@ struct BvhCullBindings {
     uint max_nodes;
     uint max_candidate_meshlets;
     uint max_visible_meshlets;
+    uint max_blended_meshlets;
+    uint max_outlined_meshlets;
 };
 [[vk::push_constant]] BvhCullBindings b;
 #define INVALID_U32 (~uint(0))
@@ -265,6 +270,21 @@ void ProcessNodeBatch(uint batchSize, uint groupIndex)
     }
 }
 
+void append_meshlet(uint draw, MutBuf<InstancedMeshlet> list, uint capacity, InstancedMeshlet meshlet)
+{
+    uint offset;
+    InterlockedAdd(b.queue_state.val.draws[draw].meshlet_count, 1, offset);
+    if (offset >= capacity) {
+        // Out of space: undo the reservation so the draw never sees more meshlets than were written.
+        InterlockedAdd(b.queue_state.val.draws[draw].meshlet_count, ~0u);
+        return;
+    }
+    list.val[offset] = meshlet;
+    if (offset % MESHLETS_PER_TASK == 0) {
+        InterlockedAdd(b.queue_state.val.draws[draw].task_groups_x, 1);
+    }
+}
+
 void ProcessMeshletBatch(uint meshletBatchStartIndex, uint meshletBatchReadySize, uint groupIndex)
 {
     if (groupIndex < meshletBatchReadySize)
@@ -274,16 +294,18 @@ void ProcessMeshletBatch(uint meshletBatchStartIndex, uint meshletBatchReadySize
         let header = b.instance_headers.val[job.instance];
         let trans = b.instance_transforms.val[job.instance];
 
-        let cull_data = (CullData *)(header.cull_data_offset + uint64_t(job.meshlet * sizeof(CullData)));
+        let cull_data = header.cull_data + job.meshlet;
         if (aabb_in_frustum(cull_data.aabb.center_and_error.xyz, cull_data.aabb.half_extent.xyz, trans) &&
             lod_error_is_imperceptible(cull_data.lod_group_sphere, cull_data.aabb.center_and_error.w, trans)) {
-            uint write_offset;
-            InterlockedAdd(b.queue_state.val.visible_meshlet_count, 1, write_offset);
-            if (write_offset < b.max_visible_meshlets) {
-                b.visible_meshlets.val[write_offset] = InstancedMeshlet((uint64_t)job.instance, (Meshlet *)(header.meshlet_offset + uint64_t(job.meshlet * sizeof(Meshlet))));
+            let meshlet = InstancedMeshlet((uint64_t)job.instance, header.meshlets + job.meshlet);
+            let flags = instance_flags(b.instance_flags.val, job.instance);
+            if ((flags & OUTLINE_BIT) != 0) {
+                append_meshlet(OUTLINED_DRAW, b.outlined_meshlets, b.max_outlined_meshlets, meshlet);
+            }
+            if ((flags & OPAQUE_BIT) == 0) {
+                append_meshlet(BLENDED_DRAW, b.blended_meshlets, b.max_blended_meshlets, meshlet);
             } else {
-                // Out of space: undo the reservation so the draw never sees more meshlets than were written.
-                InterlockedAdd(b.queue_state.val.visible_meshlet_count, ~0u);
+                append_meshlet(OPAQUE_DRAW, b.visible_meshlets, b.max_visible_meshlets, meshlet);
             }
         }
 

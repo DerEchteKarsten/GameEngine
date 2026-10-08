@@ -1,7 +1,7 @@
 (
     docking_nodes: Node(
         split: Horizontal,
-        extend: 0.138546,
+        extend: 0.27722874,
         left: Node(
             split: Vertical,
             extend: 0.5421812,
@@ -25,27 +25,20 @@
                     window: 2,
                 ),
             ),
-            right: Node(
-                split: Vertical,
-                extend: 0.5,
-                left: Leaf(
-                    window: 0,
-                ),
-                right: Leaf(
-                    window: 5,
-                ),
+            right: Leaf(
+                window: 5,
             ),
         ),
     ),
     windows: [
         (
             rect: (
-                min: (1201.8754, 0.0),
-                max: (1437.0, 878.5),
+                min: (788.41254, 246.0),
+                max: (2014.0, 927.8876),
             ),
             tabs: [
                 (
-                    label: "Frame Histogram",
+                    label: "Profiler",
                 ),
             ],
             active_tab: 0,
@@ -53,7 +46,7 @@
         (
             rect: (
                 min: (0.0, 0.0),
-                max: (199.09058, 952.61237),
+                max: (798.4187, 975.92615),
             ),
             tabs: [
                 (
@@ -64,8 +57,8 @@
         ),
         (
             rect: (
-                min: (199.0906, 1390.0981),
-                max: (1201.8752, 1757.0),
+                min: (798.41876, 1424.1188),
+                max: (2484.6309, 1800.0),
             ),
             tabs: [
                 (
@@ -82,8 +75,8 @@
         ),
         (
             rect: (
-                min: (0.0, 952.61237),
-                max: (199.09058, 1757.0),
+                min: (0.0, 975.92615),
+                max: (798.4187, 1800.0),
             ),
             tabs: [
                 (
@@ -94,8 +87,8 @@
         ),
         (
             rect: (
-                min: (199.0906, 0.0),
-                max: (1201.8752, 1390.0981),
+                min: (798.41876, 0.0),
+                max: (2484.6309, 1424.1188),
             ),
             tabs: [
                 (
@@ -106,8 +99,8 @@
         ),
         (
             rect: (
-                min: (1201.8754, 878.5),
-                max: (1437.0, 1757.0),
+                min: (2484.6309, 0.0),
+                max: (2880.0, 1800.0),
             ),
             tabs: [
                 (

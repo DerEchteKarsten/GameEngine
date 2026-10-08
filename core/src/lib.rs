@@ -41,6 +41,7 @@ use crate::{
 pub mod assets;
 pub mod bindless;
 pub mod editor;
+pub mod profiler;
 pub mod render;
 pub mod scene;
 pub mod ui;

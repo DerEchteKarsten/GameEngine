@@ -22,7 +22,7 @@ use glam::{IVec2, Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
 use lava::bindings::{DrawAabbs, DrawArrows, DrawSpheres, Gizzmo};
 use lava::{
     buffer::Buffer,
-    command_buffer::{CommandBuffer, Scissor, Viewport},
+    command_buffer::{Blend, CommandBuffer, Scissor, Viewport},
     image::{
         format::{ColorAspect, Format},
         slice::ImageView,
@@ -117,7 +117,7 @@ impl GizzmoShape for SphereGizzmo {
         Mat4::from_scale_rotation_translation(
             Vec3::splat(self.radius * 2.0),
             Quat::IDENTITY,
-            self.pos - Vec3::splat(self.radius / 2.0) - Vec3::splat(0.5),
+            self.pos - Vec3::splat(self.radius),
         )
     }
     fn color(&self) -> Vec4 {
@@ -362,7 +362,7 @@ impl GizzmoResources {
         };
         if !self.aabb_range.is_empty() {
             cmd.raster()
-                .color_attachment(target, None)
+                .color_attachment(target, None, Some(Blend::Alpha))
                 .backface_culling(false)
                 .draw_with_dynstates(
                     DrawAabbs::new(
@@ -379,7 +379,7 @@ impl GizzmoResources {
         }
         if !self.sphere_range.is_empty() {
             cmd.raster()
-                .color_attachment(target, None)
+                .color_attachment(target, None, Some(Blend::Alpha))
                 .backface_culling(false)
                 .draw_with_dynstates(
                     DrawSpheres::new(
@@ -396,7 +396,7 @@ impl GizzmoResources {
         }
         if !self.arrow_range.is_empty() {
             cmd.raster()
-                .color_attachment(target, None)
+                .color_attachment(target, None, Some(Blend::Alpha))
                 .backface_culling(false)
                 .draw_with_dynstates(
                     DrawArrows::new(

@@ -49,6 +49,9 @@ re!(PATH_DEP_RE, r"(?m)^([\w-]+)\s*=\s*\{[^}]*path\s*=");
 re!(SHADER_ATTR_RE, r#"\[shader\("(\w+)"\)\]"#);
 re!(CALL_RE, r"(\w+)\s*\(");
 re!(PUSH_CONSTANT_RE, r"\[\[vk::push_constant\]\]\s*(\w+)");
+re!(INCLUDE_RE, r#"(?m)^\s*#include\s+"([^"]+)""#);
+re!(MACRO_DEF_RE, r"(?m)^#define\s+(\w+)\((\w+)\)((?:.*\\\n)+.*)");
+re!(MACRO_CALL_RE, r"^\s*(\w+)\((\w+)\)\s*$");
 re!(SIG_END_RE, r"[{;]\s*$|\bwhere\b");
 re!(SIG_TRAIL_RE, r"\s*(\{|;)\s*$");
 re!(WS_RE, r"\s+");
@@ -257,7 +260,29 @@ fn shader_table(root: &Path) -> (Vec<String>, String) {
     let mut rows = Vec::new();
     for f in slang_files(root, Some("passes")) {
         let text = read(&f);
-        let lines: Vec<&str> = text.lines().collect();
+        let include_dir = f.parent().unwrap().with_file_name("include");
+        let includes: Vec<String> = INCLUDE_RE
+            .captures_iter(&text)
+            .map(|m| read(&include_dir.join(&m[1])))
+            .collect();
+        // Expands calls of included one-parameter macros, which can define entry points.
+        let expanded = text
+            .lines()
+            .map(|line| {
+                MACRO_CALL_RE
+                    .captures(line)
+                    .and_then(|call| {
+                        let def = includes
+                            .iter()
+                            .flat_map(|include| MACRO_DEF_RE.captures_iter(include))
+                            .find(|def| def[1] == call[1])?;
+                        Some(def[3].replace(&format!("{}##", &def[2]), &call[2]).replace('\\', ""))
+                    })
+                    .unwrap_or_else(|| line.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines: Vec<&str> = expanded.lines().collect();
         let (mut entries, mut pc) = (Vec::new(), "?".to_string());
         for (i, line) in lines.iter().enumerate() {
             if let Some(m) = SHADER_ATTR_RE.captures(line) {
@@ -275,6 +300,13 @@ fn shader_table(root: &Path) -> (Vec<String>, String) {
             if let Some(m) = PUSH_CONSTANT_RE.captures(line) {
                 pc = m[1].to_string();
             }
+        }
+        // Passes sharing their push constants declare them in an include.
+        if pc == "?" {
+            pc = includes
+                .iter()
+                .find_map(|include| Some(PUSH_CONSTANT_RE.captures(include)?[1].to_string()))
+                .unwrap_or(pc);
         }
         let name = f.file_name().unwrap().to_string_lossy();
         rows.push(format!("- {name}: pc `{pc}`; {}", entries.join(", ")));

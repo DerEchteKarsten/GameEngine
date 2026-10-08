@@ -20,7 +20,7 @@ struct InstanceBvhRoot {
 }
 
 BvhNode *get_ptr(AabbPtr aabb) {
-    return (BvhNode *)(((uint64_t(asuint(aabb.center_and_offset_high.w))) << 32) | uint64_t(asuint(aabb.half_extent_and_offset_low.w))); 
+    return (BvhNode *)(((uint64_t(asuint(aabb.center_and_offset_high.w))) << 32) | uint64_t(asuint(aabb.half_extent_and_offset_low.w)));
 }
 
 struct BvhNode {
@@ -52,15 +52,28 @@ struct Vertex {
     float4 normal_and_uv2;
 }
 
+// Each task group of the scene's mesh passes draws this many meshlets.
+#define MESHLETS_PER_TASK 64
+#define OPAQUE_DRAW 0
+#define BLENDED_DRAW 1
+// The meshlets of `OUTLINE` instances, also in one of the lists above.
+#define OUTLINED_DRAW 2
+
+// A list of meshlets and the mesh task draw (task group counts) for it.
+struct MeshletDraw {
+    uint task_groups_x;
+    uint task_groups_y;
+    uint task_groups_z;
+    uint meshlet_count;
+}
+
 struct TraversalVariables {
     uint node_batch_read_offset;
     uint total_meshlets;
     uint node_write_offset;
     uint node_count;
-    uint vertex_count;
-    uint visible_meshlet_count;
-    uint first_vertex;
-    uint first_instance;
+    // Indexed by `OPAQUE_DRAW`, `BLENDED_DRAW` and `OUTLINED_DRAW`.
+    MeshletDraw draws[3];
     uint candidate_meshlet_write_offset;
     uint meshlet_batch_read_offset;
 }
@@ -94,8 +107,8 @@ struct DispatchIndirectCommand {
 }
 
 struct InstanceHeader {
-    uint64_t meshlet_offset;
-    uint64_t cull_data_offset;
+    Meshlet *meshlets;
+    CullData *cull_data;
 }
 
 #define NO_TEXTURE 0xFFFFFFFFu
@@ -108,6 +121,7 @@ struct Material {
     float normal_scale;
     float occlusion_strength;
     // Fragments with less alpha are discarded. 0 for opaque materials, whose alpha is ignored.
+    // A negative cutoff blends the material over what is behind it.
     float alpha_cutoff;
     uint color_texture;
     uint metallic_roughness_texture;
@@ -119,4 +133,14 @@ struct Material {
 }
 
 
-#define OUTLINE_BIT 0b1  
+// `InstanceFlags` in `core/src/render/world.rs`: each instance owns INSTANCE_FLAG_BITS
+// consecutive bits of a packed `uint` buffer.
+#define INSTANCE_FLAG_BITS 2
+#define OUTLINE_BIT 0b01
+// Set when the instance's material doesn't blend.
+#define OPAQUE_BIT 0b10
+
+uint instance_flags(uint *flags, uint instance) {
+    let bit = instance * INSTANCE_FLAG_BITS;
+    return (flags[bit / 32] >> (bit % 32)) & ((1u << INSTANCE_FLAG_BITS) - 1);
+}

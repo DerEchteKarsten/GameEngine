@@ -25,9 +25,9 @@ float3 view_dir(uint2 pixelCoord) {
     return normalize(direction.xyz);
 }
 
-// Y is up; v = 0 is the top row of the texture.
+// Z is up and u grows towards +Y (to the right of +X); v = 0 is the top row of the texture.
 float2 equirectangular_uv(float3 dir) {
-    return float2(atan2(dir.z, dir.x) * 0.5 * FRAC_1_PI + 0.5, acos(clamp(dir.y, -1.0, 1.0)) * FRAC_1_PI);
+    return float2(atan2(dir.y, dir.x) * 0.5 * FRAC_1_PI + 0.5, acos(clamp(dir.z, -1.0, 1.0)) * FRAC_1_PI);
 }
 
 [shader("compute")]

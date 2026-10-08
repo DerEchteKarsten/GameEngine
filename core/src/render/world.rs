@@ -49,6 +49,7 @@ pub struct InstanceManager {
     pub bvh_root_nodes: Buffer<u64>,
     pub headers: Buffer<bindings::InstanceHeader>,
     pub aabbs: Buffer<AabbError>,
+    /// `InstanceFlags`, `INSTANCE_FLAG_BITS` per instance, packed; `FLAG_WORDS` per frame in flight.
     pub flags: Buffer<u32>,
     pub instance_materials: Buffer<u64>,
     pub instance_count: usize,
@@ -60,7 +61,9 @@ pub struct InstanceManager {
 pub struct InstanceFlags(pub u32);
 
 impl InstanceFlags {
-    const OUTLINE: InstanceFlags = InstanceFlags(0b00000001);
+    const OUTLINE: InstanceFlags = InstanceFlags(0b01);
+    /// The material doesn't blend.
+    const OPAQUE: InstanceFlags = InstanceFlags(0b10);
     pub fn contains(&self, v: InstanceFlags) -> bool {
         (self.0 & v.0) > 0
     }
@@ -82,6 +85,12 @@ impl std::ops::BitOr for InstanceFlags {
     }
 }
 
+/// Bits each instance has in `InstanceManager::flags`: a power of two up to 32, so an
+/// instance never straddles two words. Mirrored by `INSTANCE_FLAG_BITS` in `datatypes.slang`.
+pub const INSTANCE_FLAG_BITS: usize = 2;
+/// Words of `InstanceManager::flags` per frame in flight.
+pub const FLAG_WORDS: usize = MAX_INSTANCES * INSTANCE_FLAG_BITS / 32;
+
 #[derive(Clone, Copy)]
 struct TempInstance {
     flags: InstanceFlags,
@@ -102,7 +111,7 @@ pub(super) fn init_world(mut cmd: Commands) {
         bvh_root_nodes: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
         instance_count: 0,
         any_outlined: false,
-        flags: Buffer::new(MAX_INSTANCES * FRAMES_IN_FLIGHT, true).unwrap(),
+        flags: Buffer::new(FLAG_WORDS * FRAMES_IN_FLIGHT, true).unwrap(),
         pending_instances: Vec::with_capacity(MAX_INSTANCES),
     });
     cmd.init_resource::<FrameCount>();
@@ -124,11 +133,13 @@ pub(super) fn extract_meshlet_instances(
                 break;
             }
             let mat = transform.to_matrix();
-            let flags = if selected {
-                InstanceFlags::OUTLINE
-            } else {
-                InstanceFlags::empty()
-            };
+            let mut flags = InstanceFlags::empty();
+            if selected {
+                flags.insert(InstanceFlags::OUTLINE);
+            }
+            if material.read().alpha_cutoff >= 0.0 {
+                flags.insert(InstanceFlags::OPAQUE);
+            }
             instance_manager.any_outlined |= flags.contains(InstanceFlags::OUTLINE);
             instance_manager.pending_instances.push(TempInstance {
                 bvh_root: mesh.buffer.address,
@@ -152,11 +163,16 @@ pub(super) fn wirte_instances(mut instances: ResMut<InstanceManager>, frame: Res
             half_extent: Vec3::from_array(instance.header.aabb.half_extend).extend(0.0),
         };
         instances.headers[slot + frame_in_flight * MAX_INSTANCES] = bindings::InstanceHeader {
-            meshlet_offset: instance.header.meshlet_offset as u64 + instance.bvh_root,
-            cull_data_offset: instance.header.cull_data_offset as u64 + instance.bvh_root,
+            meshlets: instance.header.meshlet_offset as u64 + instance.bvh_root,
+            cull_data: instance.header.cull_data_offset as u64 + instance.bvh_root,
         };
-        instances.flags[slot + frame_in_flight * MAX_INSTANCES] = instance.flags.0;
         instances.instance_materials[slot + frame_in_flight * MAX_INSTANCES] = instance.material;
+        let bit = slot * INSTANCE_FLAG_BITS;
+        let word = bit / 32 + frame_in_flight * FLAG_WORDS;
+        if bit % 32 == 0 {
+            instances.flags[word] = 0;
+        }
+        instances.flags[word] |= instance.flags.0 << (bit % 32);
     }
     instances.instance_count = instances.pending_instances.len();
     instances.pending_instances.clear();

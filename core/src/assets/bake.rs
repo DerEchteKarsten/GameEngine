@@ -27,16 +27,16 @@ use crate::{
 /// glTF's default `alphaCutoff`.
 const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
 
-/// The alpha below which fragments of a material are discarded; 0 draws everything. There
-/// is no blending, so blended materials are cut out at the default cutoff instead of being
-/// drawn opaque. So are masked ones with a cutoff of 0: a mask that cuts nothing is how some
-/// exporters write blended decals.
+/// The alpha below which fragments of a material are discarded; 0 draws everything and a
+/// negative cutoff blends. Masks with a cutoff of 0 blend too: a mask that cuts nothing is how
+/// some exporters write blended decals.
 fn alpha_cutoff(mode: gltf::material::AlphaMode, cutoff: Option<f32>) -> f32 {
     use gltf::material::AlphaMode;
     match (mode, cutoff) {
         (AlphaMode::Opaque, _) => 0.0,
+        (AlphaMode::Mask, None) => DEFAULT_ALPHA_CUTOFF,
         (AlphaMode::Mask, Some(cutoff)) if cutoff > 0.0 => cutoff,
-        (AlphaMode::Mask | AlphaMode::Blend, _) => DEFAULT_ALPHA_CUTOFF,
+        (AlphaMode::Mask | AlphaMode::Blend, _) => -1.0,
     }
 }
 
@@ -274,11 +274,12 @@ pub fn bake_gltf(source: &Path, scene_path: &Path, ron: bool) -> Result<(usize, 
     while let Some((node, parent)) = stack.pop() {
         let entity = scene_data.parents.len() as u32;
         scene_data.parents.push(parent);
-        let (translation, rotation, scale) = node.transform().decomposed();
+        let (translation, [x, y, z, w], scale) = node.transform().decomposed();
         transforms.push(Transform {
-            translation: Vec3::from_array(translation),
-            rotation: Quat::from_array(rotation),
-            scale: Vec3::from_array(scale),
+            translation: from_gltf(translation),
+            // The rotation of the swapped axes keeps its angle around the mirrored axis.
+            rotation: Quat::from_xyzw(-x, -z, -y, w),
+            scale: from_gltf(scale),
         });
         if let Some(name) = node.name() {
             names.0.push(entity);
@@ -417,6 +418,12 @@ pub fn bake_exr(source: &Path, path: &Path) -> Result<()> {
     texture.write(&mut BufWriter::new(File::create(path)?))
 }
 
+/// glTF is right-handed with +Y up, the engine left-handed with +Z up (+X forward, +Y right).
+/// Swapping Y and Z converts between them; it mirrors, so triangles also flip their winding.
+fn from_gltf([x, y, z]: [f32; 3]) -> Vec3 {
+    Vec3::new(x, z, y)
+}
+
 fn bake_mesh(
     document: &gltf::Document,
     buffers: &[gltf::buffer::Data],
@@ -432,7 +439,7 @@ fn bake_mesh(
     let mut positions: Vec<Vec3> = reader
         .read_positions()
         .context("no positions")?
-        .map(Vec3::from)
+        .map(from_gltf)
         .collect();
     // Missing UVs stay zero.
     let mut uvs: Vec<[f32; 2]> = match reader.read_tex_coords(0) {
@@ -444,13 +451,16 @@ fn bake_mesh(
         None => (0..positions.len() as u32).collect(),
     };
     indices.truncate(indices.len() / 3 * 3);
+    for triangle in indices.chunks_exact_mut(3) {
+        triangle.swap(1, 2);
+    }
     ensure!(
         indices.iter().all(|&i| (i as usize) < positions.len()),
         "an index is out of range"
     );
     ensure!(uvs.len() == positions.len(), "not one UV per position");
     let normals: Vec<Vec3> = match reader.read_normals() {
-        Some(normals) => normals.map(Vec3::from).collect(),
+        Some(normals) => normals.map(from_gltf).collect(),
         // Flat normals: every triangle gets vertices of its own.
         None => {
             positions = indices.iter().map(|&i| positions[i as usize]).collect();
@@ -488,8 +498,8 @@ mod tests {
         assert_eq!(alpha_cutoff(AlphaMode::Opaque, Some(0.7)), 0.0);
         assert_eq!(alpha_cutoff(AlphaMode::Mask, Some(0.7)), 0.7);
         assert_eq!(alpha_cutoff(AlphaMode::Mask, None), 0.5);
-        assert_eq!(alpha_cutoff(AlphaMode::Mask, Some(0.0)), 0.5);
-        assert_eq!(alpha_cutoff(AlphaMode::Blend, None), 0.5);
+        assert_eq!(alpha_cutoff(AlphaMode::Mask, Some(0.0)), -1.0);
+        assert_eq!(alpha_cutoff(AlphaMode::Blend, Some(0.7)), -1.0);
     }
 
     #[test]
@@ -520,7 +530,8 @@ mod tests {
             "scenes": [{"nodes": [0, 2, 3]}],
             "nodes": [
                 {"name": "parent", "translation": [0.0, 5.0, 0.0], "children": [1]},
-                {"mesh": 0, "name": "left", "translation": [2.0, 0.0, 0.0]},
+                {"mesh": 0, "name": "left", "translation": [2.0, 0.0, 0.0],
+                 "rotation": [0.0, 0.70710677, 0.0, 0.70710677]},
                 {"mesh": 1, "name": "pair"},
                 {"mesh": 2}
             ],
@@ -604,8 +615,10 @@ mod tests {
         assert_eq!(name(4).as_deref(), Some("Two.1"));
         assert_eq!(name(5), None);
         // Local transforms, not world ones.
-        assert_eq!(transform(0).translation, Vec3::new(0.0, 5.0, 0.0));
+        assert_eq!(transform(0).translation, Vec3::new(0.0, 0.0, 5.0));
         assert_eq!(transform(1).translation, Vec3::new(2.0, 0.0, 0.0));
+        // A quarter turn around glTF's +Y takes +X to -Z there, which is -Y here.
+        assert!((transform(1).rotation * Vec3::X).abs_diff_eq(Vec3::NEG_Y, 1e-6));
         assert_eq!(transform(3), Transform::IDENTITY);
 
         assert!(instance(0).is_none() && instance(2).is_none());

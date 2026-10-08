@@ -1,11 +1,11 @@
-//! Editor log console: tracing/Vulkan validation capture layer, Tracy setup and console UI.
+//! Editor log console and the tracing subscriber: the console's capture layer (logs and Vulkan validation), Tracy and the profiler's span layer, plus the console UI.
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bevy::app::{App, Last, Plugin, Update};
+use bevy::app::{App, Plugin, Update};
 use bevy::ecs::prelude::*;
 use bevy::math::{Rect, VectorSpace};
 use glam::{Vec2, Vec4};
@@ -16,6 +16,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{Layer, fmt};
 
 use crate::id;
+use crate::profiler::capture::ProfileLayer;
 use crate::ui::UiContext;
 use crate::ui::builder::UiBuilder;
 use crate::ui::window::{BorderSettings, DrawSettings};
@@ -348,6 +349,7 @@ impl Plugin for ConsolePlugin {
             let subscriber = Registry::default()
                 .with(env_filter)
                 .with(console_layer)
+                .with(ProfileLayer)
                 .with(tracing_tracy::TracyLayer::new(TracyConfig::default()));
 
             if self.also_log_to_stderr {
@@ -390,8 +392,6 @@ impl Plugin for ConsolePlugin {
         app.insert_resource(ConsoleBuffer { buffer })
             .insert_resource(ConsoleUiState::default())
             .add_systems(Update, (console_window, console_inspector));
-
-        app.add_systems(Last, frame_mark);
     }
 }
 
@@ -558,7 +558,4 @@ fn console_inspector(mut ui: UiBuilder, ui_state: Res<ConsoleUiState>) {
             }
         });
     });
-}
-fn frame_mark() {
-    tracy_client::frame_mark();
 }

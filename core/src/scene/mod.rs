@@ -65,7 +65,7 @@ pub struct MaterialSettings {
     pub roughness_factor: f32,
     pub normal_scale: f32,
     pub occlusion_strength: f32,
-    /// Fragments with less alpha are not drawn. 0 draws everything.
+    /// Fragments with less alpha are not drawn. 0 draws everything, a negative cutoff blends.
     pub alpha_cutoff: f32,
     pub color_texture: Option<Handle<GpuTexture>>,
     pub metallic_roughness_texture: Option<Handle<GpuTexture>>,

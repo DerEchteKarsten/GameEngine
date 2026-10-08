@@ -2,6 +2,7 @@
 use core::{
     CorePlugin,
     editor::camera::EditorCamera,
+    profiler::{MAX_FRAMES, ProfilerPlugin},
     scene::{Skybox, SpawnScene, camera::CameraBundle, file::Scene},
     ui::{
         UiContext,
@@ -20,6 +21,7 @@ use bevy::{
     transform::components::Transform,
 };
 use glam::{Vec2, Vec3};
+use std::path::PathBuf;
 
 fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
     let camera = CameraBundle::new(
@@ -158,8 +160,18 @@ fn main() {
         env!("CARGO_MANIFEST_DIR")
     );
 
+    // `GAME_PROFILE=DIR[:FRAMES]` saves a profile of the first FRAMES (default 300) frames.
+    let capture = std::env::var("GAME_PROFILE").ok().map(|value| {
+        let split = value.rsplit_once(':');
+        match split.and_then(|(dir, frames)| Some((frames.parse().ok()?, dir.into()))) {
+            Some(capture) => capture,
+            None => (MAX_FRAMES, PathBuf::from(value)),
+        }
+    });
+
     App::new()
         .add_plugins(CorePlugin)
+        .add_plugins(ProfilerPlugin { capture })
         .add_systems(Startup, init)
         .add_systems(Update, update_mesh)
         .run();

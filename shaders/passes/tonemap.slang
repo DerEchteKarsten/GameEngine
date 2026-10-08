@@ -2,6 +2,9 @@
 
 struct TonemapBindings {
     Image2D<float4> hdr;
+    // The weighted blended OIT targets of the raster pass's blended fragments.
+    Tex2D<float4> accum;
+    Tex2D<float> revealage;
     MutImage2D<float4> out;
     uint2 view_port_size;
     float exposure;
@@ -23,6 +26,9 @@ void tonemap(uint2 dtid: SV_DispatchThreadID) {
     if (any(dtid >= bindings.view_port_size)) {
         return;
     }
-    let hdr = bindings.hdr.Load(dtid).rgb * bindings.exposure;
+    let accum = bindings.accum.Load(dtid);
+    // The weighted average colour of the blended layers, over what they let through.
+    let blended = accum.rgb / max(accum.a, 1e-5);
+    let hdr = lerp(blended, bindings.hdr.Load(dtid).rgb, bindings.revealage.Load(dtid)) * bindings.exposure;
     bindings.out.Store(dtid, float4(linear_to_srgb(aces(hdr)), 1.0));
 }

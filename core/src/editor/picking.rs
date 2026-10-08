@@ -272,14 +272,13 @@ pub(crate) fn picking(
         if let Some(drag) = local.as_ref()
             && let Some(pos) = input.cursor_pos
         {
-            let t = drag.start_t
-                - camera.0.closest_t_on_axis(
-                    camera.1,
-                    pos,
-                    viewport.size(),
-                    drag.origin,
-                    drag.axis,
-                );
+            let t = camera.0.closest_t_on_axis(
+                camera.1,
+                pos,
+                viewport.size(),
+                drag.origin,
+                drag.axis,
+            ) - drag.start_t;
             let offset = drag.world_to_parent * (drag.axis * t);
             if offset.is_finite() {
                 transform.translation = drag.start_pos + offset;

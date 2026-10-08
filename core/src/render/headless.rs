@@ -1,7 +1,8 @@
-//! Headless rendering: one frame of the scene passes drawn into an offscreen image and read back, without a window, swapchain, UI or render sub-app.
+//! Headless rendering: frames of the scene passes drawn into an offscreen image and read back, without a window, swapchain, UI or render sub-app.
 use bevy::{
     app::{App, Plugin},
     ecs::{resource::Resource, system::RunSystemOnce, world::World},
+    log::info_span,
 };
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use glam::UVec2;
@@ -12,6 +13,7 @@ use lava::{
 };
 
 use crate::bindless;
+use crate::profiler::{GpuFrame, Profiler, capture::now_ns};
 use crate::render::{
     MainWorld,
     render::{
@@ -47,12 +49,41 @@ pub struct HeadlessFrame {
     pub visible_meshlets: u32,
 }
 
-/// Extracts the main world into a throwaway render world, draws it once and waits for the result.
-pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> HeadlessFrame {
-    let size = main_world.resource::<HeadlessSize>().0;
+/// What [`render_frame`] keeps from one frame to the next.
+#[derive(Resource)]
+struct HeadlessRenderer {
+    render_world: World,
+    image: Image<R8G8B8A8Unorm, ColorAttachmentStorage>,
+    readback: Buffer<u8>,
+    resources: Option<RenderResources>,
+    slot: FrameSlot,
+    queue: Queue<Gfx>,
+}
 
-    let mut render_world = World::new();
-    render_world.run_system_once(init_world).unwrap();
+/// Extracts the main world into the render world, draws it once and waits for the result.
+/// With a [`Profiler`] in the main world, the frame's GPU timings are handed to it.
+pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> HeadlessFrame {
+    let _span = info_span!("render_frame").entered();
+    let size = main_world.resource::<HeadlessSize>().0;
+    let mut renderer = main_world
+        .remove_resource::<HeadlessRenderer>()
+        .unwrap_or_else(|| {
+            let mut render_world = World::new();
+            render_world.run_system_once(init_world).unwrap();
+            let slot = bindless::storage_slots(1).unwrap();
+            let queue = Queue::<Gfx>::new().unwrap();
+            HeadlessRenderer {
+                render_world,
+                image: Image::new_storage(size.x, size.y, 1, slot).unwrap(),
+                readback: Buffer::new((size.x * size.y * 4) as usize, true).unwrap(),
+                resources: None,
+                slot: FrameSlot::new(&queue).unwrap(),
+                queue,
+            }
+        });
+    let profiling = main_world.contains_resource::<Profiler>();
+
+    let render_world = &mut renderer.render_world;
     render_world.insert_resource(MainWorld(std::mem::take(main_world)));
     let instances = render_world.run_system_once(extract_meshlet_instances);
     let camera = render_world.run_system_once(extract_camera);
@@ -67,39 +98,49 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     let sky = render_world.resource::<RenderSkybox>();
     let instances = render_world.resource::<InstanceManager>();
 
-    let slot = bindless::storage_slots(1).unwrap();
-    let image =
-        Image::<R8G8B8A8Unorm, ColorAttachmentStorage>::new_storage(size.x, size.y, 1, slot)
-            .unwrap();
-    let readback = Buffer::<u8>::new((size.x * size.y * 4) as usize, true).unwrap();
-    let queue = Queue::<Gfx>::new().unwrap();
-    let mut slot = FrameSlot::new(&queue).unwrap();
-    let mut frame = slot.begin().unwrap();
-    let mut resources = None;
-    let resources = RenderResources::fit(&mut resources, size, size, &mut frame);
+    renderer.slot.set_profiling(profiling);
+    let mut frame = renderer.slot.begin().unwrap();
+    let resources = RenderResources::fit(&mut renderer.resources, size, size, &mut frame);
+    let (image, readback) = (&renderer.image, &renderer.readback);
+    let submit_ns = now_ns();
     frame
-        .execute(&queue, PendingAccesses::default(), &[], &[], |cmd| {
-            record_scene(
-                cmd,
-                image.whole_view(),
-                size,
-                &mut camera,
-                sky,
-                instances,
-                resources,
-                settings,
-                None,
-                0,
-            );
-            cmd.copy_image_to_buffer(image.whole(), readback.range(..));
-        })
+        .execute(
+            &renderer.queue,
+            PendingAccesses::default(),
+            &[],
+            &[],
+            |cmd| {
+                record_scene(
+                    cmd,
+                    image.whole_view(),
+                    size,
+                    &mut camera,
+                    sky,
+                    instances,
+                    resources,
+                    settings,
+                    None,
+                    0,
+                );
+                cmd.copy_image_to_buffer(image.whole(), readback.range(..));
+            },
+        )
         .unwrap();
     // Beginning a frame waits for the one the slot submitted before.
-    drop(slot.begin().unwrap());
+    let frame = renderer.slot.begin().unwrap();
+    if let Some(scopes) = frame.last_timings()
+        && let Some(mut profiler) = main_world.get_resource_mut::<Profiler>()
+    {
+        let scopes = scopes.to_vec();
+        profiler.add_gpu(GpuFrame { submit_ns, scopes });
+    }
+    drop(frame);
 
-    HeadlessFrame {
+    let frame = HeadlessFrame {
         size,
         pixels: readback.range(..).as_slice().to_vec(),
-        visible_meshlets: resources.visible_meshlets(),
-    }
+        visible_meshlets: renderer.resources.as_ref().unwrap().visible_meshlets(),
+    };
+    main_world.insert_resource(renderer);
+    frame
 }

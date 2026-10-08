@@ -1,17 +1,12 @@
-//! Editor plugin wiring up editor tools, panels and the frame-time histogram.
+//! Editor plugin wiring up editor tools and panels, including the profiler tab.
 use bevy::{
     app::{Plugin, PreUpdate, Update},
     asset::Handle,
     ecs::{
-        entity::Entity,
-        resource::Resource,
-        schedule::IntoScheduleConfigs,
-        system::{Local, Res},
+        entity::Entity, schedule::IntoScheduleConfigs, schedule::common_conditions::resource_exists,
     },
     math::Rect,
-    time::Time,
 };
-use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use glam::Vec2;
 use lava::bindless::BindlessHandle;
 
@@ -28,9 +23,9 @@ use crate::{
         viewport::{ViewPort, viewport_ui},
     },
     physics::bvh::debug_draw_scene_bvh,
+    profiler::{Profiler, ui::profiler_ui},
     render::{ExtractSchedule, RenderApp, RenderStartup, RenderSystems, render::RenderDebugUi},
     scene::file::Scene,
-    ui::builder::UiBuilder,
 };
 
 pub mod asset_browser;
@@ -49,53 +44,12 @@ impl Default for EditorPlugin {
     fn default() -> Self {
         Self {
             camera_settings: CameraSettings {
-                move_speed: 1.0,
+                move_speed: 10.0,
                 sensitivity: 1.0,
                 keyboard_sensitivity: 3.0,
             },
         }
     }
-}
-
-#[derive(Resource, Reflect)]
-#[reflect(Resource)]
-struct UiState {
-    delta_time_histogram: [f32; 300],
-    cursor: usize,
-}
-
-impl Default for UiState {
-    fn default() -> Self {
-        Self {
-            delta_time_histogram: [0.0; 300],
-            cursor: 0,
-        }
-    }
-}
-
-fn frame_histogram(mut ui: UiBuilder, mut state: Local<UiState>, time: Res<Time>) {
-    let cursor = state.cursor;
-    state.delta_time_histogram[cursor] = time.delta_secs() * 1000.0;
-    state.cursor = (state.cursor + 1) % state.delta_time_histogram.len();
-    let average =
-        state.delta_time_histogram.iter().sum::<f32>() / state.delta_time_histogram.len() as f32;
-    ui.build("Frame Histogram", |ui| {
-        ui.text(format!(
-            "Average: {:.3}ms / {:.3}fps",
-            average,
-            (1.0 / average) * 1000.0
-        ));
-        let len = state.delta_time_histogram.len();
-        let (before, after) = state.delta_time_histogram.split_at(state.cursor);
-        ui.histogram(
-            ui.clip_rect.width() - 20.0,
-            50.0,
-            32.0,
-            0.0,
-            after.iter().chain(before.iter()),
-            len,
-        )
-    });
 }
 
 macro_rules! register_editor_views {
@@ -111,7 +65,6 @@ impl Plugin for EditorPlugin {
         })
         .add_plugins(RenderDebugUi)
         .insert_resource(self.camera_settings)
-        .init_resource::<UiState>()
         .insert_resource(ViewPort {
             focused: false,
             hovered: false,
@@ -126,7 +79,7 @@ impl Plugin for EditorPlugin {
                 update_camera,
                 selected_ui,
                 hierarchy_ui,
-                frame_histogram,
+                profiler_ui.run_if(resource_exists::<Profiler>),
                 asset_browser,
                 viewport_ui,
                 drop_in_viewport,
@@ -134,7 +87,7 @@ impl Plugin for EditorPlugin {
                     .after(update_camera)
                     .after(selected_ui)
                     .after(hierarchy_ui)
-                    .after(frame_histogram),
+                    .after(profiler_ui),
             ),
         );
         app.get_sub_app_mut(RenderApp)

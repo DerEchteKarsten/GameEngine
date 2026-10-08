@@ -1832,6 +1832,8 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
     // }
 
+    /// Draws `len` values as bars from `min` to `max` (averaged where there are more values
+    /// than pixels) and returns the index of the first value of the clicked bar.
     pub fn histogram<'b>(
         &mut self,
         width: f32,
@@ -1840,10 +1842,10 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         min: f32,
         values: impl Iterator<Item = &'b f32>,
         len: usize,
-    ) {
+    ) -> Option<usize> {
         let size = Self::contain_size(Vec2::new(width, height));
         if self.begin_element(size, false) {
-            return;
+            return None;
         }
 
         let rect = from_pos_size(self.cursor, size);
@@ -1864,18 +1866,22 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         let mut child_cursor = self.child_cursor() + Vec2::new(0.0, height);
         let value_width = width / len as f32;
         let values_per_pixel = (value_width.recip()).ceil() as usize;
+        let mut clicked = None;
+        let mut index = 0;
         for values in &values.chunks(values_per_pixel) {
-            let value: f32 = values.sum::<f32>() / values_per_pixel as f32;
-            let t = (value + min) / (max - min);
+            let (sum, count) = values.fold((0.0, 0), |(sum, count), v| (sum + v, count + 1));
+            let value: f32 = sum / count as f32;
+            let t = (value - min) / (max - min);
             let value_height = 0.0.lerp(height, t.clamp(0.0, 1.0));
             let color = if t > 1.0 || t < 0.0 {
                 UiContext::ERROR
             } else {
                 UiContext::ACENT
             };
+            let bar_width = value_width * count as f32;
             let value_rect = Rect::from_corners(
                 child_cursor,
-                child_cursor - Vec2::new(-value_width, value_height),
+                child_cursor - Vec2::new(-bar_width, value_height),
             );
             self.ctx.window.draw_rect(
                 value_rect,
@@ -1886,16 +1892,24 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 false,
                 BindlessHandle::default(),
             );
-            if self.hoverd(value_rect) {
+            let column =
+                Rect::from_corners(child_cursor, child_cursor + Vec2::new(bar_width, -height));
+            if self.hoverd(column) {
                 self.tooltip_label(format!("{:.5}", value));
+                if self.ctx.input.primary_pressed {
+                    clicked = Some(index);
+                }
             }
-            child_cursor.x += value_width;
+            child_cursor.x += bar_width;
+            index += count;
         }
 
         self.finish_element(size, false);
+        clicked
     }
 
-    fn tooltip_label(&mut self, label: impl AsRef<str>) {
+    /// Draws `label` in a box at the cursor, on top of everything.
+    pub fn tooltip_label(&mut self, label: impl AsRef<str>) {
         if let Some(cursor_pos) = self.ctx.input.cursor_pos {
             let cursor_pos = cursor_pos.round();
             let info_size = Self::contain_size(UiContext::text_size(label.as_ref()).round());
