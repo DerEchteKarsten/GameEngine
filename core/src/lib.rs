@@ -1,5 +1,5 @@
 //! Engine core: assembles bevy, rendering, assets, scene, UI, editor and physics plugins, and the shared asset setup.
-// Needed to call `BindingOutput`'s access-registering methods, whose return type is `{ N + 1 }`.
+// Needed to call `RasterBuilder`'s draw methods, whose return type is `{ N + 1 }`.
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 #![feature(integer_casts)]
@@ -25,7 +25,6 @@ use bevy::{
     window::{CursorIcon, SystemCursorIcon},
 };
 use glam::Vec2;
-use tracing::Level;
 
 pub mod physics;
 
@@ -45,6 +44,8 @@ pub mod profiler;
 pub mod render;
 pub mod scene;
 pub mod ui;
+
+pub use editor::console::register_tracing;
 
 /// Root of the baked assets: the asset server's source and the asset browser's root.
 pub const ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/assets";
@@ -66,11 +67,7 @@ pub fn asset_plugin() -> AssetPlugin {
 #[allow(non_snake_case)]
 pub fn CorePlugin(app: &mut App) {
     app.add_plugins((
-        ConsolePlugin {
-            also_log_to_stderr: true,
-            level: Level::DEBUG,
-            ..Default::default()
-        },
+        ConsolePlugin,
         asset_plugin(),
         WinitPlugin::default(),
         WindowPlugin {

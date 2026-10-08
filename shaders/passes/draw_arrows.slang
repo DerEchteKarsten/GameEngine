@@ -1,6 +1,7 @@
 #include "random.slang"
 #include "datatypes.slang"
 #include "bindless.slang"
+#include "profile.slang"
 #include "shapes.slang"
 struct VSOutput {
     float4 position : SV_Position;
@@ -22,6 +23,7 @@ struct GizzmosBindings {
 [shader("vertex")]
 VSOutput arrow_vertex(uint instance_index: SV_InstanceID, uint vertex_index : SV_VertexID)
 {
+    PROFILE(PROFILE_VERTEX);
     let aabb = b.gizzmos.val[instance_index];
     let index = ArrowIndices[vertex_index];
     let vertex = ArrowVertices[index];

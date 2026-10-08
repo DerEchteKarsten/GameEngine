@@ -2,7 +2,7 @@
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::app::{App, Plugin, Update};
@@ -288,21 +288,8 @@ struct ConsoleBuffer {
     buffer: Arc<SharedBuffer>,
 }
 
-pub struct ConsolePlugin {
-    pub level: tracing::Level,
-    pub also_log_to_stderr: bool,
-    pub filter: String,
-}
+pub struct ConsolePlugin;
 
-impl Default for ConsolePlugin {
-    fn default() -> Self {
-        Self {
-            level: tracing::Level::INFO,
-            also_log_to_stderr: cfg!(debug_assertions),
-            filter: "wgpu=warn,naga=warn".into(),
-        }
-    }
-}
 #[derive(Default)]
 struct TracyConfig(tracing_subscriber::fmt::format::DefaultFields);
 
@@ -322,56 +309,49 @@ impl tracing_tracy::Config for TracyConfig {
     }
 }
 
-impl Plugin for ConsolePlugin {
-    fn build(&self, app: &mut App) {
+/// The console's log buffer, filled by the layer [`register_tracing`] installs.
+static LOG: OnceLock<Arc<SharedBuffer>> = OnceLock::new();
+
+/// Installs the global tracing subscriber: logs go to the console and stderr, spans to the
+/// profiler and Tracy. `RUST_LOG` overrides the level. Call it first thing in `main`: bevy
+/// creates a system's span when the system is added, and a span created before there is a
+/// subscriber never records. [`ConsolePlugin`] calls it if `main` didn't; later calls do nothing.
+pub fn register_tracing() {
+    LOG.get_or_init(|| {
+        use tracing_subscriber::prelude::*;
+        use tracing_subscriber::{EnvFilter, Registry};
+
         let buffer = Arc::new(SharedBuffer {
             buffer: UnsafeCell::new(Box::new(std::array::from_fn(|_| LogEntry::default()))),
             head: AtomicU64::new(0),
             frame: AtomicU64::new(0),
         });
-
-        {
-            use tracing_subscriber::prelude::*;
-            use tracing_subscriber::{EnvFilter, Registry};
-
-            let filter_str = if self.filter.is_empty() {
-                self.level.to_string()
-            } else {
-                format!("{},{}", self.level, self.filter)
-            };
-            let env_filter =
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&filter_str));
-
-            let console_layer = ConsoleLayer {
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("debug,wgpu=warn,naga=warn"));
+        let fmt = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_target(true)
+            .with_ansi(true);
+        let subscriber = Registry::default()
+            .with(env_filter)
+            .with(ConsoleLayer {
                 buffer: buffer.clone(),
-            };
-
-            let subscriber = Registry::default()
-                .with(env_filter)
-                .with(console_layer)
-                .with(ProfileLayer)
-                .with(tracing_tracy::TracyLayer::new(TracyConfig::default()));
-
-            if self.also_log_to_stderr {
-                let fmt = tracing_subscriber::fmt::layer()
-                    .with_writer(std::io::stderr)
-                    .with_target(true)
-                    .with_ansi(true);
-                if tracing::subscriber::set_global_default(subscriber.with(fmt)).is_err() {
-                    eprintln!(
-                        "WARNING: global tracing subscriber already set — ConsolePlugin lost"
-                    );
-                }
-            } else {
-                if tracing::subscriber::set_global_default(subscriber).is_err() {
-                    eprintln!(
-                        "WARNING: global tracing subscriber already set — ConsolePlugin lost"
-                    );
-                }
-            }
-
-            let _ = tracing_log::LogTracer::init();
+            })
+            .with(ProfileLayer)
+            .with(tracing_tracy::TracyLayer::new(TracyConfig::default()))
+            .with(fmt);
+        if tracing::subscriber::set_global_default(subscriber).is_err() {
+            eprintln!("WARNING: global tracing subscriber already set — the console stays empty");
         }
+        let _ = tracing_log::LogTracer::init();
+        buffer
+    });
+}
+
+impl Plugin for ConsolePlugin {
+    fn build(&self, app: &mut App) {
+        register_tracing();
+        let buffer = LOG.get().expect("registered above").clone();
 
         {
             let old = std::panic::take_hook();

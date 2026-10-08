@@ -1,4 +1,4 @@
-//! Headless render: loads a scene file, renders frames of it without a window, saves the last as a PNG and optionally profiles them
+//! Headless render: loads a scene file, renders frames of it from a given camera without a window, saves the last as a PNG and optionally profiles them
 use std::{
     fs,
     io::BufWriter,
@@ -18,21 +18,25 @@ use core::{
     assets::{MeshAssets, texture::GpuTexture},
     profiler::{Profiler, ProfilerPlugin, capture::ProfileLayer},
     render::{
-        headless::{HeadlessRenderPlugin, render_frame},
+        headless::{HeadlessRenderPlugin, read_pixels, render_frame},
         render::RenderSettings,
     },
     scene::{Instance, ScenePlugin, Skybox, SpawnScene, camera::CameraBundle, file::Scene},
 };
-use glam::{Quat, UVec2};
+use glam::{Quat, UVec2, Vec3};
 use tracing_subscriber::{
     Layer, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
-const USAGE: &str = "usage: render [--frames N] [--profile DIR] SCENE OUTPUT.png
+const USAGE: &str = "usage: render [--frames N] [--profile DIR] [--eye X,Y,Z] [--target X,Y,Z]
+              [--fov DEG] SCENE OUTPUT.png
 
 Renders the scene file SCENE (.scene or .scene.ron, inside the asset directory)
 and writes the image to OUTPUT.png.
 
+  --eye X,Y,Z    camera position in world space (+Z up, default 0,0,2)
+  --target X,Y,Z point the camera looks at (default 10,0,3)
+  --fov DEG      vertical field of view in degrees (default 65)
   --frames N     render N frames once the scene is loaded (default 1); the image is the last
   --profile DIR  profile those frames: write DIR/profile.txt (summary, also printed) and
                  DIR/profile.json (Chrome trace for Perfetto or chrome://tracing)";
@@ -42,26 +46,52 @@ struct Args {
     output: PathBuf,
     frames: usize,
     profile: Option<PathBuf>,
+    eye: Vec3,
+    target: Vec3,
+    fov: f32,
+}
+
+fn parse_vec3(arg: &str) -> Option<Vec3> {
+    let mut parts = arg.split(',').map(|part| part.trim().parse().ok());
+    let v = Vec3::new(parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(v)
 }
 
 fn parse_args() -> Option<Args> {
     let mut args = std::env::args().skip(1);
     let mut positional = Vec::new();
     let (mut frames, mut profile) = (1, None);
+    let (mut eye, mut target, mut fov) =
+        (Vec3::new(0.0, 0.0, 2.0), Vec3::new(10.0, 0.0, 3.0), 65.0);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--frames" => frames = args.next()?.parse().ok().filter(|n| *n > 0)?,
             "--profile" => profile = Some(PathBuf::from(args.next()?)),
+            "--eye" => eye = parse_vec3(&args.next()?)?,
+            "--target" => target = parse_vec3(&args.next()?)?,
+            "--fov" => {
+                fov = args
+                    .next()?
+                    .parse()
+                    .ok()
+                    .filter(|f| *f > 0.0 && *f < 180.0)?
+            }
             _ if arg.starts_with("--") => return None,
             _ => positional.push(PathBuf::from(arg)),
         }
     }
     let [scene, output] = <[PathBuf; 2]>::try_from(positional).ok()?;
+    if (target - eye).length_squared() == 0.0 {
+        return None;
+    }
     Some(Args {
         scene,
         output,
         frames,
         profile,
+        eye,
+        target,
+        fov,
     })
 }
 
@@ -108,10 +138,13 @@ fn run(args: &Args) -> Result<(), String> {
         app.add_plugins(ProfilerPlugin::default());
     }
 
+    // The camera looks along its local +X: yaw turns it around +Z, a positive pitch looks up.
+    let dir = args.target - args.eye;
+    let (yaw, pitch) = (dir.y.atan2(dir.x), dir.z.atan2(dir.truncate().length()));
     app.world_mut().spawn(CameraBundle::new(
-        // Looks along +X, tilted up to aim at (10, 0, 3).
-        Transform::from_xyz(0.0, 0.0, 2.0).with_rotation(Quat::from_rotation_y(-0.1f32.atan())),
-        65.0_f32.to_radians(),
+        Transform::from_translation(args.eye)
+            .with_rotation(Quat::from_rotation_z(yaw) * Quat::from_rotation_y(-pitch)),
+        args.fov.to_radians(),
         0.01,
         100.0,
     ));
@@ -177,7 +210,7 @@ fn run(args: &Args) -> Result<(), String> {
         app.update();
     }
     let frame = frame.expect("at least one frame is rendered");
-    write_png(output, frame.size, &frame.pixels)
+    write_png(output, frame.size, &read_pixels(app.world()))
         .map_err(|err| format!("{}: {err}", output.display()))?;
     if let Some(dir) = &args.profile {
         let profiler = app.world().resource::<Profiler>();

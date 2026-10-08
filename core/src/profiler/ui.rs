@@ -1,4 +1,4 @@
-//! The editor's Profiler tab: frame-time graph, a zoomable timeline of the selected frame's CPU spans and GPU scopes, the slowest passes and spans, and GPU memory.
+//! The editor's Profiler tab: on/off switch, frame-time graphs, a zoomable timeline of the selected frame's CPU spans and GPU scopes, the GPU scope, shader time and CPU span tables (spans filterable by kind) and GPU memory.
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     path::PathBuf,
@@ -17,11 +17,13 @@ use crate::{
     id,
     profiler::{
         FrameProfile, Profiler,
-        report::{cpu_spans, gpu_scopes},
+        capture::SpanKind,
+        report::{cpu_spans, gpu_scopes, shader_times},
     },
     ui::{
         UiContext,
         builder::{UiBuilder, UiWindowBuilder},
+        from_pos_size,
         window::{DrawSettings, Drawable},
     },
 };
@@ -40,10 +42,29 @@ pub(crate) struct ProfilerView {
     range: Option<(f64, f64)>,
     drag_from: Option<f32>,
     /// The rows of the GPU scope and CPU span tables, and the newest frame they include.
-    tables: Option<(u64, Vec<[String; 6]>, Vec<[String; 5]>)>,
+    tables: Option<(u64, Tables)>,
+    /// Index into `SPAN_FILTERS`.
+    span_filter: usize,
 }
 
-fn tables(recent: &[FrameProfile], gpu_mean: f64) -> (Vec<[String; 6]>, Vec<[String; 5]>) {
+const SPAN_FILTERS: [&str; 4] = ["All spans", "Systems", "Schedules", "Other spans"];
+/// Characters of a span name the list shows; hovering it shows all of it.
+const NAME_CHARS: usize = 56;
+
+struct SpanRow {
+    kind: SpanKind,
+    name: &'static str,
+    cells: [String; 6],
+}
+
+#[derive(Default)]
+struct Tables {
+    scopes: Vec<[String; 6]>,
+    shaders: Vec<[String; 5]>,
+    spans: Vec<SpanRow>,
+}
+
+fn tables(recent: &[FrameProfile], gpu_mean: f64) -> Tables {
     let scopes = gpu_scopes(recent).into_iter().map(|scope| {
         let n = scope.ms.len() as u64;
         let scope_mean = mean(scope.ms.iter().copied());
@@ -59,16 +80,32 @@ fn tables(recent: &[FrameProfile], gpu_mean: f64) -> (Vec<[String; 6]>, Vec<[Str
         ]
     });
     let n = recent.len().max(1) as f64;
-    let spans = cpu_spans(recent).into_iter().take(25).map(|span| {
-        [
-            span.name.chars().take(48).collect(),
+    let spans = cpu_spans(recent).into_iter().map(|span| SpanRow {
+        kind: span.kind,
+        name: span.name,
+        cells: [
+            span.name.chars().take(NAME_CHARS).collect(),
+            span.kind.label().to_string(),
             format!("{:.3}", ms(span.total_ns) / n),
             format!("{:.1}", span.calls as f64 / n),
             format!("{:.3}", ms(span.max_ns)),
             span.thread.unwrap_or("(several)").to_string(),
+        ],
+    });
+    let shaders = shader_times(recent).into_iter().map(|time| {
+        [
+            format!("{} {}", time.pass, time.stage),
+            format!("{:.1}", time.share * 100.0),
+            format!("{:.0}", time.subgroups),
+            format!("{:.3}", time.ticks / 1e6),
+            format!("{:.0}", time.ticks / time.subgroups.max(1.0)),
         ]
     });
-    (scopes.collect(), spans.collect())
+    Tables {
+        scopes: scopes.collect(),
+        shaders: shaders.collect(),
+        spans: spans.collect(),
+    }
 }
 
 fn ms(ns: u64) -> f64 {
@@ -88,6 +125,12 @@ fn name_color(name: &str) -> Vec4 {
     Vec4::new(channel(r), channel(g), channel(b), 1.0)
 }
 
+/// Width left of the tab's visible area. Not `remaining_width`, which includes last frame's
+/// content, so anything sized by it grows a little every frame.
+fn visible_width(ui: &UiWindowBuilder) -> f32 {
+    (ui.clip_rect.max.x - ui.cursor.x - 20.0).max(0.0)
+}
+
 /// A row of cells at fixed x offsets, in characters.
 fn row(ui: &mut UiWindowBuilder, columns: &[usize], cells: &[String], color: Vec4) {
     ui.horizontal();
@@ -101,6 +144,7 @@ fn row(ui: &mut UiWindowBuilder, columns: &[usize], cells: &[String], color: Vec
 
 struct Bar {
     name: &'static str,
+    wait: bool,
     depth: u16,
     start_ns: u64,
     end_ns: u64,
@@ -112,6 +156,7 @@ fn lanes(frame: &FrameProfile) -> Vec<(&'static str, Vec<Bar>)> {
     for span in &frame.cpu {
         let bar = Bar {
             name: span.name,
+            wait: span.kind == SpanKind::Wait,
             depth: span.depth,
             start_ns: span.start_ns,
             end_ns: span.end_ns,
@@ -124,6 +169,7 @@ fn lanes(frame: &FrameProfile) -> Vec<(&'static str, Vec<Bar>)> {
     lanes.sort_by_key(|(thread, _)| (*thread != "main", *thread != "render thread", *thread));
     let gpu = frame.gpu.iter().map(|scope| Bar {
         name: scope.name,
+        wait: false,
         depth: scope.depth,
         start_ns: frame.gpu_submit_ns + scope.start_ns,
         end_ns: frame.gpu_submit_ns + scope.end_ns,
@@ -146,7 +192,7 @@ fn timeline(ui: &mut UiWindowBuilder, frame: &FrameProfile, view: &mut ProfilerV
         .iter()
         .map(|(_, bars)| bars.iter().map(|b| b.depth + 2).max().unwrap_or(1) as f32 * ROW_HEIGHT)
         .sum();
-    let size = Vec2::new(ui.remaining_width() - 10.0, (height + 20.0).min(600.0));
+    let size = Vec2::new(visible_width(ui), (height + 20.0).min(600.0));
 
     ui.container(id!(), size, |ui| {
         let area = Rect::from_corners(ui.cursor, ui.cursor + Vec2::new(size.x - 30.0, height));
@@ -208,7 +254,12 @@ fn timeline(ui: &mut UiWindowBuilder, frame: &FrameProfile, view: &mut ProfilerV
                 ui.ctx.window.draw_rect(
                     rect,
                     None,
-                    name_color(bar.name),
+                    // Waits are idle time, so they stay in the background.
+                    if bar.wait {
+                        UiContext::S2
+                    } else {
+                        name_color(bar.name)
+                    },
                     viewport,
                     clip,
                     false,
@@ -217,7 +268,11 @@ fn timeline(ui: &mut UiWindowBuilder, frame: &FrameProfile, view: &mut ProfilerV
                 if rect.width() > 3.0 * CHAR_WIDTH {
                     ui.ctx.window.draw_text(
                         Vec2::new(rect.min.x + 2.0, rect.min.y + 1.0),
-                        UiContext::BG_DARK,
+                        if bar.wait {
+                            UiContext::TEXT_DIM
+                        } else {
+                            UiContext::BG_DARK
+                        },
                         bar.name,
                         viewport,
                         rect.intersect(clip),
@@ -255,9 +310,10 @@ pub(crate) fn profiler_ui(
     mut view: Local<ProfilerView>,
 ) {
     ui.build("Profiler", |ui| {
-        let profiler = &mut *profiler;
+        let (profiler, view) = (&mut *profiler, &mut *view);
         let frames = profiler.frames.make_contiguous();
         let recent = &frames[frames.len().saturating_sub(RECENT_FRAMES)..];
+        let frame_time = mean(recent.iter().map(|f| ms(f.frame_ns())));
         let cpu = mean(recent.iter().map(|f| ms(f.cpu_ns())));
         let gpu = mean(recent.iter().filter_map(|f| f.gpu_ns()).map(ms));
         let newest = recent.last().map_or(0, |f| f.frame);
@@ -266,11 +322,41 @@ pub(crate) fn profiler_ui(
             .as_ref()
             .is_none_or(|(frame, ..)| newest.abs_diff(*frame) >= TABLE_INTERVAL)
         {
-            let (scopes, spans) = tables(recent, gpu);
-            view.tables = Some((newest, scopes, spans));
+            view.tables = Some((newest, tables(recent, gpu)));
         }
 
         ui.horizontal();
+        ui.text("Profile");
+        let enabled = ui.checkbox(profiler.enabled);
+        if enabled != profiler.enabled {
+            // The frames are gone; the next frame rebuilds the tables from the new ones.
+            profiler.set_enabled(enabled);
+            view.tables = None;
+            return;
+        }
+        if !profiler.enabled {
+            ui.text(format!(
+                "Frame {frame_time:.2} ms ({:.0} fps)",
+                1000.0 / frame_time.max(f64::EPSILON)
+            ));
+            ui.vertical();
+            let frame_ms: Vec<f32> = profiler
+                .frames
+                .iter()
+                .map(|f| ms(f.frame_ns()) as f32)
+                .collect();
+            let max = (frame_time * 2.0).max(1.0) as f32;
+            let width = visible_width(ui) - 10.0;
+            ui.histogram(
+                width,
+                40.0,
+                max,
+                0.0,
+                frame_ms.iter(),
+                frame_ms.len().max(1),
+            );
+            return;
+        }
         if ui.button(if profiler.paused { "Resume" } else { "Pause" }) {
             profiler.set_paused(!profiler.paused);
         }
@@ -289,29 +375,31 @@ pub(crate) fn profiler_ui(
             view.range = None;
         }
         ui.text(format!(
-            "CPU {cpu:.2} ms ({:.0} fps), GPU {gpu:.2} ms",
-            1000.0 / cpu.max(f64::EPSILON)
+            "Frame {frame_time:.2} ms ({:.0} fps), CPU {cpu:.2} ms, GPU {gpu:.2} ms",
+            1000.0 / frame_time.max(f64::EPSILON)
         ));
         ui.vertical();
 
-        let width = ui.remaining_width() - 20.0;
+        let width = visible_width(ui) - 10.0;
         let len = profiler.frames.len().max(1);
-        let cpu_ms: Vec<f32> = profiler
-            .frames
-            .iter()
-            .map(|f| ms(f.cpu_ns()) as f32)
-            .collect();
-        let gpu_ms: Vec<f32> = profiler
-            .frames
-            .iter()
-            .map(|f| f.gpu_ns().map_or(0.0, ms) as f32)
-            .collect();
-        let max = (cpu.max(gpu) * 2.0).max(1.0) as f32;
-        ui.text("CPU frame time (click a frame to inspect it)");
-        let clicked_cpu = ui.histogram(width, 40.0, max, 0.0, cpu_ms.iter(), len);
-        ui.text("GPU frame time");
-        let clicked_gpu = ui.histogram(width, 40.0, max, 0.0, gpu_ms.iter(), len);
-        if let Some(i) = clicked_cpu.or(clicked_gpu) {
+        let graph = |time: fn(&FrameProfile) -> Option<u64>| -> Vec<f32> {
+            let frames = profiler.frames.iter();
+            frames.map(|f| time(f).map_or(0.0, ms) as f32).collect()
+        };
+        let frame_ms = graph(|f| Some(f.frame_ns()));
+        let cpu_ms = graph(|f| Some(f.cpu_ns()));
+        let gpu_ms = graph(FrameProfile::gpu_ns);
+        let max = (frame_time * 2.0).max(1.0) as f32;
+        let mut clicked = None;
+        for (label, values) in [
+            ("Frame time (click a frame to inspect it)", frame_ms),
+            ("CPU: busiest thread, without waits", cpu_ms),
+            ("GPU", gpu_ms),
+        ] {
+            ui.text(label);
+            clicked = clicked.or(ui.histogram(width, 40.0, max, 0.0, values.iter(), len));
+        }
+        if let Some(i) = clicked {
             profiler.set_paused(true);
             profiler.selected = Some(i);
             view.range = None;
@@ -326,18 +414,32 @@ pub(crate) fn profiler_ui(
                 .or(frames.len().checked_sub(1))
         });
         if let Some(frame) = shown.and_then(|i| profiler.frames.get(i)) {
+            let mut busy = frame.busy.clone();
+            busy.sort_by_key(|(_, ns)| std::cmp::Reverse(*ns));
+            let busy = busy
+                .iter()
+                .take(3)
+                .map(|(t, ns)| format!("{t} {:.3}", ms(*ns)));
             ui.text(format!(
-                "Frame #{}: CPU {:.3} ms, GPU {}",
+                "Frame #{}: {:.3} ms, CPU {} ms, GPU {}",
                 frame.frame,
-                ms(frame.cpu_ns()),
+                ms(frame.frame_ns()),
+                busy.collect::<Vec<_>>().join(" / "),
                 frame
                     .gpu_ns()
                     .map_or("-".into(), |ns| format!("{:.3} ms", ms(ns)))
             ));
-            timeline(ui, frame, &mut view);
+            timeline(ui, frame, view);
         }
 
-        let (_, scopes, spans) = view.tables.as_ref().unwrap();
+        let (
+            _,
+            Tables {
+                scopes,
+                shaders,
+                spans,
+            },
+        ) = view.tables.as_ref().unwrap();
         ui.collapsable(true, id!(), "GPU scopes (last 120 frames)", |ui| {
             let header = [
                 "scope",
@@ -353,13 +455,67 @@ pub(crate) fn profiler_ui(
                 row(ui, &columns, cells, UiContext::TEXT);
             }
         });
+        ui.collapsable(
+            true,
+            id!(),
+            "Shader time (subgroup clocks, last 120 frames)",
+            |ui| {
+                let header = [
+                    "pass stage",
+                    "share %",
+                    "subgroups",
+                    "Mticks",
+                    "ticks/subgroup",
+                ];
+                let columns = [0, 32, 42, 54, 64];
+                row(ui, &columns, &header.map(String::from), UiContext::TEXT_DIM);
+                for cells in shaders {
+                    row(ui, &columns, cells, UiContext::TEXT);
+                }
+            },
+        );
+        let span_filter = &mut view.span_filter;
         ui.collapsable(true, id!(), "CPU spans (last 120 frames)", |ui| {
-            let header = ["span", "ms/frame", "calls", "max ms", "thread"];
-            let columns = [0, 50, 60, 70, 80];
+            *span_filter = ui.dropdown(id!(), *span_filter, &SPAN_FILTERS);
+            let kind = [None, Some(SpanKind::System), Some(SpanKind::Schedule)]
+                .get(*span_filter)
+                .copied()
+                .unwrap_or(Some(SpanKind::Other));
+            let shown: Vec<&SpanRow> = spans
+                .iter()
+                .filter(|span| kind.is_none_or(|kind| span.kind == kind))
+                .collect();
+
+            let header = ["span", "kind", "ms/frame", "calls", "max ms", "thread"];
+            let columns = [
+                0,
+                NAME_CHARS + 2,
+                NAME_CHARS + 11,
+                NAME_CHARS + 21,
+                NAME_CHARS + 29,
+                NAME_CHARS + 39,
+            ];
             row(ui, &columns, &header.map(String::from), UiContext::TEXT_DIM);
-            for cells in spans {
-                row(ui, &columns, cells, UiContext::TEXT);
-            }
+            let line = (UiContext::ATLAS_CELL_SIZE.y + UiContext::ELEMENT_GAP.y) as f32;
+            let size = Vec2::new(
+                visible_width(ui),
+                (shown.len() as f32 * line + 10.0).min(600.0),
+            );
+            ui.text_container(
+                id!(),
+                size,
+                false,
+                |ui, i| {
+                    let span = shown[i];
+                    let name = from_pos_size(ui.cursor, UiContext::text_size(&span.cells[0]));
+                    let hovered = span.name.len() > span.cells[0].len() && ui.hoverd(name);
+                    row(ui, &columns, &span.cells, UiContext::TEXT);
+                    if hovered {
+                        ui.tooltip_label(span.name);
+                    }
+                },
+                shown.len(),
+            );
         });
         ui.collapsable(true, id!(), "GPU memory", |ui| {
             let memory = &profiler.memory;

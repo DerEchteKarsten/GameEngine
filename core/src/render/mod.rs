@@ -17,7 +17,7 @@ use bevy::{
         system::Single,
         world::World,
     },
-    log,
+    log::{self, info_span},
     tasks::ComputeTaskPool,
     utils::default,
     window::{PrimaryWindow, RawHandleWrapperHolder},
@@ -229,13 +229,15 @@ impl Plugin for PipelinedRenderingPlugin {
 fn renderer_extract(app_world: &mut World, _world: &mut World) {
     app_world.resource_scope(|world, main_thread_executor: Mut<MainThreadExecutor>| {
         world.resource_scope(|world, mut render_channels: Mut<RenderAppChannels>| {
-            if let Some(mut render_app) = ComputeTaskPool::get()
+            let wait = info_span!("wait for render thread", wait = true).entered();
+            let render_app = ComputeTaskPool::get()
                 .scope_with_executor(true, Some(&*main_thread_executor.0), |s| {
                     s.spawn(async { render_channels.recv().await });
                 })
                 .pop()
-                .unwrap()
-            {
+                .unwrap();
+            drop(wait);
+            if let Some(mut render_app) = render_app {
                 render_app.extract(world);
 
                 render_channels.send_blocking(render_app);

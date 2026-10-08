@@ -20,10 +20,32 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 #[derive(Clone, Copy, Debug)]
 pub struct CpuSpan {
     pub name: &'static str,
+    pub kind: SpanKind,
     pub thread: &'static str,
     pub depth: u16,
     pub start_ns: u64,
     pub end_ns: u64,
+}
+
+/// Bevy's spans of systems (and run conditions) and of schedules, spans with a `wait = true`
+/// field, in which the thread blocks on the GPU or another thread, and all the others.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SpanKind {
+    System,
+    Schedule,
+    Wait,
+    Other,
+}
+
+impl SpanKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            SpanKind::System => "system",
+            SpanKind::Schedule => "schedule",
+            SpanKind::Wait => "wait",
+            SpanKind::Other => "other",
+        }
+    }
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -66,7 +88,7 @@ pub(super) fn intern(name: &str) -> &'static str {
 struct ThreadState {
     thread: &'static str,
     buffer: Arc<Mutex<Vec<CpuSpan>>>,
-    open: Vec<(span::Id, &'static str, u64)>,
+    open: Vec<(span::Id, SpanName, u64)>,
 }
 
 thread_local! {
@@ -86,19 +108,22 @@ thread_local! {
     });
 }
 
-/// The profiler's name of a span: its `name` field if it has one (bevy names its system spans
-/// "system"), followed by its `pass` field (lava's recording spans).
-struct SpanName(&'static str);
+/// The profiler's name of a span. Bevy's "system" and "schedule" spans are named by their
+/// `name` field; any other span by its own name followed by its `name` and `pass` fields
+/// (bevy's "system_commands", lava's recording spans).
+#[derive(Clone, Copy)]
+struct SpanName(&'static str, SpanKind);
 
 struct NameVisitor {
     name: String,
+    kind: SpanKind,
 }
 
 impl NameVisitor {
     fn record(&mut self, field: &Field, value: &str) {
-        match field.name() {
-            "name" => self.name = value.to_owned(),
-            "pass" => {
+        match (field.name(), self.kind) {
+            ("name", SpanKind::System | SpanKind::Schedule) => self.name = value.to_owned(),
+            ("name" | "pass", _) => {
                 self.name.push(' ');
                 self.name.push_str(value);
             }
@@ -108,6 +133,11 @@ impl NameVisitor {
 }
 
 impl Visit for NameVisitor {
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        if field.name() == "wait" && value {
+            self.kind = SpanKind::Wait;
+        }
+    }
     fn record_str(&mut self, field: &Field, value: &str) {
         self.record(field, value);
     }
@@ -123,12 +153,18 @@ pub struct ProfileLayer;
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfileLayer {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
+        let name = attrs.metadata().name();
         let mut visitor = NameVisitor {
-            name: attrs.metadata().name().to_owned(),
+            name: name.to_owned(),
+            kind: match name {
+                "system" => SpanKind::System,
+                "schedule" => SpanKind::Schedule,
+                _ => SpanKind::Other,
+            },
         };
         attrs.record(&mut visitor);
         span.extensions_mut()
-            .insert(SpanName(intern(&visitor.name)));
+            .insert(SpanName(intern(&visitor.name), visitor.kind));
     }
 
     fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
@@ -139,7 +175,8 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfileLayer {
         let name = span
             .extensions()
             .get::<SpanName>()
-            .map_or(span.name(), |n| n.0);
+            .copied()
+            .unwrap_or(SpanName(span.name(), SpanKind::Other));
         let start = now_ns();
         // `try_with`: threads still exit spans while their locals are destroyed.
         let _ = THREAD.try_with(|thread| thread.borrow_mut().open.push((id.clone(), name, start)));
@@ -149,21 +186,21 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfileLayer {
         let end = now_ns();
         let _ = THREAD.try_with(|thread| {
             let thread = &mut *thread.borrow_mut();
-            // Spans entered before the profiler was enabled aren't open here.
+            // Only spans entered while the profiler was enabled are open here; they are
+            // recorded even if it was disabled since, as they belong to a recorded frame.
             let Some(depth) = thread.open.iter().rposition(|(open, ..)| open == id) else {
                 return;
             };
-            let (_, name, start_ns) = thread.open.remove(depth);
-            if ENABLED.load(Ordering::Relaxed) {
-                let span = CpuSpan {
-                    name,
-                    thread: thread.thread,
-                    depth: depth as u16,
-                    start_ns,
-                    end_ns: end,
-                };
-                thread.buffer.lock().unwrap().push(span);
-            }
+            let (_, SpanName(name, kind), start_ns) = thread.open.remove(depth);
+            let span = CpuSpan {
+                name,
+                kind,
+                thread: thread.thread,
+                depth: depth as u16,
+                start_ns,
+                end_ns: end,
+            };
+            thread.buffer.lock().unwrap().push(span);
         });
     }
 }
@@ -213,22 +250,31 @@ mod tests {
     }
 
     #[test]
-    fn spans_are_named_by_their_name_and_pass_fields() {
+    fn spans_are_named_and_classified_by_their_fields() {
+        use SpanKind::*;
+        #[derive(Debug)]
+        struct Update;
         let spans = capture(|| {
+            let _schedule = tracing::info_span!("schedule", name = ?Update).entered();
             let system = tracing::info_span!("system", name = "game::update".to_string());
             system.in_scope(|| {
                 let _pass = tracing::info_span!("compute", pass = "BvhCull").entered();
             });
             // Entering the same span again records it again.
             system.in_scope(|| {});
+            let _commands = tracing::info_span!("system_commands", name = "game::update").entered();
+            let _wait = tracing::info_span!("wait for frame slot", wait = true).entered();
         });
-        let names: Vec<_> = spans.iter().map(|s| (s.name, s.depth)).collect();
+        let names: Vec<_> = spans.iter().map(|s| (s.name, s.kind, s.depth)).collect();
         assert_eq!(
             names,
             [
-                ("compute BvhCull", 1),
-                ("game::update", 0),
-                ("game::update", 0)
+                ("compute BvhCull", Other, 2),
+                ("game::update", System, 1),
+                ("game::update", System, 1),
+                ("wait for frame slot", Wait, 2),
+                ("system_commands game::update", Other, 1),
+                ("Update", Schedule, 0),
             ]
         );
     }

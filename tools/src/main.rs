@@ -42,6 +42,7 @@ re!(
 );
 re!(MACRO_RE, r"^\s*macro_rules!\s+(\w+)");
 re!(IMPL_RE, r"^\s*(?:unsafe\s+)?impl\b");
+re!(INLINE_MOD_RE, r"^\s*pub\s+mod\s+\w+\s*\{");
 re!(FIELD_RE, r"^\s*pub\s+(\w+)\s*:\s*(.+?),?\s*$");
 re!(STR_RE, r#""(?:\\.|[^"\\])*""#);
 re!(CHAR_RE, r"'(?:\\.|[^'\\])'");
@@ -50,8 +51,6 @@ re!(SHADER_ATTR_RE, r#"\[shader\("(\w+)"\)\]"#);
 re!(CALL_RE, r"(\w+)\s*\(");
 re!(PUSH_CONSTANT_RE, r"\[\[vk::push_constant\]\]\s*(\w+)");
 re!(INCLUDE_RE, r#"(?m)^\s*#include\s+"([^"]+)""#);
-re!(MACRO_DEF_RE, r"(?m)^#define\s+(\w+)\((\w+)\)((?:.*\\\n)+.*)");
-re!(MACRO_CALL_RE, r"^\s*(\w+)\((\w+)\)\s*$");
 re!(SIG_END_RE, r"[{;]\s*$|\bwhere\b");
 re!(SIG_TRAIL_RE, r"\s*(\{|;)\s*$");
 re!(WS_RE, r"\s+");
@@ -265,49 +264,30 @@ fn shader_table(root: &Path) -> (Vec<String>, String) {
             .captures_iter(&text)
             .map(|m| read(&include_dir.join(&m[1])))
             .collect();
-        // Expands calls of included one-parameter macros, which can define entry points.
-        let expanded = text
-            .lines()
-            .map(|line| {
-                MACRO_CALL_RE
-                    .captures(line)
-                    .and_then(|call| {
-                        let def = includes
-                            .iter()
-                            .flat_map(|include| MACRO_DEF_RE.captures_iter(include))
-                            .find(|def| def[1] == call[1])?;
-                        Some(def[3].replace(&format!("{}##", &def[2]), &call[2]).replace('\\', ""))
-                    })
-                    .unwrap_or_else(|| line.to_string())
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let lines: Vec<&str> = expanded.lines().collect();
-        let (mut entries, mut pc) = (Vec::new(), "?".to_string());
-        for (i, line) in lines.iter().enumerate() {
-            if let Some(m) = SHADER_ATTR_RE.captures(line) {
-                for nxt in lines.iter().skip(i + 1).take(5) {
-                    let s = nxt.trim();
-                    if s.is_empty() || s.starts_with('[') {
-                        continue;
+        // Passes sharing push constants or entry points declare them in an include, whose entry
+        // points then belong to every pass that includes it.
+        let (mut entries, mut pc) = (Vec::new(), None);
+        for source in std::iter::once(&text).chain(&includes) {
+            let lines: Vec<&str> = source.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if let Some(m) = SHADER_ATTR_RE.captures(line) {
+                    for nxt in lines.iter().skip(i + 1).take(5) {
+                        let s = nxt.trim();
+                        if s.is_empty() || s.starts_with('[') {
+                            continue;
+                        }
+                        if let Some(n) = CALL_RE.captures(s) {
+                            entries.push(format!("{}:{}", &m[1], &n[1]));
+                        }
+                        break;
                     }
-                    if let Some(n) = CALL_RE.captures(s) {
-                        entries.push(format!("{}:{}", &m[1], &n[1]));
-                    }
-                    break;
+                }
+                if let Some(m) = PUSH_CONSTANT_RE.captures(line) {
+                    pc.get_or_insert_with(|| m[1].to_string());
                 }
             }
-            if let Some(m) = PUSH_CONSTANT_RE.captures(line) {
-                pc = m[1].to_string();
-            }
         }
-        // Passes sharing their push constants declare them in an include.
-        if pc == "?" {
-            pc = includes
-                .iter()
-                .find_map(|include| Some(PUSH_CONSTANT_RE.captures(include)?[1].to_string()))
-                .unwrap_or(pc);
-        }
+        let pc = pc.unwrap_or_else(|| "?".to_string());
         let name = f.file_name().unwrap().to_string_lossy();
         rows.push(format!("- {name}: pc `{pc}`; {}", entries.join(", ")));
     }
@@ -361,12 +341,16 @@ fn api_for_file(path: &Path) -> String {
     let mut depth: i64 = 0;
     let mut impl_stack: Vec<i64> = Vec::new(); // depth at which each open impl started
     let mut struct_open: Option<i64> = None; // depth of an open pub struct body
+    let mut mod_stack: Vec<i64> = Vec::new(); // depth at which each open inline pub mod started
     let mut i = 0;
     while i < lines.len() {
         let code = strip_code(lines[i]);
         let stripped = code.trim();
 
-        if IMPL_RE.is_match(&code) && code.contains('{') {
+        if INLINE_MOD_RE.is_match(&code) {
+            mod_stack.push(depth);
+            out.push(format!("\n{stripped}"));
+        } else if IMPL_RE.is_match(&code) && code.contains('{') {
             impl_stack.push(depth);
             out.push(format!("\n{}", stripped.trim_end_matches('{').trim()));
         } else if TYPE_RE.is_match(&code) {
@@ -403,6 +387,15 @@ fn api_for_file(path: &Path) -> String {
         depth += braces(&code);
         if struct_open.is_some_and(|d| depth <= d) {
             struct_open = None;
+        }
+        while mod_stack.last().is_some_and(|&d| depth <= d) {
+            mod_stack.pop();
+            // An empty module (e.g. one that only `include!`s) is left out.
+            if out.last().is_some_and(|l| INLINE_MOD_RE.is_match(l)) {
+                out.pop();
+            } else {
+                out.push("}".into());
+            }
         }
         while impl_stack.last().is_some_and(|&d| depth <= d) {
             impl_stack.pop();

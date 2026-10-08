@@ -3,7 +3,10 @@ use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use std::{
     collections::HashMap,
     mem::offset_of,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use bevy::{
@@ -21,16 +24,14 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
     window::{PrimaryWindow, Window},
 };
-use glam::{IVec2, Mat4, UVec2, Vec2, Vec3, Vec4, Vec4Swizzles};
+use glam::{Mat4, UVec2, Vec2, Vec3, Vec4, Vec4Swizzles};
 use lava::{
     bindless::{BindlessHandle, BindlessWrites, NULL_HANDLE},
     buffer::{
         Buffer,
         usage::{Index, Indirect, StorageIndirect},
     },
-    command_buffer::{
-        BindingOutput, Blend, CommandBuffer, DispatchIndirectCommand, Scissor, Viewport,
-    },
+    command_buffer::{Blend, CommandBuffer, RasterState},
     image::{
         Image,
         format::{
@@ -64,8 +65,11 @@ use crate::{
 };
 use lava::bindings::{
     BvhCull, DrawOutline, InstanceBvhRoot, InstanceCull, InstanceMeshletIndex, InstancedMeshlet,
-    MeshletDraw, Raster, RasterBlended, RasterOutline, RasterUi, Skybox, Tonemap, TraversalVariables,
+    MeshletDraw, Raster, RasterBlended, RasterOutline, RasterUi, Tonemap, TraversalVariables,
 };
+
+/// `MESHLET_STRIDE` in `datatypes.slang`: `groups_y` of every `MeshletDraw`.
+const MESHLET_STRIDE: u32 = 64;
 
 #[derive(Resource)]
 pub struct FrameSlots {
@@ -244,13 +248,13 @@ pub struct ResourceStates {
 pub struct RenderResources {
     depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
     /// The scene in linear HDR colour, the same size as the depth; tonemapped into the target.
-    hdr: Image<R16G16B16A16Sfloat, ColorAttachmentStorage>,
+    hdr: Image<R16G16B16A16Sfloat, ColorAttachmentSampled>,
     /// Weighted blended OIT of the blended meshlets, composited over `hdr` by the tonemap: the
     /// weighted sum of their premultiplied colours (rgb) and of their weights (a). 32-bit,
     /// because specular highlights times the weight overflow half floats.
-    accum: Image<R32G32B32A32Sfloat, ColorAttachmentSampled>,
+    accum: Image<R32G32B32A32Sfloat, ColorAttachmentStorage>,
     /// The product of `1 - alpha` of the blended fragments: how much of `hdr` shows through.
-    revealage: Image<R16Sfloat, ColorAttachmentSampled>,
+    revealage: Image<R16Sfloat, ColorAttachmentStorage>,
     meshlets: Buffer<InstancedMeshlet>,
     /// Visible meshlets of materials with a negative alpha cutoff, drawn after `meshlets`.
     blended_meshlets: Buffer<InstancedMeshlet>,
@@ -260,6 +264,9 @@ pub struct RenderResources {
     meshlet_batches: Buffer<u32>,
     candidate_meshlets: Buffer<InstanceMeshletIndex>,
     variables: Buffer<TraversalVariables, StorageIndirect>,
+    /// `bvh_node_stack` and `meshlet_batches` still have to be filled, and `accum` and `revealage`
+    /// cleared: after that, the passes that use them leave them that way.
+    fresh: bool,
 }
 
 #[derive(Resource, Default, Clone, Reflect)]
@@ -346,7 +353,7 @@ pub(crate) fn settings_ui(
         settings.outline_radius = ui.slider(id!(), 0.0, 6.0, 300.0, settings.outline_radius);
 
         ui.text("LOD Bias");
-        settings.pixel_error = ui.slider(id!(), 0.0, 100.0, 300.0, settings.pixel_error);
+        settings.pixel_error = ui.slider(id!(), 0.0, 5.0, 300.0, settings.pixel_error);
 
         ui.text("Exposure");
         settings.exposure = ui.slider(id!(), 0.0, 8.0, 300.0, settings.exposure);
@@ -382,13 +389,20 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
             frame.frame_in_flight()
         };
         let slot = &mut slots.slots[frame_in_flight];
-        slot.set_profiling(world.contains_resource::<GpuTimings>());
+        slot.set_profiling(
+            world
+                .get_resource::<GpuTimings>()
+                .is_some_and(|t| t.enabled),
+        );
         let frame = slot.begin().unwrap();
-        if let Some(scopes) = frame.last_timings() {
+        if let Some(last) = frame.last_timings() {
             let mut timings = world.resource_mut::<GpuTimings>();
             let submit_ns = timings.submitted[frame_in_flight];
-            let scopes = scopes.to_vec();
-            timings.frames.push(GpuFrame { submit_ns, scopes });
+            let last = last.clone();
+            timings.frames.push(GpuFrame {
+                submit_ns,
+                timings: last,
+            });
         }
         world.run_schedule(RenderSystems::AquireSwapchainImage);
         world.run_schedule(RenderSystems::PreRender);
@@ -405,7 +419,7 @@ impl RenderResources {
         target_size: UVec2,
         min_size: UVec2,
         frame: &mut Frame,
-    ) -> &'a Self {
+    ) {
         let resources = resources.get_or_insert_with(|| {
             let depth_size = target_size.max(INITIAL_WINDOW_SIZE.as_uvec2());
             RenderResources {
@@ -416,25 +430,25 @@ impl RenderResources {
                     bindless::sampled_slot().unwrap(),
                 )
                 .unwrap(),
-                hdr: Image::new_storage(
+                hdr: Image::new_sampled(
+                    depth_size.x,
+                    depth_size.y,
+                    1,
+                    bindless::sampled_slot().unwrap(),
+                )
+                .unwrap(),
+                accum: Image::new_storage(
                     depth_size.x,
                     depth_size.y,
                     1,
                     bindless::storage_slots(1).unwrap(),
                 )
                 .unwrap(),
-                accum: Image::new_sampled(
+                revealage: Image::new_storage(
                     depth_size.x,
                     depth_size.y,
                     1,
-                    bindless::sampled_slot().unwrap(),
-                )
-                .unwrap(),
-                revealage: Image::new_sampled(
-                    depth_size.x,
-                    depth_size.y,
-                    1,
-                    bindless::sampled_slot().unwrap(),
+                    bindless::storage_slots(1).unwrap(),
                 )
                 .unwrap(),
                 meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
@@ -444,6 +458,7 @@ impl RenderResources {
                 variables: Buffer::new(1, false).unwrap(),
                 meshlet_batches: Buffer::new(2 * 1024 * 1024, false).unwrap(),
                 candidate_meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
+                fresh: true,
             }
         });
 
@@ -457,21 +472,21 @@ impl RenderResources {
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.hdr,
-                Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap(),
+                Image::new_sampled(size.x, size.y, 1, bindless::sampled_slot().unwrap()).unwrap(),
             );
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.accum,
-                Image::new_sampled(size.x, size.y, 1, bindless::sampled_slot().unwrap()).unwrap(),
+                Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap(),
             );
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.revealage,
-                Image::new_sampled(size.x, size.y, 1, bindless::sampled_slot().unwrap()).unwrap(),
+                Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap(),
             );
             frame.retire(old);
+            resources.fresh = true;
         }
-        resources
     }
 
     pub(super) fn visible_meshlets(&self) -> u32 {
@@ -487,31 +502,11 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
     camera: &mut RenderCamera,
     sky: &RenderSkybox,
     instances: &InstanceManager,
-    resources: &RenderResources,
+    resources: &mut RenderResources,
     setting: &RenderSettings,
     gizzmos: Option<&GizzmoResources>,
     frame_in_flight: usize,
 ) {
-    let raster_viewport = Viewport {
-        extent: target_size,
-        offset: IVec2::ZERO,
-    };
-    let raster_scissor = Scissor {
-        extent: target_size,
-        offset: IVec2::ZERO,
-    };
-
-    cmd.compute(
-        Skybox::new(
-            camera.camera.proj_inv(),
-            camera.camera.view_inv(),
-            resources.hdr.whole_view(),
-            target_size,
-            sky.0,
-        ),
-        [target_size.x.div_ceil(8), target_size.y.div_ceil(8), 1],
-    );
-
     // for i in resources.meshlets.range(0..10) {
     //     log::info!("{:#?}", i);
     // }
@@ -533,35 +528,37 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         .range(MAX_INSTANCES * frame_in_flight..);
     let eye = camera.transform.translation.extend(1.0);
     let (view, proj) = (camera.camera.view, camera.camera.proj);
-    // Outside the blended pass, which doesn't run without instances: the tonemap always reads them.
-    cmd.begin_scope("clear");
-    cmd.clear_image(resources.accum.whole_view(), [0.0; 4]);
-    cmd.clear_image(resources.revealage.whole_view(), [1.0]);
-    cmd.end_scope();
-    if instances.instance_count > 0 {
-        cmd.begin_scope("cull");
+    cmd.begin_scope("cull");
+    // Only once: bvh_cull leaves every queue slot and batch counter it consumes as filled here,
+    // and the tonemap resets every pixel of `accum` and `revealage` the blended pass drew to.
+    if resources.fresh {
+        resources.fresh = false;
         cmd.fill_buffer(resources.bvh_node_stack.range(..), !0);
-        cmd.fill_buffer(resources.candidate_meshlets.range(..), !0);
         cmd.fill_buffer(resources.meshlet_batches.range(..), 0);
+        cmd.clear_image(resources.accum.whole_view(), [0.0; 4]);
+        cmd.clear_image(resources.revealage.whole_view(), [1.0]);
+    }
+    // Also without instances: the blended pass always runs and reads its draw from here.
+    cmd.update_buffer(
+        resources.variables.range(..),
+        &TraversalVariables {
+            node_count: 0,
+            node_batch_read_offset: 0,
+            node_write_offset: 0,
+            draws: [MeshletDraw {
+                groups_x: 0,
+                groups_y: MESHLET_STRIDE,
+                groups_z: 1,
+                meshlet_count: 0,
+            }; 3],
+            candidate_meshlet_write_offset: 0,
+            meshlet_batch_read_offset: 0,
+            total_meshlets: 0,
+        },
+    );
+    if instances.instance_count > 0 {
         let cull_proj = setting.freez_proj.unwrap_or(camera.camera.proj);
         let cull_view = setting.freez_view.unwrap_or(camera.camera.view);
-        cmd.update_buffer(
-            resources.variables.range(..),
-            &TraversalVariables {
-                node_count: 0,
-                node_batch_read_offset: 0,
-                node_write_offset: 0,
-                draws: [MeshletDraw {
-                    task_groups_x: 0,
-                    task_groups_y: 1,
-                    task_groups_z: 1,
-                    meshlet_count: 0,
-                }; 3],
-                candidate_meshlet_write_offset: 0,
-                meshlet_batch_read_offset: 0,
-                total_meshlets: 0,
-            },
-        );
         let clip_from_world = (cull_proj * cull_view).transpose();
         cmd.compute(
             InstanceCull::new(
@@ -608,103 +605,94 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
             ),
             [64, 1, 1],
         );
-        cmd.end_scope();
-        cmd.raster()
-            .color_attachment(resources.hdr.whole_view(), None, None)
-            .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]), true)
-            .backface_culling(true)
-            .launch_indirect_with_dynstates(
-                Raster::new(
-                    view,
-                    proj,
-                    eye,
-                    transforms,
-                    resources.meshlets.range(..),
-                    opaque_draw,
-                    materials,
-                ),
-                target_size,
-                opaque_draw.cast(),
-                &[raster_scissor],
-                raster_viewport,
-            );
-        // Tested against the opaque depth without writing it, so every blended layer counts.
-        cmd.raster()
-            .color_attachment(resources.accum.whole_view(), None, Some(Blend::Add))
-            .color_attachment(
-                resources.revealage.whole_view(),
-                None,
-                Some(Blend::Attenuate),
-            )
-            .depth_attachment(resources.depth_attachment.whole_view(), None, false)
-            .backface_culling(true)
-            .launch_indirect_with_dynstates(
-                RasterBlended::new(
-                    view,
-                    proj,
-                    eye,
-                    transforms,
-                    resources.blended_meshlets.range(..),
-                    blended_draw,
-                    materials,
-                ),
-                target_size,
-                blended_draw.cast(),
-                &[raster_scissor],
-                raster_viewport,
-            );
     }
+    cmd.end_scope();
+    // Also without instances: it clears the depth, and the tonemap draws the sky where it stays 0.
+    cmd.raster(target_size)
+        .color_attachment(resources.hdr.whole_view(), None)
+        .color_attachment(resources.accum.whole_view(), None)
+        .color_attachment(resources.revealage.whole_view(), None)
+        .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]))
+        .launch_indirect(
+            Raster::new(
+                view,
+                proj,
+                eye,
+                transforms,
+                resources.meshlets.range(..),
+                opaque_draw,
+                materials,
+            ),
+            opaque_draw.cast(),
+            RasterState::default().blends([Blend::Replace, Blend::Skip, Blend::Skip]),
+        )
+        // Tested against the opaque depth without writing it, so every blended layer counts.
+        .launch_indirect(
+            RasterBlended::new(
+                view,
+                proj,
+                eye,
+                transforms,
+                resources.blended_meshlets.range(..),
+                blended_draw,
+                materials,
+            ),
+            blended_draw.cast(),
+            RasterState::default()
+                .blends([Blend::Skip, Blend::Add, Blend::Attenuate])
+                .depth_write(false),
+        )
+        .record("Scene");
 
     cmd.begin_scope("post");
     cmd.compute(
         Tonemap::new(
             resources.hdr.whole_view(),
+            resources.depth_attachment.whole_view(),
             resources.accum.whole_view(),
             resources.revealage.whole_view(),
             target_image,
+            camera.camera.proj_inv(),
+            camera.camera.view_inv(),
             target_size,
             setting.exposure,
+            sky.0,
         ),
         [target_size.x.div_ceil(8), target_size.y.div_ceil(8), 1],
     );
 
-    if instances.instance_count > 0 {
-        if instances.any_outlined {
-            cmd.raster()
-                .backface_culling(true)
-                .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]), true)
-                .launch_indirect_with_dynstates(
-                    RasterOutline::new(
-                        view,
-                        proj,
-                        eye,
-                        transforms,
-                        resources.outlined_meshlets.range(..),
-                        outlined_draw,
-                        materials,
-                    ),
-                    target_size,
-                    outlined_draw.cast(),
-                    &[raster_scissor],
-                    raster_viewport,
-                );
-
-            cmd.compute(
-                DrawOutline::new(
-                    resources.depth_attachment.whole_view(),
-                    target_image,
-                    setting.outline_color.extend(setting.outline_radius),
-                    target_size,
+    if instances.any_outlined {
+        cmd.raster(target_size)
+            .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]))
+            .launch_indirect(
+                RasterOutline::new(
+                    view,
+                    proj,
+                    eye,
+                    transforms,
+                    resources.outlined_meshlets.range(..),
+                    outlined_draw,
+                    materials,
                 ),
-                [target_size.x.div_ceil(8), target_size.y.div_ceil(8), 1],
-            );
-        }
-        if let Some(gizzmos) = gizzmos {
-            cmd.begin_scope("gizmos");
-            gizzmos.draw(cmd, target_image, target_size, camera, frame_in_flight);
-            cmd.end_scope();
-        }
+                outlined_draw.cast(),
+                RasterState::default(),
+            )
+            .record("Outline");
+
+        cmd.compute(
+            DrawOutline::new(
+                resources.depth_attachment.whole_view(),
+                target_image,
+                setting.outline_color.extend(setting.outline_radius),
+                target_size,
+            ),
+            [target_size.x.div_ceil(8), target_size.y.div_ceil(8), 1],
+        );
     }
+    if let Some(gizzmos) = gizzmos {
+        gizzmos.draw(cmd, target_image, target_size, camera, frame_in_flight);
+    }
+
     cmd.end_scope();
 }
 
@@ -728,12 +716,15 @@ fn record_frame(
     ): RenderParams,
 ) {
     let target_size = target.rect.size().as_uvec2().max(UVec2::ONE);
-    let resources = RenderResources::fit(
+    RenderResources::fit(
         &mut resources,
         target_size,
         UVec2::from(swapchain.size),
         &mut frame,
     );
+    let Some(resources) = resources.as_mut() else {
+        return;
+    };
     if let Some(extent) = target.image.as_ref().map(|image| image.extent)
         && extent.cmplt(target_size).any()
     {
@@ -764,7 +755,7 @@ fn record_frame(
                 &[sync.image_available[frame_in_flight].info()],
                 &[sync.render_finished[swapchain.image_index as usize].info()],
                 |cmd| {
-                    cmd.clear_image(swapchain.image(), [0.0; 4]);
+                    // cmd.clear_image(swapchain.image(), [0.0; 4]);
                     record_scene(
                         cmd,
                         target_image,
@@ -783,23 +774,23 @@ fn record_frame(
                             ui_resources.verticies[frame_in_flight].range(..),
                             ui_resources.font_atlas.whole_view(),
                         );
-                        let ui_indicies = ui_resources.indicies[frame_in_flight]
-                            .range(..ui_resources.num_indicies);
-                        let ui_pass = cmd.raster().backface_culling(false).color_attachment(
-                            swapchain.image(),
-                            None,
-                            Some(Blend::Alpha),
-                        );
                         // The viewport tab reads the scene through a handle in its vertices.
-                        match &target.image {
-                            Some(image) => ui_pass.draw_indexed(
-                                ui.storage_read(image.whole_view()),
-                                swapchain.size.into(),
-                                ui_indicies,
+                        let ui = match &target.image {
+                            Some(image) => ui.storage_read(image.whole_view()),
+                            None => ui,
+                        };
+                        cmd.raster(swapchain.size.into())
+                            .color_attachment(swapchain.image(), None)
+                            .draw_indexed(
+                                ui,
+                                ui_resources.indicies[frame_in_flight]
+                                    .range(..ui_resources.num_indicies),
                                 1,
-                            ),
-                            None => ui_pass.draw_indexed(ui, swapchain.size.into(), ui_indicies, 1),
-                        }
+                                RasterState::default()
+                                    .blends([Blend::Alpha])
+                                    .backface_culling(false),
+                            )
+                            .record("UI");
                     }
                     cmd.present(swapchain.image());
                 },

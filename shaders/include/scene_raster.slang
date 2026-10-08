@@ -1,8 +1,9 @@
-// The scene's meshlet task and mesh shaders and material shading, shared by the scene's raster passes.
+// The scene's meshlet mesh shader and material shading, shared by the scene's raster passes.
 #pragma once
 #include "random.slang"
 #include "datatypes.slang"
 #include "bindless.slang"
+#include "profile.slang"
 #include "math.slang"
 struct VSOutput {
     float4 position : SV_Position;
@@ -25,16 +26,13 @@ struct RasterBindings {
 
 [[vk::push_constant]] RasterBindings b;
 
-// The meshlet builder's limits (`build_meshlets` in `core/src/assets/mesh.rs`).
-#define MAX_MESHLET_VERTICES 256
+// The meshlet builder's limits (`build_meshlets` in `core/src/assets/mesh.rs`). Fewer vertices
+// leave the mesh shader less output to reserve, which made it faster.
+#define MAX_MESHLET_VERTICES 128
 #define MAX_MESHLET_TRIANGLES 128
-
-struct MeshletPayload {
-    // The task group's first meshlet in `b.meshlets`.
-    uint first;
-};
-
-groupshared MeshletPayload task_payload;
+// Invocations per mesh workgroup, what the driver prefers (`maxPreferredMeshWorkGroupInvocations`
+// on Intel); a thread per triangle was slower.
+#define MESH_THREADS 16
 
 VSOutput scene_vertex(InstancedMeshlet instanced_meshlet, Meshlet meshlet, uint index)
 {
@@ -52,38 +50,34 @@ VSOutput scene_vertex(InstancedMeshlet instanced_meshlet, Meshlet meshlet, uint 
     return output;
 }
 
-// The task and mesh entry points `<prefix>_task` and `<prefix>_mesh` of a pass: a task group per
-// MESHLETS_PER_TASK meshlets of `b.meshlets`, a mesh workgroup per meshlet with a thread per triangle.
-// A macro because entry points need unique names and mesh outputs can't be passed to functions.
-#define SCENE_MESHLET_SHADERS(prefix)                                                              \
-[shader("amplification")]                                                                          \
-[numthreads(1, 1, 1)]                                                                              \
-void prefix##_task(uint group: SV_GroupID) {                                                       \
-    task_payload.first = group * MESHLETS_PER_TASK;                                                \
-    let count = min(uint(MESHLETS_PER_TASK), b.draw.val.meshlet_count - task_payload.first);       \
-    DispatchMesh(count, 1, 1, task_payload);                                                       \
-}                                                                                                  \
-                                                                                                   \
-[shader("mesh")]                                                                                   \
-[outputtopology("triangle")]                                                                       \
-[numthreads(MAX_MESHLET_TRIANGLES, 1, 1)]                                                          \
-void prefix##_mesh(                                                                                \
-    uint thread: SV_GroupThreadID,                                                                 \
-    uint group: SV_GroupID,                                                                        \
-    in payload MeshletPayload payload,                                                             \
-    out indices uint3 triangles[MAX_MESHLET_TRIANGLES],                                            \
-    out vertices VSOutput vertices[MAX_MESHLET_VERTICES]                                           \
-) {                                                                                                \
-    let instanced_meshlet = b.meshlets.val[payload.first + group];                                 \
-    let meshlet = *instanced_meshlet.meshlet;                                                      \
-    SetMeshOutputCounts(meshlet.vertex_count, meshlet.triangle_count);                             \
-    if (thread < meshlet.triangle_count) {                                                         \
-        let corners = meshlet.triangle_index + thread * 3;                                         \
-        triangles[thread] = uint3(corners[0], corners[1], corners[2]);                             \
-    }                                                                                              \
-    for (uint i = thread; i < meshlet.vertex_count; i += MAX_MESHLET_TRIANGLES) {                  \
-        vertices[i] = scene_vertex(instanced_meshlet, meshlet, i);                                 \
-    }                                                                                              \
+// The mesh shader of every scene raster pass: a workgroup per meshlet of `b.meshlets` (see
+// `MeshletDraw`).
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(MESH_THREADS, 1, 1)]
+void scene_mesh(
+    uint thread: SV_GroupThreadID,
+    uint2 group: SV_GroupID,
+    out indices uint3 triangles[MAX_MESHLET_TRIANGLES],
+    out vertices VSOutput vertices[MAX_MESHLET_VERTICES]
+) {
+    PROFILE(PROFILE_MESH);
+    let index = group.x * MESHLET_STRIDE + group.y;
+    if (index >= b.draw.val.meshlet_count) {
+        // Past the end of the list, in the last stride.
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
+    let instanced_meshlet = b.meshlets.val[index];
+    let meshlet = *instanced_meshlet.meshlet;
+    SetMeshOutputCounts(meshlet.vertex_count, meshlet.triangle_count);
+    for (uint i = thread; i < meshlet.triangle_count; i += MESH_THREADS) {
+        let corners = meshlet.triangle_index + i * 3;
+        triangles[i] = uint3(corners[0], corners[1], corners[2]);
+    }
+    for (uint i = thread; i < meshlet.vertex_count; i += MESH_THREADS) {
+        vertices[i] = scene_vertex(instanced_meshlet, meshlet, i);
+    }
 }
 
 float4 sample_texture(uint texture, float2 uv) {

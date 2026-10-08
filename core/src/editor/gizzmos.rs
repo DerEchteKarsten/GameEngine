@@ -18,11 +18,11 @@ use bevy::{
     },
     transform::components::GlobalTransform,
 };
-use glam::{IVec2, Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
+use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
 use lava::bindings::{DrawAabbs, DrawArrows, DrawSpheres, Gizzmo};
 use lava::{
     buffer::Buffer,
-    command_buffer::{Blend, CommandBuffer, Scissor, Viewport},
+    command_buffer::{Blend, CommandBuffer, RasterState},
     image::{
         format::{ColorAspect, Format},
         slice::ImageView,
@@ -352,64 +352,41 @@ impl GizzmoResources {
         camera: &RenderCamera,
         frame_in_flight: usize,
     ) {
-        let scissors = [Scissor {
-            extent: target_size,
-            offset: IVec2::ZERO,
-        }];
-        let viewport = Viewport {
-            extent: target_size,
-            offset: IVec2::ZERO,
+        if self.aabb_range.is_empty() && self.sphere_range.is_empty() && self.arrow_range.is_empty()
+        {
+            return;
+        }
+        let world_to_clip = camera.camera.proj * camera.camera.view;
+        let gizzmos = |range: &Range<usize>| {
+            self.gizzmos
+                .range((MAX_GIZZMOS * frame_in_flight + range.start)..)
         };
-        if !self.aabb_range.is_empty() {
-            cmd.raster()
-                .color_attachment(target, None, Some(Blend::Alpha))
+        let state = || {
+            RasterState::default()
+                .blends([Blend::Alpha])
                 .backface_culling(false)
-                .draw_with_dynstates(
-                    DrawAabbs::new(
-                        camera.camera.proj * camera.camera.view,
-                        self.gizzmos
-                            .range((MAX_GIZZMOS * frame_in_flight + self.aabb_range.start)..),
-                    ),
-                    target_size,
-                    36,
-                    self.aabb_range.len() as u32,
-                    &scissors,
-                    viewport,
-                );
-        }
-        if !self.sphere_range.is_empty() {
-            cmd.raster()
-                .color_attachment(target, None, Some(Blend::Alpha))
-                .backface_culling(false)
-                .draw_with_dynstates(
-                    DrawSpheres::new(
-                        camera.camera.proj * camera.camera.view,
-                        self.gizzmos
-                            .range((MAX_GIZZMOS * frame_in_flight + self.sphere_range.start)..),
-                    ),
-                    target_size,
-                    576,
-                    self.sphere_range.len() as u32,
-                    &scissors,
-                    viewport,
-                );
-        }
-        if !self.arrow_range.is_empty() {
-            cmd.raster()
-                .color_attachment(target, None, Some(Blend::Alpha))
-                .backface_culling(false)
-                .draw_with_dynstates(
-                    DrawArrows::new(
-                        camera.camera.proj * camera.camera.view,
-                        self.gizzmos
-                            .range((MAX_GIZZMOS * frame_in_flight + self.arrow_range.start)..),
-                    ),
-                    target_size,
-                    216,
-                    self.arrow_range.len() as u32,
-                    &scissors,
-                    viewport,
-                );
-        }
+        };
+        // An empty range draws no instances.
+        cmd.raster(target_size)
+            .color_attachment(target, None)
+            .draw(
+                DrawAabbs::new(world_to_clip, gizzmos(&self.aabb_range)),
+                36,
+                self.aabb_range.len() as u32,
+                state(),
+            )
+            .draw(
+                DrawSpheres::new(world_to_clip, gizzmos(&self.sphere_range)),
+                576,
+                self.sphere_range.len() as u32,
+                state(),
+            )
+            .draw(
+                DrawArrows::new(world_to_clip, gizzmos(&self.arrow_range)),
+                216,
+                self.arrow_range.len() as u32,
+                state(),
+            )
+            .record("Gizmos");
     }
 }

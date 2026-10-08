@@ -52,18 +52,21 @@ struct Vertex {
     float4 normal_and_uv2;
 }
 
-// Each task group of the scene's mesh passes draws this many meshlets.
-#define MESHLETS_PER_TASK 64
 #define OPAQUE_DRAW 0
 #define BLENDED_DRAW 1
 // The meshlets of `OUTLINE` instances, also in one of the lists above.
 #define OUTLINED_DRAW 2
 
-// A list of meshlets and the mesh task draw (task group counts) for it.
+// A list of meshlets and the mesh draw for it, a workgroup per meshlet: workgroup (x, y) draws
+// meshlet x * MESHLET_STRIDE + y, so `groups_y` is MESHLET_STRIDE and `groups_x` counts strides
+// (one dimension may be capped at 65535, on Intel). Workgroups start in x order, so neighbours in
+// the list, which are mostly neighbours in the scene, are drawn apart; that drew fewer hidden
+// fragments and was faster than drawing the list in order.
+#define MESHLET_STRIDE 64
 struct MeshletDraw {
-    uint task_groups_x;
-    uint task_groups_y;
-    uint task_groups_z;
+    uint groups_x;
+    uint groups_y;
+    uint groups_z;
     uint meshlet_count;
 }
 

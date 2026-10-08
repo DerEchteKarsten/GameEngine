@@ -1,4 +1,5 @@
 #include "bindless.slang"
+#include "profile.slang"
 #include "datatypes.slang"
 
 struct BvhCullBindings {
@@ -280,8 +281,8 @@ void append_meshlet(uint draw, MutBuf<InstancedMeshlet> list, uint capacity, Ins
         return;
     }
     list.val[offset] = meshlet;
-    if (offset % MESHLETS_PER_TASK == 0) {
-        InterlockedAdd(b.queue_state.val.draws[draw].task_groups_x, 1);
+    if (offset % MESHLET_STRIDE == 0) {
+        InterlockedAdd(b.queue_state.val.draws[draw].groups_x, 1);
     }
 }
 
@@ -316,6 +317,7 @@ void ProcessMeshletBatch(uint meshletBatchStartIndex, uint meshletBatchReadySize
 [numthreads(DAG_CULL_GROUP_SIZE, 1, 1)]
 void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
 {
+    PROFILE(PROFILE_COMPUTE);
     if (b.queue_state.val.node_write_offset == 0) {
         return;
     }
@@ -425,6 +427,12 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
         if (canRunMeshletPass)
         {
             ProcessMeshletBatch(meshletBatchStartIndex, meshletBatchReadySize, groupIndex);
+            // Like the node queue, the counters are left as they were filled once (0) for the
+            // next frame: a batch is processed once, after all of its candidates are published.
+            if (groupIndex == 0)
+            {
+                b.meshlet_batch_buffer.val[meshletBatchStartIndex] = 0;
+            }
             meshletBatchStartIndex = INVALID_U32;
         }
 

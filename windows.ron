@@ -1,7 +1,7 @@
 (
     docking_nodes: Node(
         split: Horizontal,
-        extend: 0.27722874,
+        extend: 0.1094336,
         left: Node(
             split: Vertical,
             extend: 0.5421812,
@@ -14,10 +14,10 @@
         ),
         right: Node(
             split: Horizontal,
-            extend: 0.81006306,
+            extend: 0.5419054,
             left: Node(
                 split: Vertical,
-                extend: 0.7911771,
+                extend: 0.9,
                 left: Leaf(
                     window: 4,
                 ),
@@ -26,27 +26,30 @@
                 ),
             ),
             right: Leaf(
-                window: 5,
+                window: 0,
             ),
         ),
     ),
     windows: [
         (
             rect: (
-                min: (788.41254, 246.0),
-                max: (2014.0, 927.8876),
+                min: (1705.0647, 0.0),
+                max: (2880.0, 1800.0),
             ),
             tabs: [
+                (
+                    label: "Selected",
+                ),
                 (
                     label: "Profiler",
                 ),
             ],
-            active_tab: 0,
+            active_tab: 1,
         ),
         (
             rect: (
                 min: (0.0, 0.0),
-                max: (798.4187, 975.92615),
+                max: (315.1687, 975.92615),
             ),
             tabs: [
                 (
@@ -57,8 +60,8 @@
         ),
         (
             rect: (
-                min: (798.41876, 1424.1188),
-                max: (2484.6309, 1800.0),
+                min: (315.16876, 1620.0),
+                max: (1705.0647, 1800.0),
             ),
             tabs: [
                 (
@@ -76,7 +79,7 @@
         (
             rect: (
                 min: (0.0, 975.92615),
-                max: (798.4187, 1800.0),
+                max: (315.1687, 1800.0),
             ),
             tabs: [
                 (
@@ -87,24 +90,12 @@
         ),
         (
             rect: (
-                min: (798.41876, 0.0),
-                max: (2484.6309, 1424.1188),
+                min: (315.16876, 0.0),
+                max: (1705.0647, 1620.0),
             ),
             tabs: [
                 (
                     label: "Viewport",
-                ),
-            ],
-            active_tab: 0,
-        ),
-        (
-            rect: (
-                min: (2484.6309, 0.0),
-                max: (2880.0, 1800.0),
-            ),
-            tabs: [
-                (
-                    label: "Selected",
                 ),
             ],
             active_tab: 0,

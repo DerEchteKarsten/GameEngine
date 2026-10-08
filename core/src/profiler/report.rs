@@ -1,10 +1,10 @@
-//! Profile reports: a plain-text summary of frame times, GPU scopes, top CPU spans and GPU memory, and a Chrome trace of every span.
+//! Profile reports: a plain-text summary of frame, CPU and GPU times, GPU scopes, shader clock time per pass, top CPU spans and GPU memory, and a Chrome trace of every span.
 use std::{collections::HashMap, fmt::Write};
 
 use lava::profiling::{MemoryReport, PipelineStats};
 use serde_json::{Value, json};
 
-use crate::profiler::FrameProfile;
+use crate::profiler::{FrameProfile, capture::SpanKind};
 
 const TOP_CPU_SPANS: usize = 25;
 
@@ -83,9 +83,54 @@ pub fn gpu_scopes(frames: &[FrameProfile]) -> Vec<ScopeTotals> {
     scopes
 }
 
+/// A pass's shader stage over the frames that have shader clock times.
+pub struct ShaderTotals {
+    pub pass: &'static str,
+    pub stage: &'static str,
+    /// Subgroup clock ticks per frame, summed over subgroups.
+    pub ticks: f64,
+    pub subgroups: f64,
+    /// Of all instrumented shaders' ticks.
+    pub share: f64,
+}
+
+/// The shader clock times of `frames` per pass and stage, the largest first.
+pub fn shader_times(frames: &[FrameProfile]) -> Vec<ShaderTotals> {
+    let with_times = frames.iter().filter(|f| !f.shaders.is_empty());
+    let n = with_times.clone().count().max(1) as f64;
+    let mut totals: Vec<ShaderTotals> = Vec::new();
+    for time in with_times.flat_map(|f| &f.shaders) {
+        let i = match totals
+            .iter()
+            .position(|t| t.pass == time.pass && t.stage == time.stage)
+        {
+            Some(i) => i,
+            None => {
+                totals.push(ShaderTotals {
+                    pass: time.pass,
+                    stage: time.stage,
+                    ticks: 0.0,
+                    subgroups: 0.0,
+                    share: 0.0,
+                });
+                totals.len() - 1
+            }
+        };
+        totals[i].ticks += time.ticks as f64 / n;
+        totals[i].subgroups += time.subgroups as f64 / n;
+    }
+    let all: f64 = totals.iter().map(|t| t.ticks).sum();
+    for total in &mut totals {
+        total.share = total.ticks / all.max(1.0);
+    }
+    totals.sort_by(|a, b| b.ticks.total_cmp(&a.ticks));
+    totals
+}
+
 /// A CPU span name summed over `frames`.
 pub struct SpanTotals {
     pub name: &'static str,
+    pub kind: SpanKind,
     /// `None` when it ran on several threads.
     pub thread: Option<&'static str>,
     pub calls: usize,
@@ -93,14 +138,15 @@ pub struct SpanTotals {
     pub max_ns: u64,
 }
 
-/// The CPU spans of `frames` by name, longest total first. Nested spans count towards their
-/// parents too.
+/// The CPU spans of `frames` by name and kind, longest total first. Nested spans count
+/// towards their parents too.
 pub fn cpu_spans(frames: &[FrameProfile]) -> Vec<SpanTotals> {
-    let mut totals: HashMap<&str, SpanTotals> = HashMap::new();
+    let mut totals: HashMap<(&str, SpanKind), SpanTotals> = HashMap::new();
     for span in frames.iter().flat_map(|f| &f.cpu) {
         let duration = span.end_ns - span.start_ns;
-        let entry = totals.entry(span.name).or_insert(SpanTotals {
+        let entry = totals.entry((span.name, span.kind)).or_insert(SpanTotals {
             name: span.name,
+            kind: span.kind,
             thread: Some(span.thread),
             calls: 0,
             total_ns: 0,
@@ -144,19 +190,49 @@ pub fn summary(frames: &[FrameProfile], memory: &MemoryReport) -> String {
     }
     .unwrap();
 
-    writeln!(out, "\nFrame time      mean      p50      p95      max").unwrap();
+    // CPU is the busiest thread's time without waits (see `FrameProfile::busy`), GPU the
+    // time the GPU executed the frame's commands.
+    let frame = distribution(frames.iter().map(|f| ms(f.frame_ns())).collect());
     let cpu = distribution(frames.iter().map(|f| ms(f.cpu_ns())).collect());
     let gpu = distribution(with_gpu.iter().filter_map(|f| f.gpu_ns()).map(ms).collect());
-    for (label, [mean, p50, p95, max]) in [("CPU", cpu), ("GPU", gpu)] {
+    // Over every frame, so a thread that works only now and then doesn't look busy.
+    let mut threads: Vec<(&str, [f64; 4])> = Vec::new();
+    for (thread, _) in frames.iter().flat_map(|f| &f.busy) {
+        if threads.iter().all(|(t, _)| t != thread) {
+            let busy = frames.iter().map(|f| {
+                let busy = f.busy.iter().find(|(t, _)| t == thread);
+                busy.map_or(0.0, |(_, ns)| ms(*ns))
+            });
+            threads.push((thread, distribution(busy.collect())));
+        }
+    }
+    threads.sort_by(|a, b| b.1[0].total_cmp(&a.1[0]));
+    let bound = match threads.first() {
+        Some((thread, _)) if cpu[0] > gpu[0] => format!("CPU-bound ({thread})"),
+        _ => "GPU-bound".to_string(),
+    };
+    writeln!(
+        out,
+        "\nFrame time                  mean      p50      p95      max   ({:.1} fps, {bound})",
+        1000.0 / frame[0].max(f64::EPSILON)
+    )
+    .unwrap();
+    let rows = [("Frame (wall)".to_string(), frame), ("CPU (busiest thread)".into(), cpu)]
+        .into_iter()
+        .chain(threads.iter().take(3).map(|(t, d)| (format!("  {t}"), *d)))
+        .chain([("GPU".into(), gpu)]);
+    for (label, [mean, p50, p95, max]) in rows {
         writeln!(
             out,
-            "  {label:<8} {mean:>9.3} {p50:>8.3} {p95:>8.3} {max:>8.3}"
+            "  {label:<22} {mean:>9.3} {p50:>8.3} {p95:>8.3} {max:>8.3}"
         )
         .unwrap();
     }
-    if cpu[0] > 0.0 {
-        writeln!(out, "  ({:.1} fps)", 1000.0 / cpu[0]).unwrap();
-    }
+    writeln!(
+        out,
+        "  (CPU: time in spans minus wait spans, per thread; GPU: from timestamps)"
+    )
+    .unwrap();
 
     let scopes = gpu_scopes(frames);
     let gpu_mean = gpu[0].max(f64::EPSILON);
@@ -189,19 +265,42 @@ pub fn summary(frames: &[FrameProfile], memory: &MemoryReport) -> String {
         writeln!(out).unwrap();
     }
 
+    let shaders = shader_times(frames);
+    if !shaders.is_empty() {
+        writeln!(
+            out,
+            "\nShader time per frame: subgroup clock ticks from `PROFILE`, summed over subgroups\n(they run in parallel; the share says which shaders keep the GPU busy, not the time)\n  {:<30} {:>8} {:>10} {:>12} {:>14}",
+            "pass stage", "share", "subgroups", "Mticks", "ticks/subgroup"
+        )
+        .unwrap();
+        for time in &shaders {
+            writeln!(
+                out,
+                "  {:<30} {:>7.1}% {:>10.0} {:>12.3} {:>14.0}",
+                format!("{} {}", time.pass, time.stage),
+                time.share * 100.0,
+                time.subgroups,
+                time.ticks / 1e6,
+                time.ticks / time.subgroups.max(1.0)
+            )
+            .unwrap();
+        }
+    }
+
     let spans = cpu_spans(frames);
     let n = frames.len().max(1) as f64;
     writeln!(
         out,
-        "\nCPU spans (top {TOP_CPU_SPANS} by total time, inclusive)\n  {:<60} {:>9} {:>11} {:>9} {:>9}  thread",
-        "name", "ms/frame", "calls/frame", "mean", "max"
+        "\nCPU spans (top {TOP_CPU_SPANS} by total time, inclusive)\n  {:<60} {:<8} {:>9} {:>11} {:>9} {:>9}  thread",
+        "name", "kind", "ms/frame", "calls/frame", "mean", "max"
     )
     .unwrap();
     for span in spans.iter().take(TOP_CPU_SPANS) {
         writeln!(
             out,
-            "  {:<60} {:>9.3} {:>11.1} {:>9.3} {:>9.3}  {}",
+            "  {:<60} {:<8} {:>9.3} {:>11.1} {:>9.3} {:>9.3}  {}",
             span.name,
+            span.kind.label(),
             ms(span.total_ns) / n,
             span.calls as f64 / n,
             ms(span.total_ns) / span.calls as f64,
@@ -280,16 +379,18 @@ pub fn chrome_trace(frames: &[FrameProfile]) -> String {
 mod tests {
     use super::*;
     use crate::profiler::capture::CpuSpan;
-    use lava::profiling::GpuScope;
+    use lava::profiling::{GpuScope, ShaderTime};
 
-    fn frame(frame: u64, cpu_ms: u64, gpu: &[(&'static str, u16, u64, u64)]) -> FrameProfile {
+    fn frame(frame: u64, frame_ms: u64, gpu: &[(&'static str, u16, u64, u64)]) -> FrameProfile {
         let start_ns = frame * 100_000_000;
         FrameProfile {
             frame,
             start_ns,
-            end_ns: start_ns + cpu_ms * 1_000_000,
+            end_ns: start_ns + frame_ms * 1_000_000,
+            busy: vec![("main", frame_ms * 500_000), ("render thread", 1_000_000)],
             cpu: vec![CpuSpan {
                 name: "update",
+                kind: SpanKind::Other,
                 thread: "main",
                 depth: 0,
                 start_ns,
@@ -309,7 +410,38 @@ mod tests {
                 })
                 .collect(),
             gpu_submit_ns: start_ns,
+            shaders: vec![
+                ShaderTime {
+                    pass: "Raster",
+                    stage: "fragment",
+                    ticks: 3000,
+                    subgroups: 10,
+                },
+                ShaderTime {
+                    pass: "Tonemap",
+                    stage: "compute",
+                    ticks: 1000,
+                    subgroups: 20,
+                },
+            ],
         }
+    }
+
+    #[test]
+    fn shader_times_are_per_frame_and_sorted_by_share() {
+        let frames = [frame(0, 10, &[]), frame(1, 10, &[])];
+        let times = shader_times(&frames);
+        let rows: Vec<_> = times
+            .iter()
+            .map(|t| (t.pass, t.stage, t.ticks, t.subgroups, t.share))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Raster", "fragment", 3000.0, 10.0, 0.75),
+                ("Tonemap", "compute", 1000.0, 20.0, 0.25)
+            ]
+        );
     }
 
     #[test]
@@ -354,16 +486,18 @@ mod tests {
             .collect();
         let text = summary(&frames, &MemoryReport::default());
         assert!(text.starts_with("Profile of 4 frames (#0..#3), 4 with GPU timings."));
-        let cpu = text
-            .lines()
-            .find(|l| l.trim_start().starts_with("CPU "))
-            .unwrap();
-        let numbers: Vec<f64> = cpu
-            .split_whitespace()
-            .skip(1)
-            .map(|n| n.parse().unwrap())
-            .collect();
-        assert_eq!(numbers, [11.5, 12.0, 13.0, 13.0]);
+        let numbers = |label: &str| -> Vec<f64> {
+            let line = text.lines().find(|l| l.trim_start().starts_with(label)).unwrap();
+            let numbers = line[line.find(label).unwrap() + label.len()..].split_whitespace();
+            numbers.map(|n| n.parse().unwrap()).collect()
+        };
+        assert_eq!(numbers("Frame (wall)"), [11.5, 12.0, 13.0, 13.0]);
+        // Main is busy half of each frame, the render thread 1 ms.
+        assert_eq!(numbers("CPU (busiest thread)"), [5.75, 6.0, 6.5, 6.5]);
+        assert_eq!(numbers("main"), [5.75, 6.0, 6.5, 6.5]);
+        assert_eq!(numbers("render thread"), [1.0; 4]);
+        assert_eq!(numbers("GPU "), [2.0; 4]);
+        assert!(text.contains("CPU-bound (main)"));
         let raster = text.lines().find(|l| l.contains("Raster")).unwrap();
         assert!(
             raster.contains("1.000") && raster.contains("50.0%"),

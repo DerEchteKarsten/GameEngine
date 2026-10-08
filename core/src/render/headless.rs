@@ -43,8 +43,6 @@ impl Plugin for HeadlessRenderPlugin {
 
 pub struct HeadlessFrame {
     pub size: UVec2,
-    /// Tightly packed RGBA8.
-    pub pixels: Vec<u8>,
     /// Meshlets the frame drew.
     pub visible_meshlets: u32,
 }
@@ -58,6 +56,15 @@ struct HeadlessRenderer {
     resources: Option<RenderResources>,
     slot: FrameSlot,
     queue: Queue<Gfx>,
+    /// What the frames left for the next one to synchronise with.
+    pending: PendingAccesses,
+}
+
+/// The last frame [`render_frame`] drew, tightly packed RGBA8. Reading the host-visible
+/// buffer is slow (about 10 ms for 1280x720), so it isn't part of every frame.
+pub fn read_pixels(main_world: &World) -> Vec<u8> {
+    let renderer = main_world.resource::<HeadlessRenderer>();
+    renderer.readback.range(..).as_slice().to_vec()
 }
 
 /// Extracts the main world into the render world, draws it once and waits for the result.
@@ -79,9 +86,10 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
                 resources: None,
                 slot: FrameSlot::new(&queue).unwrap(),
                 queue,
+                pending: PendingAccesses::default(),
             }
         });
-    let profiling = main_world.contains_resource::<Profiler>();
+    let profiling = main_world.get_resource::<Profiler>().is_some_and(|p| p.enabled);
 
     let render_world = &mut renderer.render_world;
     render_world.insert_resource(MainWorld(std::mem::take(main_world)));
@@ -100,13 +108,14 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
 
     renderer.slot.set_profiling(profiling);
     let mut frame = renderer.slot.begin().unwrap();
-    let resources = RenderResources::fit(&mut renderer.resources, size, size, &mut frame);
+    RenderResources::fit(&mut renderer.resources, size, size, &mut frame);
+    let resources = renderer.resources.as_mut().unwrap();
     let (image, readback) = (&renderer.image, &renderer.readback);
     let submit_ns = now_ns();
-    frame
+    renderer.pending = frame
         .execute(
             &renderer.queue,
-            PendingAccesses::default(),
+            std::mem::take(&mut renderer.pending),
             &[],
             &[],
             |cmd| {
@@ -128,17 +137,16 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
         .unwrap();
     // Beginning a frame waits for the one the slot submitted before.
     let frame = renderer.slot.begin().unwrap();
-    if let Some(scopes) = frame.last_timings()
+    if let Some(timings) = frame.last_timings()
         && let Some(mut profiler) = main_world.get_resource_mut::<Profiler>()
     {
-        let scopes = scopes.to_vec();
-        profiler.add_gpu(GpuFrame { submit_ns, scopes });
+        let timings = timings.clone();
+        profiler.add_gpu(GpuFrame { submit_ns, timings });
     }
     drop(frame);
 
     let frame = HeadlessFrame {
         size,
-        pixels: readback.range(..).as_slice().to_vec(),
         visible_meshlets: renderer.resources.as_ref().unwrap().visible_meshlets(),
     };
     main_world.insert_resource(renderer);

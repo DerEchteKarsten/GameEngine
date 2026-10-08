@@ -155,6 +155,8 @@ fn update_mesh(
 }
 
 fn main() {
+    // Before the app exists, so that the spans of every system record.
+    core::register_tracing();
     println!(
         "cargo:rustc-env=WORKSPACE_ROOT={}",
         env!("CARGO_MANIFEST_DIR")
@@ -171,7 +173,10 @@ fn main() {
 
     App::new()
         .add_plugins(CorePlugin)
-        .add_plugins(ProfilerPlugin { capture })
+        .add_plugins(ProfilerPlugin {
+            capture,
+            ..Default::default()
+        })
         .add_systems(Startup, init)
         .add_systems(Update, update_mesh)
         .run();

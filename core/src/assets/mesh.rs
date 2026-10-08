@@ -31,6 +31,8 @@ use crate::{
 use lava::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
+/// Simplification weight of a UV unit, measured against one world unit of position error.
+const UV_WEIGHT: f32 = 1.0;
 
 #[derive(Pod, Zeroable, Clone, Copy, Debug)]
 #[repr(C)]
@@ -116,6 +118,11 @@ impl MeshletMesh {
             None,
         );
         let mut vertex_locks = vec![false; vertices.len()];
+        let vertex_attributes: Vec<[f32; 5]> = vertex_normals
+            .chunks_exact(3)
+            .zip(vertex_uvs.chunks_exact(2))
+            .map(|(n, uv)| [n[0], n[1], n[2], uv[0], uv[1]])
+            .collect();
 
         // Build further LODs
         let mut bvh = BvhBuilder::default();
@@ -168,8 +175,7 @@ impl MeshletMesh {
                     &group,
                     &meshlets,
                     &vertex_adapter,
-                    vertex_normals,
-                    12,
+                    &vertex_attributes,
                     &vertex_locks,
                 ) else {
                     // Couldn't simplify the group enough
@@ -439,7 +445,7 @@ fn compute_meshlets(
     };
     let mut cull_data = Vec::new();
     for meshlet_indices in &indices_per_meshlet {
-        let meshlet = build_meshlets(meshlet_indices, vertices, 256, 128, 0.0);
+        let meshlet = build_meshlets(meshlet_indices, vertices, 128, 128, 0.0);
         for meshlet in meshlet.iter() {
             let (lod_group_sphere, error) = prev_lod_data.unwrap_or_else(|| {
                 let bounds = meshopt::compute_meshlet_bounds(meshlet, vertices);
@@ -597,8 +603,7 @@ fn simplify_meshlet_group(
     group: &TempMeshletGroup,
     meshlets: &meshopt::Meshlets,
     vertices: &VertexDataAdapter,
-    vertex_normals: &[f32],
-    vertex_stride: usize,
+    vertex_attributes: &[[f32; 5]],
     vertex_locks: &[bool],
 ) -> Option<(Vec<u32>, f32)> {
     // Build a new index buffer into the mesh vertex data by combining all meshlet data in the group
@@ -619,9 +624,9 @@ fn simplify_meshlet_group(
     let simplified_group_indices = simplify_with_attributes_and_locks(
         &group_indices,
         vertices,
-        vertex_normals,
-        &[0.5; 3],
-        vertex_stride,
+        vertex_attributes.as_flattened(),
+        &[0.5, 0.5, 0.5, UV_WEIGHT, UV_WEIGHT],
+        size_of::<[f32; 5]>(),
         vertex_locks,
         group_indices.len() / 2,
         f32::MAX,

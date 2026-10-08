@@ -29,7 +29,7 @@ gpu-allocator = { version = "0.27", default-features = false, features = ["vulka
 raw-window-handle = "0.6.2"
 bytemuck_derive = "1.10.2"
 gltf = "1.4.1"
-smallvec = { version = "1.15.1", features = ["serde"] }
+smallvec = { version = "1.15.1", features = ["serde", "const_generics"] }
 meshopt = "0.6.1"
 itertools = "0.14.0"
 metis = "0.2.2"

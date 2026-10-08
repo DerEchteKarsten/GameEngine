@@ -1,5 +1,6 @@
 #include "datatypes.slang"
 #include "bindless.slang"
+#include "profile.slang"
 
 struct VSOutput {
     float4 position : SV_Position;
@@ -26,6 +27,7 @@ struct RasterMeshUiBindings {
 [shader("vertex")]
 VSOutput raster_ui_vertex(uint instance_index: SV_InstanceID, uint index : SV_VertexID)
 {
+    PROFILE(PROFILE_VERTEX);
     let vertex = b.verticies.val[index];
     VSOutput output;
     output.position = float4(vertex.pos.xy, 0.5, 1.0);
