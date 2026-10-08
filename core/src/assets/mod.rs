@@ -1,27 +1,30 @@
-//! Asset plugin registering the loaders of the baked scene, mesh and texture files, plus binary read/write helpers.
+//! Asset plugin registering the loaders of the scene, material, mesh and texture files and the system binding textures to their slots.
 
 use anyhow::{Ok, Result};
 use bevy::{
-    asset::{AssetLoader, AsyncReadExt, LoadContext, io::Reader},
+    asset::{AssetEventSystems, AssetLoader, AsyncReadExt, LoadContext, io::Reader},
     prelude::*,
 };
-use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
+use bytemuck::{Zeroable, bytes_of, bytes_of_mut};
 use lava::{
     bindings::{BvhNode, Meshlet, Vertex},
-    bindless::NULL_HANDLE,
     buffer::Buffer,
 };
 
-use crate::assets::{
-    mesh::{
-        GpuMesh, MaterialSet, MeshHeader, Scene, SceneFile, aabb_ptr_offset, aabb_ptr_set_offset,
-        bvh_node_child_counts,
+use crate::{
+    assets::{
+        material::{GpuMaterial, MaterialLoader},
+        mesh::{GpuMesh, MeshHeader, aabb_ptr_offset, aabb_ptr_set_offset, bvh_node_child_counts},
+        texture::{
+            GpuTexture, PREVIEW_BYTES, TextureHeader, TextureKind, read_image, write_texture_slots,
+        },
+        util::read_compressed,
     },
-    texture::{GpuTexture, PREVIEW_BYTES, TextureHeader, TextureKind, read_image},
-    util::read_compressed,
+    scene::file::{Scene, SceneLoader},
 };
 
 pub mod bake;
+pub mod material;
 pub mod mesh;
 pub mod texture;
 pub mod util;
@@ -30,12 +33,14 @@ pub struct MeshAssets;
 impl Plugin for MeshAssets {
     fn build(&self, app: &mut App) {
         app.init_asset_loader::<SceneLoader>()
+            .init_asset_loader::<MaterialLoader>()
             .init_asset_loader::<GpuMeshLoader>()
             .init_asset_loader::<TextureLoader>()
             .init_asset::<Scene>()
             .init_asset::<GpuMesh>()
-            .init_asset::<MaterialSet>()
-            .init_asset::<GpuTexture>();
+            .init_asset::<GpuMaterial>()
+            .init_asset::<GpuTexture>()
+            .add_systems(Last, write_texture_slots.after(AssetEventSystems));
     }
 }
 
@@ -43,71 +48,6 @@ pub const MESH_EXTENSION: &str = "mesh";
 pub const SCENE_EXTENSION: &str = "scene";
 pub const TEXTURE_EXTENSION: &str = "tex";
 const ZSTD_LEVEL: i32 = 12;
-
-#[derive(TypePath, Default)]
-pub struct SceneLoader;
-impl AssetLoader for SceneLoader {
-    type Asset = Scene;
-    type Error = anyhow::Error;
-    type Settings = ();
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _settings: &(),
-        load_context: &mut LoadContext<'_>,
-    ) -> Result<Scene> {
-        let mut scene = SceneFile::read(reader).await?;
-
-        // The meshes and textures load on their own, and are shared with everything else
-        // that loads the same files.
-        let mut textures: Vec<Handle<GpuTexture>> = Vec::with_capacity(scene.textures.len());
-        for path in &scene.textures {
-            let path = load_context.path().resolve_embed_str(path)?;
-            textures.push(load_context.load(path));
-        }
-        let mut meshes: Vec<Handle<GpuMesh>> = Vec::with_capacity(scene.meshes.len());
-        for path in &scene.meshes {
-            let path = load_context.path().resolve_embed_str(path)?;
-            meshes.push(load_context.load(path));
-        }
-
-        // The materials of the file index its textures, those of the set get bindless indices.
-        let material_textures = scene
-            .materials
-            .iter_mut()
-            .map(|material| {
-                [
-                    &mut material.color_texture,
-                    &mut material.metallic_roughness_texture,
-                    &mut material.normal_texture,
-                    &mut material.occlusion_texture,
-                    &mut material.emissive_texture,
-                ]
-                .map(|index| {
-                    let texture = std::mem::replace(index, NULL_HANDLE);
-                    (texture != NULL_HANDLE).then(|| textures[texture as usize].clone())
-                })
-            })
-            .collect();
-        let materials = load_context.add_labeled_asset(
-            "materials".to_string(),
-            MaterialSet::new(&scene.materials, material_textures),
-        );
-
-        Ok(Scene {
-            meshes,
-            materials,
-            instance_transforms: scene.instance_transforms,
-            instance_materials: scene.instance_materials,
-            instance_mesh: scene.instance_mesh,
-            instance_names: scene.instance_names,
-        })
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &[SCENE_EXTENSION]
-    }
-}
 
 #[derive(TypePath, Default)]
 pub struct GpuMeshLoader;
@@ -189,6 +129,7 @@ impl AssetLoader for TextureLoader {
             TextureKind::Color => GpuTexture::Color(read_image(&header, reader).await?),
             TextureKind::Data => GpuTexture::Data(read_image(&header, reader).await?),
             TextureKind::Normal => GpuTexture::Normal(read_image(&header, reader).await?),
+            TextureKind::Hdr => GpuTexture::Hdr(read_image(&header, reader).await?),
         })
     }
 

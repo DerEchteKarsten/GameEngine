@@ -11,7 +11,6 @@ use bevy::ecs::query::Has;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::system::{Commands, Query, Res, ResMut, Single};
 use bevy::math::Rect;
-use bevy::reflect::Reflect;
 use bevy::transform::components::GlobalTransform;
 use bevy::window::Window;
 use futures::channel::oneshot;
@@ -21,7 +20,6 @@ use bytemuck::Pod;
 use glam::{Mat4, UVec2, Vec2, Vec3};
 use lava::buffer::Buffer;
 use lava::buffer::slice::BufferSlice;
-use lava::image::Image;
 use lava::image::slice::{AsImage, ImageSlice};
 use lava::image::usage::ImageUsage;
 use lava::state::{Ctx, Functions, raw_vulkan};
@@ -29,18 +27,21 @@ use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
 
 use crate::INITIAL_WINDOW_SIZE;
-use crate::assets::mesh::{GpuMesh, MaterialSet, MeshHeader};
+use crate::assets::material::GpuMaterial;
+use crate::assets::mesh::{GpuMesh, MeshHeader};
+use crate::bindless;
 use crate::editor::picking::Selected;
 use crate::editor::viewport::ViewPort;
 use crate::render::MainWorld;
 use crate::render::extract_param::Extract;
 use crate::render::render::{
-    FrameCount, QueueStrategie, Queues, Swapchain, ViewPortTarget, extract_camera,
+    FrameCount, QueueStrategie, Queues, Swapchain, ViewPortTarget, extract_camera, extract_skybox,
 };
 use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, RenderStartup, RenderSystems};
 use crate::scene::Instance;
 use lava::bindings::{self, AabbError};
 use lava::bindless::NULL_HANDLE;
+use lava::image::Image;
 
 #[derive(Resource)]
 pub struct InstanceManager {
@@ -55,7 +56,7 @@ pub struct InstanceManager {
     pending_instances: Vec<TempInstance>,
 }
 
-#[derive(Reflect, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct InstanceFlags(pub u32);
 
 impl InstanceFlags {
@@ -111,12 +112,12 @@ pub(super) fn extract_meshlet_instances(
     mut instance_manager: ResMut<InstanceManager>,
     instances: Extract<Query<(&Instance, &GlobalTransform, Has<Selected>)>>,
     meshes: Extract<Res<Assets<GpuMesh>>>,
-    material_sets: Extract<Res<Assets<MaterialSet>>>,
+    materials: Extract<Res<Assets<GpuMaterial>>>,
 ) {
     instance_manager.any_outlined = false;
     for (instance, transform, selected) in &instances {
         if let Some(mesh) = meshes.get(&instance.mesh)
-            && let Some(material_set) = material_sets.get(&instance.material_set)
+            && let Some(material) = materials.get(&instance.material)
         {
             if instance_manager.pending_instances.len() >= MAX_INSTANCES {
                 warn_once!("more than {MAX_INSTANCES} instances, the rest are not drawn");
@@ -124,16 +125,16 @@ pub(super) fn extract_meshlet_instances(
             }
             let mat = transform.to_matrix();
             let flags = if selected {
-                instance.flags | InstanceFlags::OUTLINE
+                InstanceFlags::OUTLINE
             } else {
-                instance.flags
+                InstanceFlags::empty()
             };
             instance_manager.any_outlined |= flags.contains(InstanceFlags::OUTLINE);
             instance_manager.pending_instances.push(TempInstance {
                 bvh_root: mesh.buffer.address,
                 header: mesh.header,
                 transform: mat,
-                material: material_set.address(instance.material_index),
+                material: material.gpu,
                 flags,
             });
         }
@@ -173,9 +174,9 @@ pub(super) fn extract_view_port(
             .size()
             .as_uvec2()
             .max(INITIAL_WINDOW_SIZE.as_uvec2());
-        let image = target
-            .image
-            .get_or_insert_with(|| Image::new(size.x, size.y).unwrap());
+        let image = target.image.get_or_insert_with(|| {
+            Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap()
+        });
         view_port.image = image.handle;
         view_port.image_size = image.extent.as_vec2();
         target.rect = view_port.rect;
@@ -188,6 +189,9 @@ pub(super) fn extract_view_port(
 #[allow(non_snake_case)]
 pub fn WorldPlugin(app: &mut App) {
     app.add_systems(RenderStartup, init_world)
-        .add_systems(ExtractSchedule, (extract_meshlet_instances, extract_camera))
+        .add_systems(
+            ExtractSchedule,
+            (extract_meshlet_instances, extract_camera, extract_skybox),
+        )
         .add_systems(RenderSystems::PreRender, wirte_instances);
 }

@@ -1,23 +1,35 @@
-//! GPU texture asset: the baked `.tex` file (BC7/BC5 mips plus a browser preview), its loader, and mip baking and block compression.
-use std::io::Write;
+//! GPU texture asset: the baked `.tex` file (BC7/BC5/BC6H mips plus a browser preview), its loader, its bindless slot, and mip baking and block compression of glTF images and OpenEXR files.
+use std::{io::Write, path::Path};
 
 use anyhow::{Result, bail};
 use bevy::{
-    asset::{Asset, AssetLoader, LoadContext, io::Reader},
+    asset::{Asset, AssetEvent, AssetId, Assets, io::Reader},
+    ecs::{
+        message::MessageReader,
+        system::{Local, Res},
+    },
+    log::warn_once,
     reflect::TypePath,
 };
 use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
 use futures::AsyncReadExt;
+use half::f16;
 use lava::{
-    bindless::BindlessHandle,
+    bindless::{BindlessWrites, NULL_HANDLE, max_sampled_images},
     image::{
         Image,
-        format::{BC5UnormBlock, BC7SrgbBlock, BC7UnormBlock, Format},
+        format::{
+            BC5UnormBlock, BC6HUfloatBlock, BC7SrgbBlock, BC7UnormBlock, Format, R8G8B8A8Unorm,
+        },
+        slice::AsImage,
         usage::Sampled,
     },
 };
 
-use crate::assets::util::{read_compressed, write_compressed};
+use crate::{
+    assets::util::{read_compressed, write_compressed},
+    bindless::TEXTURE_SLOTS_BASE,
+};
 
 /// What a texture holds, which decides how it is compressed.
 #[repr(u32)]
@@ -29,6 +41,8 @@ pub enum TextureKind {
     Data = 1,
     /// A tangent space normal map: x and y in BC5, the shader works out z.
     Normal = 2,
+    /// Linear HDR colours from an OpenEXR file, like a sky: BC6H, without alpha.
+    Hdr = 3,
 }
 
 impl TextureKind {
@@ -37,6 +51,7 @@ impl TextureKind {
             0 => Self::Color,
             1 => Self::Data,
             2 => Self::Normal,
+            3 => Self::Hdr,
             _ => bail!("unknown texture kind {raw}"),
         })
     }
@@ -51,20 +66,71 @@ pub enum GpuTexture {
     Color(Image<BC7SrgbBlock, Sampled>),
     Data(Image<BC7UnormBlock, Sampled>),
     Normal(Image<BC5UnormBlock, Sampled>),
+    Hdr(Image<BC6HUfloatBlock, Sampled>),
 }
 
-impl GpuTexture {
-    pub fn handle(&self) -> BindlessHandle {
-        match self {
-            Self::Color(image) => image.handle,
-            Self::Data(image) => image.handle,
-            Self::Normal(image) => image.handle,
+/// The sampled slot of a texture asset, known as soon as its handle exists.
+fn texture_slot(id: AssetId<GpuTexture>) -> Option<u32> {
+    match id {
+        // Bevy keeps the index field private; the low 32 bits of `to_bits` are the index.
+        AssetId::Index { index, .. } => {
+            Some(TEXTURE_SLOTS_BASE.saturating_add(index.to_bits() as u32))
+        }
+        AssetId::Uuid { .. } => None,
+    }
+}
+
+/// The bindless index of a texture, `NULL_HANDLE` if it has none. Bevy reuses the indices of
+/// freed assets, so the slots only need room for the textures alive at once.
+pub fn texture_index(id: AssetId<GpuTexture>) -> u32 {
+    match texture_slot(id) {
+        Some(slot) if slot < max_sampled_images() => slot,
+        _ => {
+            warn_once!("texture {id:?} has no bindless slot and is not drawn");
+            NULL_HANDLE
         }
     }
+}
 
-    pub fn descriptor_index(&self) -> u32 {
-        self.handle().descriptor_index_set0
+/// Binds every texture at its slot, and a white placeholder at the slots of textures that
+/// are loading or gone. Asset events come in order, so a slot freed by a removal is only
+/// taken by a texture added after it.
+pub(crate) fn write_texture_slots(
+    mut events: MessageReader<AssetEvent<GpuTexture>>,
+    textures: Res<Assets<GpuTexture>>,
+    mut placeholder: Local<Option<Image<R8G8B8A8Unorm, Sampled>>>,
+) {
+    let mut writes = BindlessWrites::default();
+    let placeholder = placeholder.get_or_insert_with(|| {
+        let mut image = Image::new(1, 1).unwrap();
+        image.copy_from(&[u8::MAX; 4], 0).unwrap();
+        for slot in TEXTURE_SLOTS_BASE..max_sampled_images() {
+            writes.sampled(image.whole_view(), slot);
+        }
+        image
+    });
+    for event in events.read() {
+        match event {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } => {
+                let index = texture_index(*id);
+                match textures.get(*id) {
+                    Some(_) if index == NULL_HANDLE => {}
+                    Some(GpuTexture::Color(image)) => writes.sampled(image.whole_view(), index),
+                    Some(GpuTexture::Data(image)) => writes.sampled(image.whole_view(), index),
+                    Some(GpuTexture::Normal(image)) => writes.sampled(image.whole_view(), index),
+                    Some(GpuTexture::Hdr(image)) => writes.sampled(image.whole_view(), index),
+                    None => {}
+                }
+            }
+            AssetEvent::Removed { id } => {
+                if let Some(slot) = texture_slot(*id).filter(|slot| *slot < max_sampled_images()) {
+                    writes.sampled(placeholder.whole_view(), slot);
+                }
+            }
+            _ => {}
+        }
     }
+    writes.submit();
 }
 
 /// Each compressed mip is uploaded before the next is read.
@@ -116,18 +182,35 @@ pub struct TextureData {
 impl TextureData {
     pub fn from_gltf(image: &gltf::image::Data, kind: TextureKind) -> Self {
         let srgb = kind.srgb();
-        let mut mips = vec![to_rgba8(image)];
-        let (mut width, mut height) = (image.width, image.height);
-        while width > 1 || height > 1 {
-            let (next, next_width, next_height) =
-                downsample(mips.last().unwrap(), width, height, srgb);
-            mips.push(next);
-            width = next_width;
-            height = next_height;
-        }
-        let preview = preview(&mips, image.width, image.height);
+        let srgb_to_linear = srgb_to_linear_lut();
+        let decode = |value: u8| {
+            if srgb {
+                srgb_to_linear[value as usize]
+            } else {
+                value as f32 / 255.0
+            }
+        };
+        let encode = |value: f32| {
+            if srgb {
+                linear_to_srgb(value)
+            } else {
+                (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+            }
+        };
+        // Colour is averaged in linear space.
+        let mips = mip_chain(to_rgba8(image), image.width, image.height, |texels| {
+            let mut average = [0; 4];
+            for channel in 0..3 {
+                let sum: f32 = texels.iter().map(|texel| decode(texel[channel])).sum();
+                average[channel] = encode(sum * 0.25);
+            }
+            let alpha: u32 = texels.iter().map(|texel| texel[3] as u32).sum();
+            average[3] = ((alpha + 2) / 4) as u8;
+            average
+        });
+        let preview = preview(&mips, image.width, image.height, |texel| texel);
         // One fully opaque texel less and the alpha channel has to be kept.
-        let opaque = mips[0].chunks_exact(4).all(|texel| texel[3] == u8::MAX);
+        let opaque = mips[0].iter().all(|texel| texel[3] == u8::MAX);
         let mips = mips
             .iter()
             .enumerate()
@@ -141,6 +224,71 @@ impl TextureData {
             width: image.width,
             height: image.height,
             kind,
+            mips,
+        }
+    }
+
+    /// Reads the colour of the first layer of an OpenEXR file as an `Hdr` texture.
+    pub fn from_exr(path: &Path) -> Result<Self> {
+        let image = exr::prelude::read_first_rgba_layer_from_file(
+            path,
+            |size, _| (size.width(), vec![[0.0; 4]; size.area()]),
+            |(width, texels): &mut (usize, Vec<[f32; 4]>),
+             position,
+             (r, g, b, _): (f32, f32, f32, f32)| {
+                texels[position.y() * *width + position.x()] = [r, g, b, 1.0];
+            },
+        )?;
+        let size = image.layer_data.size;
+        let (_, texels) = image.layer_data.channel_data.pixels;
+        Ok(Self::from_hdr(
+            texels,
+            size.width() as u32,
+            size.height() as u32,
+        ))
+    }
+
+    /// Linear RGB texels, alpha is ignored.
+    pub fn from_hdr(mut texels: Vec<[f32; 4]>, width: u32, height: u32) -> Self {
+        // BC6H stores unsigned half floats; `max` also turns NaN into 0.
+        for texel in &mut texels {
+            *texel = texel.map(|value| value.max(0.0).min(f16::MAX.to_f32()));
+        }
+        let mips = mip_chain(texels, width, height, |texels| {
+            std::array::from_fn(|channel| {
+                texels.iter().map(|texel| texel[channel]).sum::<f32>() * 0.25
+            })
+        });
+        let preview = preview(&mips, width, height, |[r, g, b, _]| {
+            [
+                linear_to_srgb(r),
+                linear_to_srgb(g),
+                linear_to_srgb(b),
+                u8::MAX,
+            ]
+        });
+        let mips = mips
+            .iter()
+            .enumerate()
+            .map(|(level, mip)| {
+                let size = mip_size(width, height, level);
+                let half: Vec<[f16; 4]> =
+                    mip.iter().map(|texel| texel.map(f16::from_f32)).collect();
+                let (half, width, height) = pad_to_blocks(&half, size.x, size.y);
+                let surface = intel_tex_2::RgbaSurface {
+                    data: bytemuck::cast_slice(&half),
+                    width,
+                    height,
+                    stride: width * size_of::<[f16; 4]>() as u32,
+                };
+                intel_tex_2::bc6h::compress_blocks(&intel_tex_2::bc6h::basic_settings(), &surface)
+            })
+            .collect();
+        Self {
+            preview,
+            width,
+            height,
+            kind: TextureKind::Hdr,
             mips,
         }
     }
@@ -166,7 +314,7 @@ impl TextureData {
 const BLOCK_SIZE: u32 = 4;
 
 /// Compresses `width` x `height` RGBA8 texels into the blocks of the format of `kind`.
-fn compress(rgba: &[u8], width: u32, height: u32, kind: TextureKind, opaque: bool) -> Vec<u8> {
+fn compress(rgba: &[[u8; 4]], width: u32, height: u32, kind: TextureKind, opaque: bool) -> Vec<u8> {
     let (rgba, width, height) = pad_to_blocks(rgba, width, height);
     match kind {
         TextureKind::Color | TextureKind::Data => {
@@ -176,7 +324,7 @@ fn compress(rgba: &[u8], width: u32, height: u32, kind: TextureKind, opaque: boo
                 intel_tex_2::bc7::alpha_basic_settings()
             };
             let surface = intel_tex_2::RgbaSurface {
-                data: &rgba,
+                data: bytemuck::cast_slice(&rgba),
                 width,
                 height,
                 stride: width * 4,
@@ -184,10 +332,7 @@ fn compress(rgba: &[u8], width: u32, height: u32, kind: TextureKind, opaque: boo
             intel_tex_2::bc7::compress_blocks(&settings, &surface)
         }
         TextureKind::Normal => {
-            let rg: Vec<u8> = rgba
-                .chunks_exact(4)
-                .flat_map(|texel| [texel[0], texel[1]])
-                .collect();
+            let rg: Vec<u8> = rgba.iter().flat_map(|texel| [texel[0], texel[1]]).collect();
             let surface = intel_tex_2::RgSurface {
                 data: &rg,
                 width,
@@ -196,22 +341,51 @@ fn compress(rgba: &[u8], width: u32, height: u32, kind: TextureKind, opaque: boo
             };
             intel_tex_2::bc5::compress_blocks(&surface)
         }
+        TextureKind::Hdr => unreachable!("HDR textures are compressed by `from_hdr`"),
     }
 }
 
 /// Grows the texels to whole blocks by repeating the last column and row, which is what the
 /// part of a block outside of a mip level should look like to the texels inside.
-fn pad_to_blocks(rgba: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u32) {
+fn pad_to_blocks<T: Copy>(texels: &[T], width: u32, height: u32) -> (Vec<T>, u32, u32) {
     let padded_width = width.next_multiple_of(BLOCK_SIZE);
     let padded_height = height.next_multiple_of(BLOCK_SIZE);
-    let mut padded = Vec::with_capacity((padded_width * padded_height * 4) as usize);
+    let mut padded = Vec::with_capacity((padded_width * padded_height) as usize);
     for y in 0..padded_height {
         for x in 0..padded_width {
-            let texel = ((y.min(height - 1) * width + x.min(width - 1)) * 4) as usize;
-            padded.extend_from_slice(&rgba[texel..texel + 4]);
+            padded.push(texels[(y.min(height - 1) * width + x.min(width - 1)) as usize]);
         }
     }
     (padded, padded_width, padded_height)
+}
+
+/// Every mip level down to 1x1, each texel the `average` of 2x2 texels of the level above.
+fn mip_chain<T: Copy>(
+    texels: Vec<T>,
+    width: u32,
+    height: u32,
+    average: impl Fn([T; 4]) -> T,
+) -> Vec<Vec<T>> {
+    let mut mips = vec![texels];
+    let (mut width, mut height) = (width, height);
+    while width > 1 || height > 1 {
+        let src = mips.last().unwrap();
+        let (next_width, next_height) = ((width / 2).max(1), (height / 2).max(1));
+        let mut next = Vec::with_capacity((next_width * next_height) as usize);
+        for y in 0..next_height {
+            for x in 0..next_width {
+                next.push(average([(0, 0), (1, 0), (0, 1), (1, 1)].map(|(dx, dy)| {
+                    let sx = (x * 2 + dx).min(width - 1);
+                    let sy = (y * 2 + dy).min(height - 1);
+                    src[(sy * width + sx) as usize]
+                })));
+            }
+        }
+        mips.push(next);
+        width = next_width;
+        height = next_height;
+    }
+    mips
 }
 
 fn mip_size(width: u32, height: u32, level: usize) -> glam::UVec2 {
@@ -220,7 +394,12 @@ fn mip_size(width: u32, height: u32, level: usize) -> glam::UVec2 {
 
 /// Fits the texture to a `PREVIEW_SIZE` square with the nearest texels of the smallest mip
 /// that still covers it (level 0 for smaller textures).
-fn preview(mips: &[Vec<u8>], width: u32, height: u32) -> Vec<u8> {
+fn preview<T: Copy>(
+    mips: &[Vec<T>],
+    width: u32,
+    height: u32,
+    to_rgba8: impl Fn(T) -> [u8; 4],
+) -> Vec<u8> {
     let level = (0..mips.len())
         .rev()
         .find(|level| mip_size(width, height, *level).min_element() >= PREVIEW_SIZE)
@@ -230,52 +409,10 @@ fn preview(mips: &[Vec<u8>], width: u32, height: u32) -> Vec<u8> {
     for y in 0..PREVIEW_SIZE {
         for x in 0..PREVIEW_SIZE {
             let source = y * size.y / PREVIEW_SIZE * size.x + x * size.x / PREVIEW_SIZE;
-            let texel = source as usize * 4;
-            preview.extend_from_slice(&mips[level][texel..texel + 4]);
+            preview.extend_from_slice(&to_rgba8(mips[level][source as usize]));
         }
     }
     preview
-}
-
-fn downsample(src: &[u8], width: u32, height: u32, srgb: bool) -> (Vec<u8>, u32, u32) {
-    // Colour is averaged in linear space.
-    let srgb_to_linear = srgb_to_linear_lut();
-    let decode = |value: u8| {
-        if srgb {
-            srgb_to_linear[value as usize]
-        } else {
-            value as f32 / 255.0
-        }
-    };
-    let encode = |value: f32| {
-        if srgb {
-            linear_to_srgb(value)
-        } else {
-            (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
-        }
-    };
-    let (next_width, next_height) = ((width / 2).max(1), (height / 2).max(1));
-    let mut dst = vec![0u8; (next_width * next_height * 4) as usize];
-    for y in 0..next_height {
-        for x in 0..next_width {
-            let mut sum = [0.0f32; 4];
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let sx = (x * 2 + dx).min(width - 1);
-                let sy = (y * 2 + dy).min(height - 1);
-                let p = ((sy * width + sx) * 4) as usize;
-                sum[0] += decode(src[p]);
-                sum[1] += decode(src[p + 1]);
-                sum[2] += decode(src[p + 2]);
-                sum[3] += src[p + 3] as f32 / 255.0;
-            }
-            let o = ((y * next_width + x) * 4) as usize;
-            dst[o] = encode(sum[0] * 0.25);
-            dst[o + 1] = encode(sum[1] * 0.25);
-            dst[o + 2] = encode(sum[2] * 0.25);
-            dst[o + 3] = (sum[3] * 0.25 * 255.0 + 0.5) as u8;
-        }
-    }
-    (dst, next_width, next_height)
 }
 
 fn srgb_to_linear_lut() -> [f32; 256] {
@@ -301,15 +438,14 @@ fn linear_to_srgb(c: f32) -> u8 {
     (c * 255.0 + 0.5) as u8
 }
 
-fn to_rgba8(image: &gltf::image::Data) -> Vec<u8> {
+fn to_rgba8(image: &gltf::image::Data) -> Vec<[u8; 4]> {
     use gltf::image::Format::*;
-    let texels = (image.width * image.height) as usize;
-    let mut out = Vec::with_capacity(texels * 4);
-    let push = |out: &mut Vec<u8>, channels: &[u8]| match channels {
-        [r] => out.extend_from_slice(&[*r, *r, *r, 255]),
-        [r, g] => out.extend_from_slice(&[*r, *g, 0, 255]),
-        [r, g, b] => out.extend_from_slice(&[*r, *g, *b, 255]),
-        [r, g, b, a] => out.extend_from_slice(&[*r, *g, *b, *a]),
+    let mut out = Vec::with_capacity((image.width * image.height) as usize);
+    let push = |out: &mut Vec<[u8; 4]>, channels: &[u8]| match channels {
+        [r] => out.push([*r, *r, *r, 255]),
+        [r, g] => out.push([*r, *g, 0, 255]),
+        [r, g, b] => out.push([*r, *g, *b, 255]),
+        [r, g, b, a] => out.push([*r, *g, *b, *a]),
         _ => unreachable!(),
     };
     let channels = match image.format {
@@ -351,14 +487,24 @@ fn to_rgba8(image: &gltf::image::Data) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// Pins the layout of `AssetIndex::to_bits`, which bevy calls opaque.
+    #[test]
+    fn texture_slots_follow_the_asset_index() {
+        let assets = Assets::<GpuTexture>::default();
+        let first = assets.reserve_handle();
+        let second = assets.reserve_handle();
+        assert_eq!(texture_slot(first.id()), Some(TEXTURE_SLOTS_BASE));
+        assert_eq!(texture_slot(second.id()), Some(TEXTURE_SLOTS_BASE + 1));
+        assert_eq!(texture_slot(AssetId::invalid()), None);
+    }
+
     #[test]
     fn mips_are_padded_to_whole_blocks() {
-        let rgba: Vec<u8> = (0..2 * 3).flat_map(|i| [i, i, i, 255]).collect();
-        let (padded, width, height) = pad_to_blocks(&rgba, 2, 3);
+        let texels: Vec<u8> = (0..2 * 3).collect();
+        let (padded, width, height) = pad_to_blocks(&texels, 2, 3);
         assert_eq!((width, height), (4, 4));
-        let reds: Vec<u8> = padded.chunks_exact(4).map(|texel| texel[0]).collect();
         // Rows 0 1 / 2 3 / 4 5, the last column and row repeated.
-        assert_eq!(reds, [0, 1, 1, 1, 2, 3, 3, 3, 4, 5, 5, 5, 4, 5, 5, 5]);
+        assert_eq!(padded, [0, 1, 1, 1, 2, 3, 3, 3, 4, 5, 5, 5, 4, 5, 5, 5]);
     }
 
     #[test]
@@ -397,5 +543,25 @@ mod tests {
                 assert_eq!(&read_compressed(&mut reader).await.unwrap(), mip);
             }
         });
+    }
+
+    #[test]
+    fn hdr_textures_are_averaged_in_linear_and_clamped_to_half_floats() {
+        // Columns of 4 and 0, a negative texel and one too large for a half float.
+        let mut texels = vec![[4.0, 0.0, 0.0, 1.0]; 4 * 2];
+        texels[1] = [0.0, -1.0, f32::NAN, 1.0];
+        texels[3] = [0.0, 1e9, 0.0, 1.0];
+        let texture = TextureData::from_hdr(texels, 4, 2);
+        assert_eq!(texture.kind, TextureKind::Hdr);
+        // 4x2, 2x1, 1x1: one 16-byte block each.
+        assert_eq!(texture.mips.len(), 3);
+        assert!(texture.mips.iter().all(|mip| mip.len() == 16));
+        // Above 1 is white in the preview, the clamped negative texel black.
+        assert_eq!(texture.preview[..4], [255, 0, 0, 255]);
+        let second_texel = (PREVIEW_SIZE / 4 * 4) as usize;
+        assert_eq!(
+            texture.preview[second_texel..second_texel + 4],
+            [0, 0, 0, 255]
+        );
     }
 }

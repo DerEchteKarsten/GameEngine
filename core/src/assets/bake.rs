@@ -1,20 +1,27 @@
-//! Bakes a glTF file into a `.scene` file and one `.mesh`/`.tex` file per mesh and texture.
+//! Bakes the scene of a glTF file into a `.scene` file (its node tree) and one `.mesh`/`.mat`/`.tex` file per mesh, material and texture, and an OpenEXR file into an HDR `.tex` file.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs::{self, File},
     io::BufWriter,
     path::Path,
 };
 
-use anyhow::{Context, Result};
-use bevy::tasks::AsyncComputeTaskPool;
-use glam::{Mat4, Vec3, Vec4};
-use lava::{bindings::Material, bindless::NULL_HANDLE};
+use anyhow::{Context, Result, ensure};
+use bevy::{ecs::name::Name, tasks::AsyncComputeTaskPool, transform::components::Transform};
+use glam::{Quat, Vec3, Vec4};
+use tracing::warn;
 
-use crate::assets::{
-    MESH_EXTENSION, TEXTURE_EXTENSION,
-    mesh::{MeshletMesh, SceneFile},
-    texture::{TextureData, TextureKind},
+use crate::{
+    assets::{
+        MESH_EXTENSION, TEXTURE_EXTENSION,
+        material::{MATERIAL_EXTENSION, MaterialFile},
+        mesh::MeshletMesh,
+        texture::{TextureData, TextureKind},
+    },
+    scene::{
+        Instance, SavedInstance,
+        file::{Column, SceneData},
+    },
 };
 
 /// glTF's default `alphaCutoff`.
@@ -67,6 +74,19 @@ fn make_unique_filename(
     file
 }
 
+/// Whether the engine can draw the primitive: triangles with positions.
+fn drawable(primitive: &gltf::Primitive) -> bool {
+    let count = match primitive.indices() {
+        Some(indices) => indices.count(),
+        None => primitive
+            .get(&gltf::Semantic::Positions)
+            .map_or(0, |positions| positions.count()),
+    };
+    primitive.mode() == gltf::mesh::Mode::Triangles
+        && primitive.get(&gltf::Semantic::Positions).is_some()
+        && count >= 3
+}
+
 struct MeshJob {
     mesh: usize,
     primitive: usize,
@@ -79,9 +99,132 @@ struct TextureJob {
     path: String,
 }
 
-/// Bakes the glTF file `source` into the scene file `scene_path` and, in the directory next
-/// to it with the same name, a file per mesh and texture. Returns how many of each.
-pub fn bake_gltf(source: &Path, scene_path: &Path) -> Result<(usize, usize)> {
+/// The files a bake writes besides the scene, and what it had to leave out.
+#[derive(Default)]
+struct Bake {
+    pieces: String,
+    /// Paths relative to the scene file: the meshes and materials of the scene.
+    assets: Vec<String>,
+    mesh_jobs: Vec<MeshJob>,
+    materials: Vec<(String, MaterialFile)>,
+    texture_jobs: Vec<TextureJob>,
+    /// Asset index of each glTF primitive and material.
+    mesh_assets: HashMap<(usize, usize), u32>,
+    material_assets: HashMap<Option<usize>, u32>,
+    textures: HashMap<(usize, TextureKind), String>,
+    names: HashSet<String>,
+    unsupported: BTreeSet<&'static str>,
+}
+
+impl Bake {
+    fn mesh(&mut self, mesh: &gltf::Mesh, primitive: &gltf::Primitive) -> u32 {
+        let key = (mesh.index(), primitive.index());
+        if let Some(asset) = self.mesh_assets.get(&key) {
+            return *asset;
+        }
+        let name = primitive_name(mesh.name(), primitive.index(), mesh.primitives().len());
+        let fallback = format!("mesh_{}", self.mesh_jobs.len());
+        let file = make_unique_filename(&mut self.names, &name, &fallback, MESH_EXTENSION);
+        let path = format!("{}/meshes/{file}", self.pieces);
+        self.mesh_jobs.push(MeshJob {
+            mesh: mesh.index(),
+            primitive: primitive.index(),
+            path: path.clone(),
+        });
+        let asset = self.assets.len() as u32;
+        self.assets.push(path);
+        self.mesh_assets.insert(key, asset);
+        asset
+    }
+
+    /// The path of the texture relative to the material files.
+    fn texture(&mut self, info: Option<(gltf::Texture, u32)>, kind: TextureKind) -> Option<String> {
+        let (texture, tex_coord) = info?;
+        if tex_coord != 0 {
+            self.unsupported
+                .insert("texture coordinate sets besides TEXCOORD_0");
+        }
+        let source = texture.source();
+        let image = source.index();
+        if let Some(path) = self.textures.get(&(image, kind)) {
+            return Some(path.clone());
+        }
+        let name = source.name().or(texture.name()).unwrap_or_default();
+        let fallback = format!("texture_{}", self.texture_jobs.len());
+        let file = make_unique_filename(&mut self.names, name, &fallback, TEXTURE_EXTENSION);
+        self.texture_jobs.push(TextureJob {
+            image,
+            kind,
+            path: format!("{}/textures/{file}", self.pieces),
+        });
+        let path = format!("../textures/{file}");
+        self.textures.insert((image, kind), path.clone());
+        Some(path)
+    }
+
+    /// One material file per glTF material; `None` is glTF's default material.
+    fn material(&mut self, material: gltf::Material) -> u32 {
+        if let Some(asset) = self.material_assets.get(&material.index()) {
+            return *asset;
+        }
+        let pbr = material.pbr_metallic_roughness();
+        let normal = material.normal_texture();
+        let occlusion = material.occlusion_texture();
+        let file = MaterialFile {
+            color: Vec4::from_array(pbr.base_color_factor()),
+            emissive: Vec3::from_array(material.emissive_factor()),
+            metalic_factor: pbr.metallic_factor(),
+            roughness_factor: pbr.roughness_factor(),
+            normal_scale: normal.as_ref().map_or(1.0, |n| n.scale()),
+            occlusion_strength: occlusion.as_ref().map_or(1.0, |o| o.strength()),
+            alpha_cutoff: alpha_cutoff(material.alpha_mode(), material.alpha_cutoff()),
+            color_texture: self.texture(
+                pbr.base_color_texture()
+                    .map(|i| (i.texture(), i.tex_coord())),
+                TextureKind::Color,
+            ),
+            metallic_roughness_texture: self.texture(
+                pbr.metallic_roughness_texture()
+                    .map(|i| (i.texture(), i.tex_coord())),
+                TextureKind::Data,
+            ),
+            normal_texture: self.texture(
+                normal.map(|n| (n.texture(), n.tex_coord())),
+                TextureKind::Normal,
+            ),
+            occlusion_texture: self.texture(
+                occlusion.map(|o| (o.texture(), o.tex_coord())),
+                TextureKind::Data,
+            ),
+            emissive_texture: self.texture(
+                material
+                    .emissive_texture()
+                    .map(|i| (i.texture(), i.tex_coord())),
+                TextureKind::Color,
+            ),
+        };
+        let name = match material.index() {
+            Some(index) => material
+                .name()
+                .map_or(format!("material_{index}"), str::to_string),
+            None => "default".to_string(),
+        };
+        let file_name =
+            make_unique_filename(&mut self.names, &name, "material", MATERIAL_EXTENSION);
+        let path = format!("{}/materials/{file_name}", self.pieces);
+        self.materials.push((path.clone(), file));
+        let asset = self.assets.len() as u32;
+        self.assets.push(path);
+        self.material_assets.insert(material.index(), asset);
+        asset
+    }
+}
+
+/// Bakes the default scene (or the first) of the glTF file `source` into the scene file
+/// `scene_path` and, in the directory next to it with the same name, a file per mesh,
+/// material and texture. With `ron`, the scene and materials are also written as RON.
+/// Returns how many meshes, materials and textures there are.
+pub fn bake_gltf(source: &Path, scene_path: &Path, ron: bool) -> Result<(usize, usize, usize)> {
     let base = source.parent();
     let scene_dir = scene_path.parent().unwrap_or(Path::new(""));
     let pieces = scene_path
@@ -91,149 +234,127 @@ pub fn bake_gltf(source: &Path, scene_path: &Path) -> Result<(usize, usize)> {
         .into_owned();
     // Whatever an earlier bake left there may no longer be part of the scene.
     let _ = fs::remove_dir_all(scene_dir.join(&pieces));
-    for dir in ["meshes", "textures"] {
+    for dir in ["meshes", "materials", "textures"] {
         fs::create_dir_all(scene_dir.join(&pieces).join(dir))?;
     }
 
     let gltf::Gltf { document, blob } = gltf::Gltf::from_slice(&fs::read(source)?)?;
     let buffers = gltf::import_buffers(&document, base, blob)?;
 
-    // Every primitive that can be drawn is a mesh.
-    let mut mesh_jobs = Vec::new();
-    let mut mesh_remap = HashMap::new();
-    let mut mesh_names = HashSet::new();
-    for mesh in document.meshes() {
-        let primitives = mesh.primitives().len();
-        for primitive in mesh.primitives() {
-            let drawable = primitive.get(&gltf::Semantic::Positions).is_some()
-                && primitive.get(&gltf::Semantic::Normals).is_some()
-                && primitive.indices().is_some_and(|i| i.count() >= 3);
-            if !drawable {
-                continue;
-            }
-            let index = mesh_jobs.len();
-            mesh_remap.insert((mesh.index(), primitive.index()), index as u32);
-            let name = primitive_name(mesh.name(), primitive.index(), primitives);
-            let file = make_unique_filename(
-                &mut mesh_names,
-                &name,
-                &format!("mesh_{index}"),
-                MESH_EXTENSION,
-            );
-            mesh_jobs.push(MeshJob {
-                mesh: mesh.index(),
-                primitive: primitive.index(),
-                path: format!("{pieces}/meshes/{file}"),
-            });
-        }
-    }
-
-    let mut scene = SceneFile::default();
-    let mut material_remap: HashMap<Option<usize>, u32> = HashMap::new();
-    let mut texture_jobs: Vec<TextureJob> = Vec::new();
-    let mut texture_remap: HashMap<(usize, TextureKind), u32> = HashMap::new();
-    let mut texture_names = HashSet::new();
-    // The same image is baked once per kind of texture it is used as.
-    let mut import_texture = |texture: Option<gltf::Texture>, kind: TextureKind| -> u32 {
-        let Some(texture) = texture else {
-            return NULL_HANDLE;
-        };
-        let source = texture.source();
-        let image = source.index();
-        *texture_remap.entry((image, kind)).or_insert_with(|| {
-            let index = texture_jobs.len();
-            let name = source.name().or(texture.name()).unwrap_or_default();
-            let file = make_unique_filename(
-                &mut texture_names,
-                name,
-                &format!("texture_{index}"),
-                TEXTURE_EXTENSION,
-            );
-            texture_jobs.push(TextureJob {
-                image,
-                kind,
-                path: format!("{pieces}/textures/{file}"),
-            });
-            index as u32
-        })
+    let mut bake = Bake {
+        pieces,
+        ..Default::default()
     };
-    let mut world_nodes = Vec::new();
-    let mut stack: Vec<(gltf::Node, Mat4)> = document
-        .scenes()
-        .flat_map(|scene| scene.nodes())
-        .map(|node| (node, Mat4::IDENTITY))
-        .collect();
-    while let Some((node, parent)) = stack.pop() {
-        let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
-        stack.extend(node.children().map(|child| (child, world)));
-        world_nodes.push((node, world));
+    for extension in document.extensions_used() {
+        match extension {
+            "KHR_lights_punctual" => bake.unsupported.insert("lights"),
+            "KHR_texture_transform" => bake.unsupported.insert("texture transforms"),
+            "KHR_mesh_gpu_instancing" => bake.unsupported.insert("GPU instancing"),
+            _ => false,
+        };
     }
-    for (node, transform) in &world_nodes {
-        let Some(gltf_mesh) = node.mesh() else {
+    if document.animations().next().is_some() {
+        bake.unsupported.insert("animations");
+    }
+    if document.scenes().len() > 1 {
+        bake.unsupported.insert("scenes besides the default one");
+    }
+    let scene = document
+        .default_scene()
+        .or_else(|| document.scenes().next())
+        .context("the file has no scene")?;
+
+    // Every node is an entity, parents before their children.
+    let mut scene_data = SceneData::default();
+    let mut transforms = Vec::new();
+    let mut names = (Vec::new(), Vec::new());
+    let mut instances = (Vec::new(), Vec::new());
+    let mut stack: Vec<(gltf::Node, u32)> = scene.nodes().map(|node| (node, u32::MAX)).collect();
+    stack.reverse();
+    while let Some((node, parent)) = stack.pop() {
+        let entity = scene_data.parents.len() as u32;
+        scene_data.parents.push(parent);
+        let (translation, rotation, scale) = node.transform().decomposed();
+        transforms.push(Transform {
+            translation: Vec3::from_array(translation),
+            rotation: Quat::from_array(rotation),
+            scale: Vec3::from_array(scale),
+        });
+        if let Some(name) = node.name() {
+            names.0.push(entity);
+            names.1.push(Name::new(name.to_string()));
+        }
+        if node.camera().is_some() {
+            bake.unsupported.insert("cameras");
+        }
+        if node.skin().is_some() {
+            bake.unsupported.insert("skins (drawn in bind pose)");
+        }
+        let children: Vec<_> = node.children().collect();
+        stack.extend(children.into_iter().rev().map(|child| (child, entity)));
+
+        let Some(mesh) = node.mesh() else {
             continue;
         };
-
-        let primitives = gltf_mesh.primitives().len();
-        for primitive in gltf_mesh.primitives() {
-            let Some(mesh) = mesh_remap.get(&(gltf_mesh.index(), primitive.index())) else {
-                continue;
+        let primitives: Vec<_> = mesh
+            .primitives()
+            .filter(|primitive| {
+                if primitive.morph_targets().next().is_some() {
+                    bake.unsupported
+                        .insert("morph targets (drawn in the base pose)");
+                }
+                let drawable = drawable(primitive);
+                if !drawable {
+                    bake.unsupported.insert("primitives that aren't triangles");
+                }
+                drawable
+            })
+            .collect();
+        let several = primitives.len() > 1;
+        for primitive in primitives {
+            let saved = SavedInstance {
+                mesh: bake.mesh(&mesh, &primitive),
+                material: bake.material(primitive.material()),
             };
-
-            // One material per glTF material in use; `None` is glTF's default material.
-            let pmaterial = primitive.material();
-            let material = *material_remap.entry(pmaterial.index()).or_insert_with(|| {
-                let pbr = pmaterial.pbr_metallic_roughness();
-                let normal = pmaterial.normal_texture();
-                let occlusion = pmaterial.occlusion_texture();
-                scene.materials.push(Material {
-                    color: Vec4::from_array(pbr.base_color_factor()),
-                    emissive: Vec3::from_array(pmaterial.emissive_factor()),
-                    metalic_factor: pbr.metallic_factor(),
-                    roughness_factor: pbr.roughness_factor(),
-                    normal_scale: normal.as_ref().map(|n| n.scale()).unwrap_or(1.0),
-                    occlusion_strength: occlusion.as_ref().map(|o| o.strength()).unwrap_or(1.0),
-                    alpha_cutoff: alpha_cutoff(pmaterial.alpha_mode(), pmaterial.alpha_cutoff()),
-                    color_texture: import_texture(
-                        pbr.base_color_texture().map(|i| i.texture()),
-                        TextureKind::Color,
-                    ),
-                    metallic_roughness_texture: import_texture(
-                        pbr.metallic_roughness_texture().map(|i| i.texture()),
-                        TextureKind::Data,
-                    ),
-                    normal_texture: import_texture(
-                        normal.map(|n| n.texture()),
-                        TextureKind::Normal,
-                    ),
-                    occlusion_texture: import_texture(
-                        occlusion.map(|o| o.texture()),
-                        TextureKind::Data,
-                    ),
-                    emissive_texture: import_texture(
-                        pmaterial.emissive_texture().map(|i| i.texture()),
-                        TextureKind::Color,
-                    ),
-                    pad: Vec3::ZERO,
-                });
-                (scene.materials.len() - 1) as u32
-            });
-
-            scene.instance_materials.push(material);
-            scene.instance_mesh.push(*mesh);
-            scene.instance_transforms.push(*transform);
-            scene
-                .instance_names
-                .push(primitive_name(node.name(), primitive.index(), primitives));
+            // Several primitives become children with an identity transform.
+            let instance = if several {
+                let child = scene_data.parents.len() as u32;
+                scene_data.parents.push(entity);
+                transforms.push(Transform::IDENTITY);
+                if let Some(name) = mesh.name() {
+                    names.0.push(child);
+                    names
+                        .1
+                        .push(Name::new(format!("{name}.{}", primitive.index())));
+                }
+                child
+            } else {
+                entity
+            };
+            instances.0.push(instance);
+            instances.1.push(saved);
         }
     }
-    scene.meshes = mesh_jobs.iter().map(|job| job.path.clone()).collect();
-    scene.textures = texture_jobs.iter().map(|job| job.path.clone()).collect();
+    for kind in &bake.unsupported {
+        warn!(
+            "{}: {kind} are not supported and left out",
+            source.display()
+        );
+    }
+
+    // The instances first, so their meshes and materials start loading early.
+    scene_data.columns = vec![
+        Column::new::<Instance>(instances.0, instances.1),
+        Column::new::<Transform>((0..transforms.len() as u32).collect(), transforms),
+        Column::new::<Name>(names.0, names.1),
+    ];
+    scene_data.assets = std::mem::take(&mut bake.assets);
 
     // Each job holds its mesh or texture only until its file is written.
     let (document, buffers) = (&document, &buffers[..]);
     let pool = AsyncComputeTaskPool::get();
     let textures = pool.scope(|scope| {
-        for job in &texture_jobs {
+        for job in &bake.texture_jobs {
             scope.spawn(async move {
                 bake_texture(document, buffers, base, job, &scene_dir.join(&job.path))
                     .with_context(|| format!("texture {}", job.path))
@@ -241,7 +362,7 @@ pub fn bake_gltf(source: &Path, scene_path: &Path) -> Result<(usize, usize)> {
         }
     });
     let meshes = pool.scope(|scope| {
-        for job in &mesh_jobs {
+        for job in &bake.mesh_jobs {
             scope.spawn(async move {
                 bake_mesh(document, buffers, job, &scene_dir.join(&job.path))
                     .with_context(|| format!("mesh {}", job.path))
@@ -251,10 +372,25 @@ pub fn bake_gltf(source: &Path, scene_path: &Path) -> Result<(usize, usize)> {
     for result in textures.into_iter().chain(meshes) {
         result?;
     }
+    for (path, material) in &bake.materials {
+        let path = scene_dir.join(path);
+        fs::write(&path, material.write(false)?)?;
+        if ron {
+            fs::write(path.with_extension("mat.ron"), material.write(true)?)?;
+        }
+    }
 
     // Last, so the scene never names a file that isn't there yet.
-    scene.write(&mut BufWriter::new(File::create(scene_path)?))?;
-    Ok((mesh_jobs.len(), texture_jobs.len()))
+    scene_data.write(&mut BufWriter::new(File::create(scene_path)?), false)?;
+    if ron {
+        let ron_path = scene_path.with_extension("scene.ron");
+        scene_data.write(&mut BufWriter::new(File::create(ron_path)?), true)?;
+    }
+    Ok((
+        bake.mesh_jobs.len(),
+        bake.materials.len(),
+        bake.texture_jobs.len(),
+    ))
 }
 
 fn bake_texture(
@@ -272,6 +408,15 @@ fn bake_texture(
     TextureData::from_gltf(&image, job.kind).write(&mut BufWriter::new(File::create(path)?))
 }
 
+/// Bakes an OpenEXR file into an HDR texture at `path`.
+pub fn bake_exr(source: &Path, path: &Path) -> Result<()> {
+    let texture = TextureData::from_exr(source)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    texture.write(&mut BufWriter::new(File::create(path)?))
+}
+
 fn bake_mesh(
     document: &gltf::Document,
     buffers: &[gltf::buffer::Data],
@@ -284,35 +429,57 @@ fn bake_mesh(
         .and_then(|mesh| mesh.primitives().nth(job.primitive))
         .context("the mesh is gone")?;
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-    let positions: Vec<Vec3> = reader
+    let mut positions: Vec<Vec3> = reader
         .read_positions()
         .context("no positions")?
         .map(Vec3::from)
         .collect();
-    let normals: Vec<f32> = reader
-        .read_normals()
-        .context("no normals")?
-        .flatten()
-        .collect();
-    let uvs: Vec<f32> = match reader.read_tex_coords(0) {
-        Some(uvs) => uvs.into_f32().flatten().collect(),
-        None => vec![0.0; positions.len() * 2],
+    // Missing UVs stay zero.
+    let mut uvs: Vec<[f32; 2]> = match reader.read_tex_coords(0) {
+        Some(uvs) => uvs.into_f32().collect(),
+        None => vec![[0.0; 2]; positions.len()],
     };
-    let indices: Vec<u32> = reader
-        .read_indices()
-        .context("no indices")?
-        .into_u32()
-        .collect();
-    assert_eq!(positions.len() * 3, normals.len());
-    assert_eq!(positions.len() * 2, uvs.len());
+    let mut indices: Vec<u32> = match reader.read_indices() {
+        Some(indices) => indices.into_u32().collect(),
+        None => (0..positions.len() as u32).collect(),
+    };
+    indices.truncate(indices.len() / 3 * 3);
+    ensure!(
+        indices.iter().all(|&i| (i as usize) < positions.len()),
+        "an index is out of range"
+    );
+    ensure!(uvs.len() == positions.len(), "not one UV per position");
+    let normals: Vec<Vec3> = match reader.read_normals() {
+        Some(normals) => normals.map(Vec3::from).collect(),
+        // Flat normals: every triangle gets vertices of its own.
+        None => {
+            positions = indices.iter().map(|&i| positions[i as usize]).collect();
+            uvs = indices.iter().map(|&i| uvs[i as usize]).collect();
+            indices = (0..positions.len() as u32).collect();
+            positions
+                .chunks_exact(3)
+                .flat_map(|t| [(t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero(); 3])
+                .collect()
+        }
+    };
+    ensure!(
+        normals.len() == positions.len(),
+        "not one normal per position"
+    );
 
-    MeshletMesh::new(&indices, &positions, &normals, &uvs)
-        .write(&mut BufWriter::new(File::create(path)?))
+    MeshletMesh::new(
+        &indices,
+        &positions,
+        bytemuck::cast_slice(&normals),
+        uvs.as_flattened(),
+    )
+    .write(&mut BufWriter::new(File::create(path)?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::file::RonScene;
     use bevy::tasks::TaskPool;
 
     #[test]
@@ -335,7 +502,8 @@ mod tests {
         assert_eq!(name("cube.1"), "cube.1_2.mesh");
     }
 
-    /// Writes a glTF file with one triangle that two nodes draw.
+    /// Writes a glTF file with a parent node, a child that draws a triangle, a node that
+    /// draws a two-primitive mesh, and a non-indexed triangle without normals.
     fn triangle_gltf(dir: &Path) -> std::path::PathBuf {
         let mut bin = Vec::new();
         for position in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0f32]] {
@@ -349,14 +517,24 @@ mod tests {
         let json = r#"{
             "asset": {"version": "2.0"},
             "scene": 0,
-            "scenes": [{"nodes": [0, 1]}],
+            "scenes": [{"nodes": [0, 2, 3]}],
             "nodes": [
-                {"mesh": 0, "name": "left"},
-                {"mesh": 0, "name": "right", "translation": [2.0, 0.0, 0.0]}
+                {"name": "parent", "translation": [0.0, 5.0, 0.0], "children": [1]},
+                {"mesh": 0, "name": "left", "translation": [2.0, 0.0, 0.0]},
+                {"mesh": 1, "name": "pair"},
+                {"mesh": 2}
             ],
-            "meshes": [{"name": "Tri/angle", "primitives": [
-                {"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2}
-            ]}],
+            "materials": [{"name": "red", "pbrMetallicRoughness": {"baseColorFactor": [1, 0, 0, 1]}}],
+            "meshes": [
+                {"name": "Tri/angle", "primitives": [
+                    {"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 0}
+                ]},
+                {"name": "Two", "primitives": [
+                    {"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 0},
+                    {"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2}
+                ]},
+                {"primitives": [{"attributes": {"POSITION": 0}}]}
+            ],
             "buffers": [{"uri": "triangle.bin", "byteLength": 84}],
             "bufferViews": [
                 {"buffer": 0, "byteOffset": 0, "byteLength": 36},
@@ -376,9 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn baking_writes_a_scene_and_its_meshes() {
-        use bevy::asset::io::VecReader;
-
+    fn baking_keeps_the_node_tree() {
         AsyncComputeTaskPool::get_or_init(TaskPool::new);
         let dir = std::env::temp_dir().join(format!("core-bake-test-{}", std::process::id()));
         fs::create_dir_all(dir.join("baked/tri/meshes")).unwrap();
@@ -388,15 +564,76 @@ mod tests {
         let stray = dir.join("baked/tri/meshes/old.mesh");
         fs::write(&stray, b"old").unwrap();
 
-        assert_eq!(bake_gltf(&source, &scene_path).unwrap(), (1, 0));
-        let mut reader = VecReader::new(fs::read(&scene_path).unwrap());
-        let scene = bevy::tasks::block_on(SceneFile::read(&mut reader)).unwrap();
-        assert_eq!(scene.meshes, ["tri/meshes/Tri_angle.mesh"]);
-        assert_eq!(scene.instance_names, ["right", "left"]);
-        assert_eq!(scene.instance_mesh, [0, 0]);
-        assert_eq!(scene.materials[0].color_texture, NULL_HANDLE);
-        assert!(dir.join("baked").join(&scene.meshes[0]).exists());
+        assert_eq!(bake_gltf(&source, &scene_path, true).unwrap(), (4, 2, 0));
         assert!(!stray.exists());
+        assert!(scene_path.exists());
+        let scene: RonScene =
+            ron::de::from_bytes(&fs::read(dir.join("baked/tri.scene.ron")).unwrap()).unwrap();
+        for asset in &scene.assets {
+            assert!(dir.join("baked").join(asset).exists(), "{asset}");
+        }
+
+        let name = |entity: usize| -> Option<String> {
+            Some(
+                scene.entities[entity]
+                    .components
+                    .get("Name")?
+                    .into_rust()
+                    .unwrap(),
+            )
+        };
+        let transform = |entity: usize| -> Transform {
+            scene.entities[entity].components["Transform"]
+                .into_rust()
+                .unwrap()
+        };
+        let instance = |entity: usize| -> Option<SavedInstance> {
+            Some(
+                scene.entities[entity]
+                    .components
+                    .get("Instance")?
+                    .into_rust()
+                    .unwrap(),
+            )
+        };
+        let parents: Vec<_> = scene.entities.iter().map(|e| e.parent).collect();
+        // parent, left, pair, pair's two primitives, the unnamed node.
+        assert_eq!(parents, [None, Some(0), None, Some(2), Some(2), None]);
+        assert_eq!(name(0).as_deref(), Some("parent"));
+        assert_eq!(name(3).as_deref(), Some("Two.0"));
+        assert_eq!(name(4).as_deref(), Some("Two.1"));
+        assert_eq!(name(5), None);
+        // Local transforms, not world ones.
+        assert_eq!(transform(0).translation, Vec3::new(0.0, 5.0, 0.0));
+        assert_eq!(transform(1).translation, Vec3::new(2.0, 0.0, 0.0));
+        assert_eq!(transform(3), Transform::IDENTITY);
+
+        assert!(instance(0).is_none() && instance(2).is_none());
+        let [left, first, second, flat] = [1, 3, 4, 5].map(|e| instance(e).unwrap());
+        assert_eq!(
+            scene.assets[left.mesh as usize],
+            "tri/meshes/Tri_angle.mesh"
+        );
+        // The two primitives are meshes of their own, one with glTF's default material.
+        assert_ne!(first.mesh, second.mesh);
+        assert_eq!(left.material, first.material);
+        assert_eq!(second.material, flat.material);
+        assert_eq!(
+            scene.assets[first.material as usize],
+            "tri/materials/red.mat"
+        );
+        assert_eq!(
+            scene.assets[second.material as usize],
+            "tri/materials/default.mat"
+        );
+
+        let red = fs::read(dir.join("baked/tri/materials/red.mat")).unwrap();
+        let red = MaterialFile::read(&red, false).unwrap();
+        assert_eq!(red.color, Vec4::new(1.0, 0.0, 0.0, 1.0));
+        assert_eq!(red.color_texture, None);
+        let default = fs::read(dir.join("baked/tri/materials/default.mat.ron")).unwrap();
+        let default = MaterialFile::read(&default, true).unwrap();
+        assert_eq!((default.color, default.metalic_factor), (Vec4::ONE, 1.0));
         fs::remove_dir_all(dir).unwrap();
     }
 }

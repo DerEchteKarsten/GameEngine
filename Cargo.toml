@@ -20,7 +20,8 @@ bevy = {version = "0.19.1", default-features = false, features = [
     "bevy_window",
     "trace",
     "detailed_trace",
-    "reflect_auto_register"
+    "reflect_auto_register",
+    "serialize"
 ]}
 ash = "0.38.0"
 ash-window = "0.13.0"
@@ -49,4 +50,7 @@ notify = "8.2.0"
 serde_json = "1.0"
 png = "0.18"
 zstd = "0.13"
+postcard = { version = "1", features = ["use-std"] }
 intel_tex_2 = "0.5"
+exr = "1.74"
+half = { version = "2", features = ["bytemuck"] }

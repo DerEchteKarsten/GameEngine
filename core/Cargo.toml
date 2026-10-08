@@ -31,7 +31,10 @@ ron = {workspace = true}
 serde = {workspace = true}
 notify = {workspace = true}
 zstd = {workspace = true}
+postcard = {workspace = true}
 intel_tex_2 = {workspace = true}
+exr = {workspace = true}
+half = {workspace = true}
 
 [features]
 default = []

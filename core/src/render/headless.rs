@@ -11,9 +11,13 @@ use lava::{
     vkobjects::queue::{FrameSlot, Gfx, PendingAccesses, Queue},
 };
 
+use crate::bindless;
 use crate::render::{
     MainWorld,
-    render::{RenderCamera, RenderResources, RenderSettings, extract_camera, record_scene},
+    render::{
+        RenderCamera, RenderResources, RenderSettings, RenderSkybox, extract_camera,
+        extract_skybox, record_scene,
+    },
     world::{InstanceManager, extract_meshlet_instances, init_world, wirte_instances},
 };
 
@@ -30,6 +34,7 @@ pub struct HeadlessRenderPlugin {
 impl Plugin for HeadlessRenderPlugin {
     fn build(&self, app: &mut App) {
         lava::init(None, cfg!(debug_assertions), false).unwrap();
+        bindless::init();
         app.insert_resource(HeadlessSize(self.size));
     }
 }
@@ -51,15 +56,21 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     render_world.insert_resource(MainWorld(std::mem::take(main_world)));
     let instances = render_world.run_system_once(extract_meshlet_instances);
     let camera = render_world.run_system_once(extract_camera);
+    let sky = render_world.run_system_once(extract_skybox);
     *main_world = render_world.remove_resource::<MainWorld>().unwrap().0;
     instances.unwrap();
+    sky.unwrap();
     camera.expect("the scene needs exactly one camera");
     render_world.run_system_once(wirte_instances).unwrap();
 
     let mut camera = render_world.remove_resource::<RenderCamera>().unwrap();
+    let sky = render_world.resource::<RenderSkybox>();
     let instances = render_world.resource::<InstanceManager>();
 
-    let image = Image::<R8G8B8A8Unorm, ColorAttachmentStorage>::new(size.x, size.y).unwrap();
+    let slot = bindless::storage_slots(1).unwrap();
+    let image =
+        Image::<R8G8B8A8Unorm, ColorAttachmentStorage>::new_storage(size.x, size.y, 1, slot)
+            .unwrap();
     let readback = Buffer::<u8>::new((size.x * size.y * 4) as usize, true).unwrap();
     let queue = Queue::<Gfx>::new().unwrap();
     let mut slot = FrameSlot::new(&queue).unwrap();
@@ -73,6 +84,7 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
                 image.whole_view(),
                 size,
                 &mut camera,
+                sky,
                 instances,
                 resources,
                 settings,

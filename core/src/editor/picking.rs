@@ -1,12 +1,13 @@
-//! Entity selection: viewport raycast picking, world-space move gizmo and hierarchy panel.
+//! Entity selection: viewport raycast picking, world-space move gizmo, and the hierarchy panel, which also saves a subtree as a scene file.
 use crate::{
     assets::mesh::GpuMesh,
     editor::{
         gizzmos::{ArrowGizzmo, DrawGizzmos},
         viewport::ViewPortProxy,
     },
+    id,
     physics::bvh::Raycast,
-    scene::{Instance, camera::Camera},
+    scene::{Instance, camera::Camera, file::save_scene},
     ui::{
         MultiInput, UiContext,
         builder::{UiBuilder, UiWindowBuilder},
@@ -23,8 +24,10 @@ use bevy::{
         reflect::ReflectComponent,
         resource::IsResource,
         system::{Commands, Local, Query, Res, Single},
+        world::World,
     },
     input::{ButtonInput, keyboard::KeyCode, mouse::MouseButton, touch::Touches},
+    log::{error, info},
     math::{Dir3A, bounding::RayCast3d},
     reflect::Reflect,
     transform::{
@@ -55,11 +58,27 @@ pub(crate) fn hierarchy_ui(
     selected: Query<Entity, With<Selected>>,
     keys: Res<ButtonInput<KeyCode>>,
     components: &Components,
+    mut save_path: Local<String>,
 ) {
     ui.build("Hierarchy", |ui| {
         if ui.button("insert") {
             cmd.spawn(Transform::default());
         }
+        // Saves the selected entity's descendants; `.ron` picks the RON layout.
+        ui.horizontal();
+        ui.text_input(id!(), &mut save_path, 200.0);
+        if ui.button("save")
+            && let Ok(root) = selected.single()
+        {
+            let path = save_path.clone();
+            cmd.queue(
+                move |world: &mut World| match save_scene(world, root, &path) {
+                    Ok(()) => info!("saved {path}"),
+                    Err(err) => error!("saving {path}: {err:#}"),
+                },
+            );
+        }
+        ui.vertical();
 
         let dropped = ui.drop_target::<Entity>(
             |_| true,

@@ -35,13 +35,14 @@ use crate::{
     ASSET_DIR,
     assets::{
         MESH_EXTENSION, SCENE_EXTENSION, TEXTURE_EXTENSION,
-        mesh::{GpuMesh, MaterialSet, Scene},
+        material::{GpuMaterial, MATERIAL_EXTENSION, Materials},
+        mesh::GpuMesh,
         texture::{GpuTexture, PREVIEW_SIZE, read_preview},
     },
+    bindless,
     editor::{picking::Selected, viewport::ViewPort},
     physics::bvh::Raycast,
-    render::world::InstanceFlags,
-    scene::{Instance, MaterialSettings, SpawnScene, camera::Camera},
+    scene::{Instance, MaterialSettings, SpawnScene, camera::Camera, file::Scene},
     ui::{
         MultiInput, UiContext,
         builder::{UiBuilder, UiWindowBuilder},
@@ -63,6 +64,7 @@ const FOLDER_COLOR: Vec4 = Vec4::new(0.843, 0.600, 0.129, 1.0);
 const SCENE_COLOR: Vec4 = Vec4::new(0.118, 0.565, 0.831, 1.0);
 const MESH_COLOR: Vec4 = Vec4::new(0.557, 0.753, 0.486, 1.0);
 const TEXTURE_COLOR: Vec4 = Vec4::new(0.827, 0.525, 0.608, 1.0);
+const MATERIAL_COLOR: Vec4 = Vec4::new(0.678, 0.506, 0.894, 1.0);
 
 /// The drag payload for the `A` at `path`. Nothing is loaded until it is dropped.
 fn drag<A: Asset>(server: &AssetServer, path: AssetPath<'static>) -> AssetDrag {
@@ -71,7 +73,8 @@ fn drag<A: Asset>(server: &AssetServer, path: AssetPath<'static>) -> AssetDrag {
 }
 
 struct AssetKind {
-    extension: &'static str,
+    /// Matched against the end of the file name, so `.scene` also covers `.scene.ron`.
+    extensions: &'static [&'static str],
     badge: &'static str,
     color: Vec4,
     drag: fn(&AssetServer, AssetPath<'static>) -> AssetDrag,
@@ -79,30 +82,39 @@ struct AssetKind {
 
 const ASSET_KINDS: &[AssetKind] = &[
     AssetKind {
-        extension: SCENE_EXTENSION,
+        extensions: &[SCENE_EXTENSION, "scene.ron"],
         badge: "SCENE",
         color: SCENE_COLOR,
         drag: drag::<Scene>,
     },
     AssetKind {
-        extension: MESH_EXTENSION,
+        extensions: &[MESH_EXTENSION],
         badge: "MESH",
         color: MESH_COLOR,
         drag: drag::<GpuMesh>,
     },
     AssetKind {
-        extension: TEXTURE_EXTENSION,
+        extensions: &[TEXTURE_EXTENSION],
         badge: "TEX",
         color: TEXTURE_COLOR,
         drag: drag::<GpuTexture>,
     },
+    AssetKind {
+        extensions: &[MATERIAL_EXTENSION, "mat.ron"],
+        badge: "MAT",
+        color: MATERIAL_COLOR,
+        drag: drag::<GpuMaterial>,
+    },
 ];
 
 fn kind_of(file_name: &str) -> Option<&'static AssetKind> {
-    let extension = Path::new(file_name).extension()?.to_str()?;
-    ASSET_KINDS
-        .iter()
-        .find(|kind| kind.extension.eq_ignore_ascii_case(extension))
+    let name = file_name.to_ascii_lowercase();
+    ASSET_KINDS.iter().find(|kind| {
+        kind.extensions.iter().any(|extension| {
+            name.strip_suffix(extension)
+                .is_some_and(|stem| stem.len() > 1 && stem.ends_with('.'))
+        })
+    })
 }
 
 struct DirEntry {
@@ -179,7 +191,8 @@ impl Previews {
                 let file = fs::File::open(Path::new(ASSET_DIR).join(path)).ok()?;
                 let pixels = read_preview(file).ok()?;
                 if self.atlas.is_none() {
-                    self.atlas = Some(Image::new(ATLAS_SIZE, ATLAS_SIZE).ok()?);
+                    let slot = bindless::sampled_slot().ok()?;
+                    self.atlas = Some(Image::new_sampled(ATLAS_SIZE, ATLAS_SIZE, 1, slot).ok()?);
                 }
                 let cell = self.take_cell(path);
                 let size = UVec2::splat(PREVIEW_SIZE);
@@ -482,7 +495,7 @@ pub(crate) fn asset_browser(
                 let hovered = ui.hoverd(rect);
                 // Only tiles on screen ask for their preview, so the atlas fills as you scroll.
                 let preview = kind
-                    .filter(|kind| kind.extension == TEXTURE_EXTENSION)
+                    .filter(|kind| kind.extensions.contains(&TEXTURE_EXTENSION))
                     .filter(|_| !rect.intersect(ui.clip_rect).is_empty())
                     .and_then(|_| state.previews.preview(&path()));
                 let dim = kind.is_none() && !entry.is_dir;
@@ -528,8 +541,8 @@ pub(crate) fn drop_in_viewport(
     camera: Single<(&Camera, &GlobalTransform)>,
     raycast: Raycast,
     selected: Query<Entity, With<Selected>>,
-    mut material_sets: ResMut<Assets<MaterialSet>>,
-    textures: Res<Assets<GpuTexture>>,
+    mut materials: ResMut<Assets<GpuMaterial>>,
+    shared_materials: Res<Materials>,
 ) {
     if !dnd.active() {
         return;
@@ -569,18 +582,14 @@ pub(crate) fn drop_in_viewport(
     } else if let Some(mesh) = dnd.take_asset::<GpuMesh>() {
         // A mesh on its own has no scene to take a material from.
         let material = MaterialSettings::default().into_material(Zeroable::zeroed());
-        let set = MaterialSet::new(&[material], vec![Default::default()]);
-        set.resolve_textures(&textures);
-        cmd.spawn((
-            transform,
-            Instance {
-                mesh,
-                material_set: material_sets.add(set),
-                material_index: 0,
-                flags: InstanceFlags::empty(),
-            },
-        ))
-        .id()
+        let material = match shared_materials.0.alloc(material, Default::default()) {
+            Ok(material) => materials.add(material),
+            Err(err) => {
+                warn!("{err:#}");
+                return;
+            }
+        };
+        cmd.spawn((transform, Instance { mesh, material })).id()
     } else {
         return;
     };
@@ -611,6 +620,11 @@ mod tests {
         assert_eq!(kind_of("wood.tex").map(|k| k.badge), Some("TEX"));
         assert!(kind_of("notes.txt").is_none());
         assert!(kind_of("scene").is_none());
+        assert!(kind_of(".scene").is_none());
+        assert_eq!(kind_of("box.scene.ron").map(|k| k.badge), Some("SCENE"));
+        assert_eq!(kind_of("Brick.Mat.RON").map(|k| k.badge), Some("MAT"));
+        assert_eq!(kind_of("brick.mat").map(|k| k.badge), Some("MAT"));
+        assert!(kind_of("notes.ron").is_none());
     }
 
     #[test]

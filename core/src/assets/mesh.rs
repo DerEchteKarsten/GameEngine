@@ -1,18 +1,16 @@
-//! Meshes and scenes: meshlet LOD building, BVH baking, the baked `.mesh` and `.scene` files and their loaders.
+//! Meshes: meshlet LOD building, BVH baking and the baked `.mesh` file.
 use anyhow::Result;
 use bevy::{
-    asset::{Asset, Assets, Handle, LoadContext, io::Reader},
+    asset::Asset,
     math::{
         Isometry3d,
         bounding::{Aabb3d, BoundingSphere, BoundingVolume},
     },
     reflect::TypePath,
     tasks::{AsyncComputeTaskPool, ParallelSlice},
-    transform::components::Transform,
 };
-use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
-use futures::AsyncReadExt;
-use glam::{Mat4, Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
+use bytemuck::{Pod, Zeroable, bytes_of};
+use glam::{Vec3, Vec3A, Vec3Swizzles, Vec4, Vec4Swizzles};
 use itertools::Itertools;
 use lava::buffer::Buffer;
 use meshopt::{
@@ -25,21 +23,12 @@ use std::{collections::HashMap, io::Write, ops::Range};
 use tracing::debug_span;
 
 use crate::{
-    assets::{
-        read_compressed,
-        texture::GpuTexture,
-        util::{read_names, read_slice, write_compressed, write_names, write_slice},
-    },
+    assets::util::write_compressed,
     physics::bvh::{
         ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
     },
-    render::world::InstanceFlags,
-    scene::Instance,
 };
-use lava::{
-    bindings::{AabbError, AabbPtr, BvhNode, CullData, Material, Meshlet, Vertex},
-    bindless::NULL_HANDLE,
-};
+use lava::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 
@@ -66,120 +55,6 @@ pub struct GpuMesh {
     pub header: MeshHeader,
     pub buffer: Buffer<u8>,
     pub colission_bvh: Vec<u8>,
-}
-
-/// The color, metallic-roughness, normal, occlusion and emissive texture of a material.
-pub type MaterialTextures = [Option<Handle<GpuTexture>>; 5];
-
-/// Every material of a scene in one host-mapped buffer. Instances point into it, so a write
-/// to the buffer is what the next frame draws.
-#[derive(TypePath, Asset)]
-pub struct MaterialSet {
-    pub buffer: Buffer<Material>,
-    /// The textures of each material, one entry per material. Keeps them alive.
-    pub textures: Vec<MaterialTextures>,
-}
-
-impl MaterialSet {
-    /// The texture indices of `materials` have to be the null handle: textures load on their
-    /// own, and [`Self::resolve_textures`] writes the index of each one that is there.
-    pub fn new(materials: &[Material], textures: Vec<MaterialTextures>) -> Self {
-        assert_eq!(materials.len(), textures.len());
-        let buffer = Buffer::new(materials.len().max(1), true).unwrap();
-        buffer.range(..materials.len()).copy_from(materials);
-        Self { buffer, textures }
-    }
-
-    /// Writes the bindless indices of `self.textures` into the materials. A texture that is
-    /// unset or still loading is the null handle.
-    pub fn resolve_textures(&self, textures: &Assets<GpuTexture>) {
-        let mut materials = self.buffer.range(..self.textures.len());
-        for (index, handles) in self.textures.iter().enumerate() {
-            let material = &mut materials[index];
-            [
-                material.color_texture,
-                material.metallic_roughness_texture,
-                material.normal_texture,
-                material.occlusion_texture,
-                material.emissive_texture,
-            ] = handles.each_ref().map(|handle| {
-                handle
-                    .as_ref()
-                    .and_then(|handle| textures.get(handle))
-                    .map_or(NULL_HANDLE, GpuTexture::descriptor_index)
-            });
-        }
-    }
-
-    /// GPU address of one material.
-    pub fn address(&self, index: u32) -> u64 {
-        self.buffer.address + index as u64 * size_of::<Material>() as u64
-    }
-}
-
-#[derive(Asset, TypePath)]
-pub struct Scene {
-    pub meshes: Vec<Handle<GpuMesh>>,
-    pub instance_transforms: Vec<Mat4>,
-    pub materials: Handle<MaterialSet>,
-    pub instance_materials: Vec<u32>,
-    pub instance_mesh: Vec<u32>,
-    pub instance_names: Vec<String>,
-}
-
-impl Scene {
-    pub fn get_instance(&self, index: usize, flags: InstanceFlags) -> Instance {
-        Instance {
-            flags,
-            mesh: self.meshes[self.instance_mesh[index] as usize].clone(),
-            material_set: self.materials.clone(),
-            material_index: self.instance_materials[index],
-        }
-    }
-
-    pub fn get_transform(&self, index: usize) -> Transform {
-        Transform::from_matrix(self.instance_transforms[index])
-    }
-}
-
-/// The contents of a `.scene` file: where its instances are and which meshes and materials
-/// they use. The meshes and textures are files of their own.
-#[derive(Default)]
-pub struct SceneFile {
-    pub instance_transforms: Vec<Mat4>,
-    /// Their texture indices are into `textures`.
-    pub materials: Vec<Material>,
-    pub instance_materials: Vec<u32>,
-    pub instance_mesh: Vec<u32>,
-    pub instance_names: Vec<String>,
-    /// Paths of the `.mesh` and `.tex` files, relative to the directory of the scene file.
-    pub meshes: Vec<String>,
-    pub textures: Vec<String>,
-}
-
-impl SceneFile {
-    pub fn write(&self, writer: &mut impl Write) -> Result<()> {
-        write_slice(&self.instance_transforms, writer)?;
-        write_slice(&self.materials, writer)?;
-        write_slice(&self.instance_mesh, writer)?;
-        write_slice(&self.instance_materials, writer)?;
-        write_names(&self.instance_names, writer)?;
-        write_names(&self.meshes, writer)?;
-        write_names(&self.textures, writer)
-    }
-
-    pub async fn read(reader: &mut dyn Reader) -> Result<Self> {
-        // In the order `write` wrote them.
-        Ok(Self {
-            instance_transforms: read_slice(reader).await?,
-            materials: read_slice(reader).await?,
-            instance_mesh: read_slice(reader).await?,
-            instance_materials: read_slice(reader).await?,
-            instance_names: read_names(reader).await?,
-            meshes: read_names(reader).await?,
-            textures: read_names(reader).await?,
-        })
-    }
 }
 
 pub fn bvh_node_child_counts(node: &BvhNode, i: usize) -> u8 {
@@ -1189,32 +1064,6 @@ mod tests {
         // A zero-radius sphere outside the other one still has to be enclosed.
         let point = Vec4::new(10.0, 0.0, 0.0, 0.0);
         assert_eq!(merge_spheres(a, point), Vec4::new(3.5, 0.0, 0.0, 6.5));
-    }
-
-    #[test]
-    fn scene_files_round_trip() {
-        use bevy::asset::io::VecReader;
-
-        let scene = SceneFile {
-            instance_transforms: vec![Mat4::IDENTITY; 3],
-            materials: vec![Material::zeroed(); 2],
-            instance_materials: vec![0, 1, 1],
-            instance_mesh: vec![0, 1, 1],
-            instance_names: vec!["floor".into(), String::new(), "lamp.1".into()],
-            meshes: vec![
-                "box/meshes/Plane.mesh".into(),
-                "box/meshes/mesh_1.mesh".into(),
-            ],
-            textures: vec!["box/textures/bricks.tex".into()],
-        };
-        let mut file = Vec::new();
-        scene.write(&mut file).unwrap();
-        let read = bevy::tasks::block_on(SceneFile::read(&mut VecReader::new(file))).unwrap();
-        assert_eq!(read.instance_names, scene.instance_names);
-        assert_eq!(read.instance_mesh, scene.instance_mesh);
-        assert_eq!(read.materials.len(), 2);
-        assert_eq!(read.meshes, scene.meshes);
-        assert_eq!(read.textures, scene.textures);
     }
 
     /// Builds the full LOD chain for a bumpy grid; `BvhBuilder::build` verifies the result.

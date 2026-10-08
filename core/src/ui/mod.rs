@@ -7,6 +7,7 @@ use bevy::{
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 
 use crate::{
+    bindless,
     editor::viewport::ViewPort,
     render::{
         ExtractSchedule, RenderApp,
@@ -519,7 +520,12 @@ impl UiContext {
             }
         }
         atlas_data[0] = 255;
-        let mut font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y)?;
+        let mut font_atlas = Image::new_sampled(
+            Self::ATLAS_SIZE.x,
+            Self::ATLAS_SIZE.y,
+            1,
+            bindless::sampled_slot()?,
+        )?;
         font_atlas.copy_from(&atlas_data, 0)?;
 
         Ok(UiResources {

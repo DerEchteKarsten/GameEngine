@@ -1,3 +1,4 @@
+//! Binary file helpers: length-prefixed slices and zstd-compressed payloads, written with `std::io` and read back through bevy's async `Reader`.
 use anyhow::Result;
 use bevy::asset::AsyncReadExt;
 use bytemuck::Pod;
@@ -38,21 +39,4 @@ pub async fn read_compressed(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> 
     let len = read_u64(reader).await? as usize;
     let compressed: Vec<u8> = read_slice(reader).await?;
     Ok(zstd::bulk::decompress(&compressed, len)?)
-}
-
-/// Writes how many names there are, then each as a slice of its UTF-8 bytes.
-pub fn write_names(names: &[String], writer: &mut impl Write) -> Result<()> {
-    writer.write_all(&(names.len() as u64).to_le_bytes())?;
-    for name in names {
-        write_slice(name.as_bytes(), writer)?;
-    }
-    Ok(())
-}
-
-pub async fn read_names(reader: &mut (impl AsyncRead + Unpin + ?Sized)) -> Result<Vec<String>> {
-    let mut names = Vec::new();
-    for _ in 0..read_u64(reader).await? {
-        names.push(String::from_utf8(read_slice(reader).await?)?);
-    }
-    Ok(names)
 }

@@ -71,7 +71,7 @@ float3 perturb_normal(float3 normal, float3 position, float2 uv, float3 tangent_
     return normalize(mul(tangent_normal, tbn));
 }
 
-static const float3 LIGHT_DIRECTION = normalize(float3(0.0, 1.0, 0.0));
+static const float3 LIGHT_DIRECTION = normalize(float3(0.1, 0.1, 0.3));
 static const float3 LIGHT_COLOR = float3(3.0);
 static const float3 AMBIENT = float3(0.03);
 
@@ -104,9 +104,13 @@ PSOutput raster_fragment(in VSOutput input)
         emissive *= sample_texture(material.emissive_texture, input.uv).rgb;
     }
     var normal = normalize(input.normal);
-    if (material.normal_texture != NO_TEXTURE) {
+    let normal_sample = material.normal_texture != NO_TEXTURE
+        ? sample_texture(material.normal_texture, input.uv).xy
+        : float2(1.0);
+    // (1, 1) is the white placeholder of a texture that is still loading; no BC5 unit normal decodes to it.
+    if (any(normal_sample != 1.0)) {
         // Normal maps are baked with two channels (BC5): z follows from the unit length.
-        var tangent_normal = float3(sample_texture(material.normal_texture, input.uv).xy * 2.0 - 1.0, 0.0);
+        var tangent_normal = float3(normal_sample * 2.0 - 1.0, 0.0);
         tangent_normal.z = sqrt(saturate(1.0 - dot(tangent_normal.xy, tangent_normal.xy)));
         tangent_normal.xy *= material.normal_scale;
         normal = perturb_normal(normal, input.world_position, input.uv, tangent_normal);

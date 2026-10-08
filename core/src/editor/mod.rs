@@ -17,10 +17,7 @@ use lava::bindless::BindlessHandle;
 
 use crate::{
     INITIAL_WINDOW_SIZE,
-    assets::{
-        mesh::{GpuMesh, Scene},
-        texture::GpuTexture,
-    },
+    assets::{material::GpuMaterial, mesh::GpuMesh, texture::GpuTexture},
     editor::{
         asset_browser::{asset_browser, drop_in_viewport},
         camera::{CameraSettings, update_camera},
@@ -32,6 +29,7 @@ use crate::{
     },
     physics::bvh::debug_draw_scene_bvh,
     render::{ExtractSchedule, RenderApp, RenderStartup, RenderSystems, render::RenderDebugUi},
+    scene::file::Scene,
     ui::builder::UiBuilder,
 };
 
@@ -165,6 +163,7 @@ impl Plugin for EditorPlugin {
             glam::Affine3A,
             Entity,
             Handle<GpuMesh>,
+            Handle<GpuMaterial>,
             Handle<Scene>,
             Handle<GpuTexture>,
             Option<Handle<GpuTexture>>

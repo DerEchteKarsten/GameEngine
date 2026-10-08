@@ -266,6 +266,7 @@ fn init(
         false,
     )
     .unwrap();
+    crate::bindless::init();
     cmd.insert_resource(PrimarySurface(Some(
         lava::vkobjects::surface::Surface::new(&display, &handle.get_window_handle()).unwrap(),
     )));

@@ -8,6 +8,7 @@ use std::{
 
 use bevy::{
     app::{App, Update},
+    asset::Assets,
     ecs::{
         query::With,
         resource::Resource,
@@ -22,7 +23,7 @@ use bevy::{
 };
 use glam::{IVec2, Mat4, UVec2, Vec2, Vec3, Vec4, Vec4Swizzles};
 use lava::{
-    bindless::BindlessHandle,
+    bindless::{BindlessHandle, BindlessWrites, NULL_HANDLE},
     buffer::{
         Buffer,
         usage::{Index, Indirect, StorageIndirect},
@@ -30,7 +31,7 @@ use lava::{
     command_buffer::{BindingOutput, CommandBuffer, DrawIndirectCommand, Scissor, Viewport},
     image::{
         Image,
-        format::{self, ColorAspect, D32Sfloat, Format},
+        format::{self, ColorAspect, D32Sfloat, Format, R16G16B16A16Sfloat},
         slice::{AsImage, ImageView},
         usage::{ColorAttachmentStorage, DepthAttachmentSampled},
     },
@@ -43,6 +44,8 @@ use lava::{
 
 use crate::{
     INITIAL_WINDOW_SIZE,
+    assets::texture::{GpuTexture, texture_index},
+    bindless,
     editor::{gizzmos::GizzmoResources, viewport::ViewPort},
     id,
     render::{
@@ -51,12 +54,12 @@ use crate::{
         extract_param::Extract,
         world::{InstanceManager, MAX_INSTANCES, extract_view_port},
     },
-    scene::camera::Camera,
+    scene::{self, camera::Camera},
     ui::{UiResources, builder::UiBuilder},
 };
 use lava::bindings::{
     BvhCull, DrawOutline, InstanceBvhRoot, InstanceCull, InstanceMeshletIndex, InstancedMeshlet,
-    Raster, RasterOutline, RasterUi, Skybox, TraversalVariables,
+    Raster, RasterOutline, RasterUi, Skybox, Tonemap, TraversalVariables,
 };
 
 #[derive(Resource)]
@@ -161,6 +164,23 @@ pub fn extract_camera(mut cmd: Commands, camera: Extract<Single<(&Camera, &Globa
     });
 }
 
+/// Bindless index of the sky texture, `NULL_HANDLE` while it isn't loaded.
+#[derive(Resource)]
+pub(crate) struct RenderSkybox(pub(crate) u32);
+
+pub fn extract_skybox(
+    mut cmd: Commands,
+    sky: Extract<(Res<scene::Skybox>, Res<Assets<GpuTexture>>)>,
+) {
+    let (skybox, textures) = &*sky;
+    let id = skybox.image.id();
+    cmd.insert_resource(RenderSkybox(if textures.contains(id) {
+        texture_index(id)
+    } else {
+        NULL_HANDLE
+    }));
+}
+
 /// The graphics queue with its frame slots.
 pub(super) fn init_queues(cmd: &mut Commands, present: Option<Queue<Present>>) {
     let queues = Queues {
@@ -185,14 +205,19 @@ pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
         .0
         .take()
         .expect("the primary surface is created at startup");
+    let mut swpachain = vkobjects::swapchain::Swapchain::new(
+        &surface,
+        None,
+        Some(INITIAL_WINDOW_SIZE.as_uvec2().to_array()),
+    )
+    .unwrap();
+    let first = bindless::storage_slots(swpachain.num_images() as u32).unwrap();
+    let mut writes = BindlessWrites::default();
+    swpachain.bind_storage(first, &mut writes);
+    writes.submit();
     let swapchain = Swapchain {
         image_index: 0,
-        swpachain: vkobjects::swapchain::Swapchain::new(
-            &surface,
-            None,
-            Some(INITIAL_WINDOW_SIZE.as_uvec2().to_array()),
-        )
-        .unwrap(),
+        swpachain,
         surface,
     };
     let num_images = swapchain.num_images();
@@ -213,6 +238,8 @@ pub struct ResourceStates {
 
 pub struct RenderResources {
     depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
+    /// The scene in linear HDR colour, the same size as the depth; tonemapped into the target.
+    hdr: Image<R16G16B16A16Sfloat, ColorAttachmentStorage>,
     meshlets: Buffer<InstancedMeshlet>,
     bvh_node_stack: Buffer<InstanceBvhRoot>,
     meshlet_batches: Buffer<u32>,
@@ -239,6 +266,8 @@ pub struct RenderSettings {
     pub outline_color: Vec3,
     pub outline_radius: f32,
     pub pixel_error: f32,
+    /// Scales the HDR colour before tonemapping.
+    pub exposure: f32,
 }
 
 impl Default for RenderSettings {
@@ -253,6 +282,7 @@ impl Default for RenderSettings {
             outline_color: Vec3::new(0.920, 0.640, 0.118),
             outline_radius: 2.0,
             pixel_error: 1.0,
+            exposure: 1.0,
         }
     }
 }
@@ -302,6 +332,9 @@ pub(crate) fn settings_ui(
 
         ui.text("LOD Bias");
         settings.pixel_error = ui.slider(id!(), 0.0, 100.0, 300.0, settings.pixel_error);
+
+        ui.text("Exposure");
+        settings.exposure = ui.slider(id!(), 0.0, 8.0, 300.0, settings.exposure);
     });
 }
 
@@ -323,6 +356,7 @@ type RenderParams<'w, 's> = (
     Res<'w, RenderSettings>,
     Option<Res<'w, UiResources>>,
     ResMut<'w, ViewPortTarget>,
+    Res<'w, RenderSkybox>,
 );
 
 pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'static, 'static>>) {
@@ -349,7 +383,20 @@ impl RenderResources {
         let resources = resources.get_or_insert_with(|| {
             let depth_size = target_size.max(INITIAL_WINDOW_SIZE.as_uvec2());
             RenderResources {
-                depth_attachment: Image::new(depth_size.x, depth_size.y).unwrap(),
+                depth_attachment: Image::new_sampled(
+                    depth_size.x,
+                    depth_size.y,
+                    1,
+                    bindless::sampled_slot().unwrap(),
+                )
+                .unwrap(),
+                hdr: Image::new_storage(
+                    depth_size.x,
+                    depth_size.y,
+                    1,
+                    bindless::storage_slots(1).unwrap(),
+                )
+                .unwrap(),
                 meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
                 bvh_node_stack: Buffer::new(2 * 1024 * 1024, false).unwrap(),
                 variables: Buffer::new(1, false).unwrap(),
@@ -363,7 +410,12 @@ impl RenderResources {
             let size = depth_extent.max(target_size).max(min_size);
             let old = std::mem::replace(
                 &mut resources.depth_attachment,
-                Image::new(size.x, size.y).unwrap(),
+                Image::new_sampled(size.x, size.y, 1, bindless::sampled_slot().unwrap()).unwrap(),
+            );
+            frame.retire(old);
+            let old = std::mem::replace(
+                &mut resources.hdr,
+                Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap(),
             );
             frame.retire(old);
         }
@@ -380,6 +432,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
     target_image: ImageView<'_, F, ColorAttachmentStorage>,
     target_size: UVec2,
     camera: &mut RenderCamera,
+    sky: &RenderSkybox,
     instances: &InstanceManager,
     resources: &RenderResources,
     setting: &RenderSettings,
@@ -399,8 +452,9 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         Skybox::new(
             camera.camera.proj_inv(),
             camera.camera.view_inv(),
-            target_image,
+            resources.hdr.whole_view(),
             target_size,
+            sky.0,
         ),
         [target_size.x.div_ceil(8), target_size.y.div_ceil(8), 1],
     );
@@ -409,16 +463,16 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
     //     log::info!("{:#?}", i);
     // }
 
+    let dic = resources
+        .variables
+        .byte_range(offset_of!(TraversalVariables, vertex_count)..)
+        .cast::<DrawIndirectCommand>();
     if instances.instance_count > 0 {
         cmd.fill_buffer(resources.bvh_node_stack.range(..), !0);
         cmd.fill_buffer(resources.candidate_meshlets.range(..), !0);
         cmd.fill_buffer(resources.meshlet_batches.range(..), 0);
         let cull_proj = setting.freez_proj.unwrap_or(camera.camera.proj);
         let cull_view = setting.freez_view.unwrap_or(camera.camera.view);
-        let dic = resources
-            .variables
-            .byte_range(offset_of!(TraversalVariables, vertex_count)..)
-            .cast::<DrawIndirectCommand>();
         cmd.update_buffer(
             resources.variables.range(..),
             &TraversalVariables {
@@ -476,7 +530,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
             [64, 1, 1],
         );
         cmd.raster()
-            .color_attachment(target_image, None)
+            .color_attachment(resources.hdr.whole_view(), None)
             .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]), true)
             .backface_culling(true)
             .draw_indirect_with_dynstates(
@@ -497,7 +551,19 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
                 &[raster_scissor],
                 raster_viewport,
             );
+    }
 
+    cmd.compute(
+        Tonemap::new(
+            resources.hdr.whole_view(),
+            target_image,
+            target_size,
+            setting.exposure,
+        ),
+        [target_size.x.div_ceil(8), target_size.y.div_ceil(8), 1],
+    );
+
+    if instances.instance_count > 0 {
         if instances.any_outlined {
             cmd.raster()
                 .backface_culling(true)
@@ -550,6 +616,7 @@ fn record_frame(
         setting,
         ui_resources,
         mut target,
+        sky,
     ): RenderParams,
 ) {
     let target_size = target.rect.size().as_uvec2().max(UVec2::ONE);
@@ -563,7 +630,8 @@ fn record_frame(
         && extent.cmplt(target_size).any()
     {
         let size = extent.max(target_size).max(UVec2::from(swapchain.size));
-        let new = Image::new(size.x, size.y).unwrap();
+        let new =
+            Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap();
         if let Some(old) = target.image.replace(new) {
             frame.retire(old);
         }
@@ -594,6 +662,7 @@ fn record_frame(
                         target_image,
                         target_size,
                         &mut camera,
+                        &sky,
                         &instances,
                         resources,
                         &setting,

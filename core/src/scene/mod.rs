@@ -1,49 +1,61 @@
-//! Scene entities: mesh instances, the selected instance's editable material settings and spawning of imported scenes.
+//! Scene entities: mesh instances and how scene files save them, the selected instance's editable material settings, spawning scenes, and the skybox.
+use anyhow::Result;
 use bevy::ecs::reflect::ReflectResource;
 use bevy::{
-    app::{App, Last, PostUpdate, Update},
-    asset::{AssetEvent, Assets, Handle},
+    app::{App, PostUpdate, Update},
+    asset::{Assets, Handle},
     ecs::{
         component::Component,
         entity::Entity,
-        message::MessageReader,
         name::Name,
         query::{Changed, With, Without},
         resource::Resource,
         schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
+        world::{Mut, World},
     },
-    reflect::{Reflect, TypeRegistry},
+    reflect::Reflect,
     transform::components::Transform,
 };
-
 use glam::{Vec3, Vec4};
-use lava::{
-    bindings::Material,
-    image::{Image, format, usage},
-};
+use lava::bindings::Material;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    assets::{
-        mesh::{GpuMesh, MaterialSet, MaterialTextures, Scene},
-        texture::GpuTexture,
+    assets::{material::GpuMaterial, mesh::GpuMesh, texture::GpuTexture},
+    editor::picking::Selected,
+    scene::{
+        camera::{Camera, update_camera},
+        file::{LoadCtx, ReflectSceneComponent, SaveCtx, Scene, SceneComponent, spawn_scene},
     },
-    editor::{picking::Selected, selected::EditorView},
-    render::world::InstanceFlags,
-    scene::camera::{Camera, update_camera},
-    ui::builder::UiWindowBuilder,
 };
 use bevy::prelude::ReflectComponent;
 pub mod camera;
+pub mod file;
 
+/// Spawns the entities of `scene` as children of this entity, then is removed. Scene files
+/// save it as an asset index, so a scene can place other scenes.
 #[derive(Component, Clone, Reflect)]
-#[reflect(Component, Clone)]
+#[require(Transform)]
+#[reflect(Component, Clone, SceneComponent)]
 pub struct SpawnScene {
     pub scene: Handle<Scene>,
 }
 
+impl SceneComponent for SpawnScene {
+    type Saved = u32;
+    fn save(&self, ctx: &mut SaveCtx) -> Option<u32> {
+        ctx.asset(&self.scene)
+    }
+    fn load(saved: u32, ctx: &mut LoadCtx) -> Result<Self> {
+        Ok(Self {
+            scene: ctx.asset(saved)?,
+        })
+    }
+}
+
 /// The editable view of an instance's material. Only selected instances have one; it is read
-/// from the instance's [`MaterialSet`] and edits are written back into that GPU memory.
+/// from the instance's [`GpuMaterial`] and edits are written back into its GPU memory.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
 pub struct MaterialSettings {
@@ -82,7 +94,7 @@ impl Default for MaterialSettings {
 }
 
 impl MaterialSettings {
-    fn from_material(material: &Material, textures: &MaterialTextures) -> Self {
+    fn from_material(material: &Material, textures: &[Option<Handle<GpuTexture>>; 5]) -> Self {
         let [
             color_texture,
             metallic_roughness_texture,
@@ -106,7 +118,7 @@ impl MaterialSettings {
         }
     }
 
-    fn textures(&self) -> MaterialTextures {
+    fn textures(&self) -> [Option<Handle<GpuTexture>>; 5] {
         [
             self.color_texture.clone(),
             self.metallic_roughness_texture.clone(),
@@ -131,89 +143,63 @@ impl MaterialSettings {
     }
 }
 
-#[derive(Component, Reflect)]
-#[reflect(Component)]
+#[derive(Component, Reflect, Clone)]
+#[reflect(Component, SceneComponent)]
 pub struct Instance {
     pub mesh: Handle<GpuMesh>,
-    pub material_set: Handle<MaterialSet>,
-    pub material_index: u32,
-    pub flags: InstanceFlags,
+    pub material: Handle<GpuMaterial>,
 }
 
-fn add_sub_instances(
-    mut commands: Commands,
-    query: Query<(Entity, &SpawnScene)>,
-    scenes: Res<Assets<Scene>>,
-) {
-    for (entity, instance) in &query {
-        let Some(scene) = scenes.get(&instance.scene) else {
-            continue;
-        };
-
-        commands
-            .entity(entity)
-            .with_children(|parent| {
-                for instance in 0..scene.instance_transforms.len() {
-                    let mut child = parent.spawn((
-                        scene.get_instance(instance, InstanceFlags::empty()),
-                        scene.get_transform(instance),
-                    ));
-                    let name = &scene.instance_names[instance];
-                    if !name.is_empty() {
-                        child.insert(Name::new(name.clone()));
-                    }
-                }
-            })
-            .remove::<SpawnScene>();
-    }
+/// An [`Instance`] in a scene file: indices into the file's assets.
+#[derive(Serialize, Deserialize)]
+pub struct SavedInstance {
+    pub mesh: u32,
+    pub material: u32,
 }
 
-/// Textures load on their own, after the material sets that use them. Whenever one arrives
-/// or is replaced, the materials get its bindless index.
-fn resolve_material_textures(
-    mut texture_events: MessageReader<AssetEvent<GpuTexture>>,
-    mut set_events: MessageReader<AssetEvent<MaterialSet>>,
-    material_sets: Res<Assets<MaterialSet>>,
-    textures: Res<Assets<GpuTexture>>,
-) {
-    let arrived = |id| textures.get(id).is_some();
-    let texture_arrived = texture_events.read().any(|event| match event {
-        AssetEvent::Added { id } | AssetEvent::Modified { id } => arrived(*id),
-        _ => false,
-    });
-    let new_sets: Vec<_> = set_events
-        .read()
-        .filter_map(|event| match event {
-            AssetEvent::Added { id } | AssetEvent::Modified { id } => Some(*id),
-            _ => None,
+impl SceneComponent for Instance {
+    type Saved = SavedInstance;
+    fn save(&self, ctx: &mut SaveCtx) -> Option<SavedInstance> {
+        Some(SavedInstance {
+            mesh: ctx.asset(&self.mesh)?,
+            material: ctx.asset(&self.material)?,
         })
-        .collect();
-    if texture_arrived {
-        for (_, set) in material_sets.iter() {
-            set.resolve_textures(&textures);
-        }
-    } else {
-        for set in new_sets.into_iter().filter_map(|id| material_sets.get(id)) {
-            set.resolve_textures(&textures);
-        }
+    }
+    fn load(saved: SavedInstance, ctx: &mut LoadCtx) -> Result<Self> {
+        Ok(Self {
+            mesh: ctx.asset(saved.mesh)?,
+            material: ctx.asset(saved.material)?,
+        })
     }
 }
 
-/// Writes edited settings into the material set, which is what the renderer reads.
+fn spawn_scenes(world: &mut World) {
+    let pending: Vec<(Entity, Handle<Scene>)> = world
+        .query::<(Entity, &SpawnScene)>()
+        .iter(world)
+        .map(|(entity, spawn)| (entity, spawn.scene.clone()))
+        .collect();
+    for (root, handle) in pending {
+        world.resource_scope(|world, scenes: Mut<Assets<Scene>>| {
+            if let Some(scene) = scenes.get(&handle) {
+                spawn_scene(world, root, scene);
+                world.entity_mut(root).remove::<SpawnScene>();
+            }
+        });
+    }
+}
+
+/// Writes edited settings into the material, which is what the renderer reads.
 fn write_material_settings(
     query: Query<(&Instance, &MaterialSettings), Changed<MaterialSettings>>,
-    mut material_sets: ResMut<Assets<MaterialSet>>,
+    mut materials: ResMut<Assets<GpuMaterial>>,
 ) {
     for (instance, settings) in &query {
-        // This marks the set as modified, so `resolve_material_textures` writes the indices
-        // of its new textures.
-        let Some(mut set) = material_sets.get_mut(&instance.material_set) else {
+        let Some(mut material) = materials.get_mut(&instance.material) else {
             continue;
         };
-        let index = instance.material_index as usize;
-        set.textures[index] = settings.textures();
-        let mut materials = set.buffer.range(..);
-        materials[index] = settings.into_material(materials[index]);
+        material.textures = settings.textures();
+        material.write(settings.into_material(material.read()));
     }
 }
 
@@ -229,18 +215,17 @@ fn remove_material_settings(
 fn add_material_settings(
     mut commands: Commands,
     query: Query<(Entity, &Instance), (With<Selected>, Without<MaterialSettings>)>,
-    material_sets: Res<Assets<MaterialSet>>,
+    materials: Res<Assets<GpuMaterial>>,
 ) {
     for (entity, instance) in &query {
-        let Some(set) = material_sets.get(&instance.material_set) else {
+        let Some(material) = materials.get(&instance.material) else {
             continue;
         };
-        let material = &set.buffer[instance.material_index as usize];
         commands
             .entity(entity)
             .insert(MaterialSettings::from_material(
-                material,
-                &set.textures[instance.material_index as usize],
+                &material.read(),
+                &material.textures,
             ));
     }
 }
@@ -248,9 +233,7 @@ fn add_material_settings(
 #[allow(non_snake_case)]
 pub fn ScenePlugin(app: &mut App) {
     app.add_systems(PostUpdate, update_camera)
-        .add_systems(Update, add_sub_instances)
-        // After the asset events of the frame are sent.
-        .add_systems(Last, resolve_material_textures)
+        .add_systems(Update, spawn_scenes)
         .add_systems(
             Update,
             (
@@ -262,13 +245,19 @@ pub fn ScenePlugin(app: &mut App) {
         )
         .register_type::<Instance>()
         .register_type::<MaterialSettings>()
-        .register_type::<InstanceFlags>()
         .register_type::<SpawnScene>()
-        .register_type::<Camera>();
+        .register_type::<Transform>()
+        .register_type::<Name>()
+        .register_type_data::<Transform, ReflectSceneComponent>()
+        .register_type_data::<Name, ReflectSceneComponent>()
+        .register_type::<Camera>()
+        .init_resource::<Skybox>();
 }
 
-#[derive(Resource, Reflect)]
+/// The sky drawn behind the scene: an equirectangular texture, usually HDR (baked from an
+/// OpenEXR file). Until it is loaded, or without one, the sky is a flat colour.
+#[derive(Resource, Reflect, Default)]
 #[reflect(Resource)]
 pub struct Skybox {
-    image: Handle<GpuTexture>,
+    pub image: Handle<GpuTexture>,
 }

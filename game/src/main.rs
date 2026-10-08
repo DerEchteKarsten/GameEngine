@@ -1,9 +1,8 @@
 //! Sample game binary: boots the engine and spawns an editor camera and glTF scene
 use core::{
     CorePlugin,
-    assets::mesh::Scene,
     editor::camera::EditorCamera,
-    scene::{SpawnScene, camera::CameraBundle},
+    scene::{Skybox, SpawnScene, camera::CameraBundle, file::Scene},
     ui::{
         UiContext,
         builder::{UiBuilder, UiWindowBuilder},
@@ -30,6 +29,9 @@ fn init(mut cmd: Commands, asset_server: Res<AssetServer>) {
         100.0,
     );
     cmd.spawn((camera, EditorCamera));
+    cmd.insert_resource(Skybox {
+        image: asset_server.load("kloofendal_48d_partly_cloudy_puresky_4k.tex"),
+    });
     // cmd.spawn((Transform::default(), SpawnScene { scene: handle }));
 }
 
