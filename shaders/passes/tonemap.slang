@@ -1,3 +1,4 @@
+#define USE_CLOCKS
 #include "bindless.slang"
 #include "profile.slang"
 #include "math.slang"
@@ -17,9 +18,9 @@ struct TonemapBindings {
     column_major float4x4 inverse_view;
     uint2 view_port_size;
     float exposure;
-    // Bindless index of an equirectangular texture, NULL_HANDLE for none.
-    uint sky;
 }
+
+[SpecializationConstant] const uint sky;
 
 [[vk::push_constant]] TonemapBindings bindings;
 // Drawn where there is no sky texture, or while it loads.
@@ -40,17 +41,17 @@ float2 equirectangular_uv(float3 dir) {
 }
 
 float3 sky_color(uint2 pixel) {
-    if (bindings.sky == NULL_HANDLE) {
+    if (sky == NULL_HANDLE) {
         return NO_SKY_COLOR;
     }
-    let sky = Tex2D<float4>(bindings.sky, NULL_HANDLE);
+    let texture = Tex2D<float4>(sky, NULL_HANDLE);
     let dir = view_dir(pixel);
     // The mip whose texels are about a pixel apart: the angle between neighbouring pixels
     // times the texels per radian of the texture's rows.
     let pixel_angle = length(view_dir(pixel + uint2(1, 0)) - dir);
-    let lod = log2(max(pixel_angle * float(sky.GetDimensions().y) * FRAC_1_PI, 1.0));
+    let lod = log2(max(pixel_angle * float(texture.GetDimensions().y) * FRAC_1_PI, 1.0));
     // Sampler 2 repeats, so the seam where u wraps is filtered across.
-    return sky.SampleLevel(equirectangular_uv(dir), lod, 2).rgb;
+    return texture.SampleLevel(equirectangular_uv(dir), lod, 2).rgb;
 }
 
 float3 aces(float3 x) {

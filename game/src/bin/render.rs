@@ -30,7 +30,7 @@ use tracing_subscriber::{
 };
 
 const USAGE: &str = "usage: render [--frames N] [--profile DIR] [--eye X,Y,Z] [--target X,Y,Z]
-              [--fov DEG] SCENE OUTPUT.png
+              [--fov DEG] [--size WxH] SCENE OUTPUT.png
 
 Renders the scene file SCENE (.scene or .scene.ron, inside the asset directory)
 and writes the image to OUTPUT.png.
@@ -38,6 +38,7 @@ and writes the image to OUTPUT.png.
   --eye X,Y,Z    camera position in world space (+Z up, default 0,0,2)
   --target X,Y,Z point the camera looks at (default 10,0,3)
   --fov DEG      vertical field of view in degrees (default 65)
+  --size WxH     image size in pixels (default 1280x720)
   --frames N     render N frames once the scene is loaded (default 1); the image is the last
   --profile DIR  profile those frames: write DIR/profile.txt (summary, also printed) and
                  DIR/profile.json (Chrome trace for Perfetto or chrome://tracing);
@@ -51,6 +52,7 @@ struct Args {
     eye: Vec3,
     target: Vec3,
     fov: f32,
+    size: UVec2,
 }
 
 fn parse_vec3(arg: &str) -> Option<Vec3> {
@@ -65,6 +67,7 @@ fn parse_args() -> Option<Args> {
     let (mut frames, mut profile) = (1, None);
     let (mut eye, mut target, mut fov) =
         (Vec3::new(0.0, 0.0, 2.0), Vec3::new(10.0, 0.0, 3.0), 65.0);
+    let mut size = UVec2::new(1280, 720);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--frames" => frames = args.next()?.parse().ok().filter(|n| *n > 0)?,
@@ -77,6 +80,14 @@ fn parse_args() -> Option<Args> {
                     .parse()
                     .ok()
                     .filter(|f| *f > 0.0 && *f < 180.0)?
+            }
+            "--size" => {
+                let arg = args.next()?;
+                let (w, h) = arg.split_once('x')?;
+                size = UVec2::new(w.parse().ok()?, h.parse().ok()?);
+                if size.min_element() == 0 {
+                    return None;
+                }
             }
             _ if arg.starts_with("--") => return None,
             _ => positional.push(PathBuf::from(arg)),
@@ -94,10 +105,10 @@ fn parse_args() -> Option<Args> {
         eye,
         target,
         fov,
+        size,
     })
 }
 
-const SIZE: UVec2 = UVec2::new(1280, 720);
 const SKYBOX: &str = "kloofendal_48d_partly_cloudy_puresky_4k.tex";
 const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -134,7 +145,7 @@ fn run(args: &Args) -> Result<(), String> {
         MeshAssets,
         TransformPlugin,
         ScenePlugin,
-        HeadlessRenderPlugin { size: SIZE },
+        HeadlessRenderPlugin { size: args.size },
     ));
     #[cfg(feature = "profiling")]
     if args.profile.is_some() {

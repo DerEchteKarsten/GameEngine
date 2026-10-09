@@ -1,6 +1,14 @@
+#define USE_CLOCKS
 #include "bindless.slang"
 #include "profile.slang"
 #include "datatypes.slang"
+
+// The sizes of the render resources' buffers, which never change, so the clamps fold.
+[SpecializationConstant] const uint max_nodes = 0;
+[SpecializationConstant] const uint max_candidate_meshlets = 0;
+[SpecializationConstant] const uint max_visible_meshlets = 0;
+[SpecializationConstant] const uint max_blended_meshlets = 0;
+[SpecializationConstant] const uint max_outlined_meshlets = 0;
 
 struct BvhCullBindings {
     MutBuf<InstanceBvhRoot> queue;
@@ -18,11 +26,6 @@ struct BvhCullBindings {
     float4x4 clip_from_world;
     float window_height;
     float lod_bias;
-    uint max_nodes;
-    uint max_candidate_meshlets;
-    uint max_visible_meshlets;
-    uint max_blended_meshlets;
-    uint max_outlined_meshlets;
 };
 [[vk::push_constant]] BvhCullBindings b;
 #define INVALID_U32 (~uint(0))
@@ -177,7 +180,7 @@ void ProcessNodeBatch(uint batchSize, uint groupIndex)
     {
         InterlockedAdd(b.queue_state.val.node_write_offset, GroupNumCandidateNodes, GroupCandidateNodesOffset);
         // Nodes that don't fit in the queue are dropped, and must not be counted as pending.
-        GroupNumAcceptedNodes = min(GroupNumCandidateNodes, b.max_nodes - min(GroupCandidateNodesOffset, b.max_nodes));
+        GroupNumAcceptedNodes = min(GroupNumCandidateNodes, max_nodes - min(GroupCandidateNodesOffset, max_nodes));
         InterlockedAdd(b.queue_state.val.node_count, GroupNumAcceptedNodes);
     }
     AllMemoryBarrierWithGroupSync();
@@ -227,7 +230,7 @@ void ProcessNodeBatch(uint batchSize, uint groupIndex)
         uint candidateWriteOffset = 0;
         InterlockedAdd(b.queue_state.val.candidate_meshlet_write_offset, totalMeshletsInGroup, candidateWriteOffset);
 
-        const uint candidateEnd = min(candidateWriteOffset + totalMeshletsInGroup, b.max_candidate_meshlets);
+        const uint candidateEnd = min(candidateWriteOffset + totalMeshletsInGroup, max_candidate_meshlets);
         GroupCandidateMeshletBase = candidateWriteOffset;
         GroupCandidateMeshletCount = (uint)max((int)candidateEnd - (int)candidateWriteOffset, 0);
     }
@@ -301,12 +304,12 @@ void ProcessMeshletBatch(uint meshletBatchStartIndex, uint meshletBatchReadySize
             let meshlet = InstancedMeshlet((uint64_t)job.instance, header.meshlets + job.meshlet);
             let flags = instance_flags(b.instance_flags.val, job.instance);
             if ((flags & OUTLINE_BIT) != 0) {
-                append_meshlet(OUTLINED_DRAW, b.outlined_meshlets, b.max_outlined_meshlets, meshlet);
+                append_meshlet(OUTLINED_DRAW, b.outlined_meshlets, max_outlined_meshlets, meshlet);
             }
             if ((flags & OPAQUE_BIT) == 0) {
-                append_meshlet(BLENDED_DRAW, b.blended_meshlets, b.max_blended_meshlets, meshlet);
+                append_meshlet(BLENDED_DRAW, b.blended_meshlets, max_blended_meshlets, meshlet);
             } else {
-                append_meshlet(OPAQUE_DRAW, b.visible_meshlets, b.max_visible_meshlets, meshlet);
+                append_meshlet(OPAQUE_DRAW, b.visible_meshlets, max_visible_meshlets, meshlet);
             }
         }
 
@@ -353,7 +356,7 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
 
                 nodeBatchLocalOffset = 0;
                 nodeBatchBaseIndex = GroupNodeBatchStartIndex;
-                if (nodeBatchBaseIndex >= b.max_nodes)
+                if (nodeBatchBaseIndex >= max_nodes)
                 {
                     processNodeQueue = false;
                     continue;
@@ -361,7 +364,7 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
             }
 
             const uint nodeQueueIndex = nodeBatchBaseIndex + nodeBatchLocalOffset + groupIndex;
-            bool laneHasNode = ((nodeBatchLocalOffset + groupIndex) < MAX_BVH_NODES_PER_GROUP) && nodeQueueIndex < b.max_nodes;
+            bool laneHasNode = ((nodeBatchLocalOffset + groupIndex) < MAX_BVH_NODES_PER_GROUP) && nodeQueueIndex < max_nodes;
             if (laneHasNode)
             {
                 let nodeData = b.queue.val[nodeQueueIndex];
@@ -406,7 +409,7 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
             meshletBatchStartIndex = GroupMeshletBatchStartIndex;
         }
 
-        if (!processNodeQueue && GroupMeshletBatchStartIndex >= b.max_candidate_meshlets / DAG_CULL_GROUP_SIZE)
+        if (!processNodeQueue && GroupMeshletBatchStartIndex >= max_candidate_meshlets / DAG_CULL_GROUP_SIZE)
             break;
 
         if (groupIndex == 0)

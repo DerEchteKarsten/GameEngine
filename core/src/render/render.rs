@@ -634,7 +634,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         let cull_view = setting.freez_view.unwrap_or(camera.camera.view);
         let clip_from_world = (cull_proj * cull_view).transpose();
         cmd.compute(
-            InstanceCull::new(
+            InstanceCull::push_bindings(
                 instances.instance_count as u64,
                 instances
                     .bvh_root_nodes
@@ -650,7 +650,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
             [instances.instance_count.div_ceil(64) as u32, 1, 1],
         );
         cmd.compute(
-            BvhCull::new(
+            BvhCull::push_bindings(
                 resources.bvh_node_stack.range(..),
                 resources.variables.range(..),
                 resources.meshlets.range(..),
@@ -670,6 +670,8 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
                 clip_from_world,
                 target_size.y as f32,
                 setting.pixel_error,
+            )
+            .constant_bindings(
                 resources.bvh_node_stack.len() as u32,
                 resources.candidate_meshlets.len() as u32,
                 resources.meshlets.len() as u32,
@@ -687,7 +689,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         .color_attachment(resources.revealage.whole_view(), None)
         .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]))
         .launch_indirect(
-            Raster::new(
+            Raster::push_bindings(
                 view,
                 proj,
                 eye,
@@ -700,7 +702,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
             RasterState::default().blends([Blend::Replace, Blend::Skip, Blend::Skip]),
         )
         .launch_indirect(
-            RasterBlended::new(
+            RasterBlended::push_bindings(
                 view,
                 proj,
                 eye,
@@ -717,9 +719,9 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         .record("Scene");
 
     cmd.begin_scope("post");
-    cmd.flush_all();
+    // cmd.flush_all();
     cmd.compute(
-        Tonemap::new(
+        Tonemap::push_bindings(
             resources.hdr.whole_view(),
             resources.depth_attachment.whole_view(),
             resources.accum.whole_view(),
@@ -729,8 +731,8 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
             camera.camera.view_inv(),
             target_size,
             setting.exposure,
-            sky.0,
-        ),
+        )
+        .constant_bindings(sky.0),
         [target_size.x.div_ceil(8), target_size.y.div_ceil(8), 1],
     );
 
@@ -738,7 +740,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         cmd.raster(target_size)
             .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]))
             .launch_indirect(
-                RasterOutline::new(
+                RasterOutline::push_bindings(
                     view,
                     proj,
                     eye,
@@ -753,7 +755,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
             .record("Outline");
 
         cmd.compute(
-            DrawOutline::new(
+            DrawOutline::push_bindings(
                 resources.depth_attachment.whole_view(),
                 target_image,
                 setting.outline_color.extend(setting.outline_radius),
@@ -848,10 +850,10 @@ fn record_frame(
                     }
 
                     if let Some(ui_resources) = ui_resources.as_ref() {
-                        let ui = RasterUi::new(
+                        let ui = RasterUi::push_bindings(
                             ui_resources.verticies[frame_in_flight].range(..),
-                            ui_resources.font_atlas.whole_view(),
-                        );
+                        )
+                        .constant_bindings(ui_resources.font_atlas.whole_view());
                         // The viewport tab reads the scene through a handle in its vertices.
                         let ui = match &target.image {
                             Some(image) => ui.storage_read(image.whole_view()),

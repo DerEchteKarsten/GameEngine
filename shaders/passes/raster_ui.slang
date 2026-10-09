@@ -1,3 +1,4 @@
+#define USE_CLOCKS
 #include "datatypes.slang"
 #include "bindless.slang"
 #include "profile.slang"
@@ -17,9 +18,11 @@ struct UIVertex {
     uint2 pad;
 }
 
+// Made once with the UI resources.
+SCONST(Tex2D<float>, font_atlas)
+
 struct RasterMeshUiBindings {
     Buf<UIVertex> verticies;
-    Tex2D<float> font_atlas;
 }
 
 [[vk::push_constant]] RasterMeshUiBindings b;
@@ -49,7 +52,7 @@ PSOutput raster_ui_fragment(in VSOutput input)
     texture.SampledIndex = input.texture.x;
     texture.StorageIndex = input.texture.y;
     if (texture.IsNull()) {
-        output.color = float4(input.color.xyz, input.color.a * b.font_atlas.Sample(input.uv));
+        output.color = float4(input.color.xyz, input.color.a * font_atlas.Sample(input.uv));
     } else {
         output.color = float4(texture.Sample(input.uv, 2).xyz * input.color.xyz, input.color.a);
     }

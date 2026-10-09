@@ -50,6 +50,7 @@ re!(PATH_DEP_RE, r"(?m)^([\w-]+)\s*=\s*\{[^}]*path\s*=");
 re!(SHADER_ATTR_RE, r#"\[shader\("(\w+)"\)\]"#);
 re!(CALL_RE, r"(\w+)\s*\(");
 re!(PUSH_CONSTANT_RE, r"\[\[vk::push_constant\]\]\s*(\w+)");
+re!(SCONST_RE, r"^\s*SCONST\(.*,\s*(\w+)\)|\[SpecializationConstant\].*\bconst\s+\w+\s+(\w+)");
 re!(INCLUDE_RE, r#"(?m)^\s*#include\s+"([^"]+)""#);
 re!(SIG_END_RE, r"[{;]\s*$|\bwhere\b");
 re!(SIG_TRAIL_RE, r"\s*(\{|;)\s*$");
@@ -266,7 +267,7 @@ fn shader_table(root: &Path) -> (Vec<String>, String) {
             .collect();
         // Passes sharing push constants or entry points declare them in an include, whose entry
         // points then belong to every pass that includes it.
-        let (mut entries, mut pc) = (Vec::new(), None);
+        let (mut entries, mut pc, mut consts) = (Vec::new(), None, Vec::new());
         for source in std::iter::once(&text).chain(&includes) {
             let lines: Vec<&str> = source.lines().collect();
             for (i, line) in lines.iter().enumerate() {
@@ -285,11 +286,19 @@ fn shader_table(root: &Path) -> (Vec<String>, String) {
                 if let Some(m) = PUSH_CONSTANT_RE.captures(line) {
                     pc.get_or_insert_with(|| m[1].to_string());
                 }
+                if let Some(m) = SCONST_RE.captures(line).filter(|_| !line.trim().starts_with(['#', '/'])) {
+                    consts.push(m.get(1).or(m.get(2)).unwrap().as_str().to_string());
+                }
             }
         }
         let pc = pc.unwrap_or_else(|| "?".to_string());
         let name = f.file_name().unwrap().to_string_lossy();
-        rows.push(format!("- {name}: pc `{pc}`; {}", entries.join(", ")));
+        let consts = if consts.is_empty() {
+            String::new()
+        } else {
+            format!("; sconst {}", consts.join(", "))
+        };
+        rows.push(format!("- {name}: pc `{pc}`{consts}; {}", entries.join(", ")));
     }
     let incs = slang_files(root, Some("include"))
         .iter()

@@ -19,7 +19,7 @@ use bevy::{
     transform::components::GlobalTransform,
 };
 use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
-use lava::bindings::{DrawAabbs, DrawArrows, DrawSpheres, Gizzmo};
+use lava::bindings::{DrawGizzmos as DrawGizzmosPass, Gizzmo};
 use lava::{
     buffer::Buffer,
     command_buffer::{Blend, CommandBuffer, RasterState},
@@ -204,6 +204,7 @@ impl GizzmoShape for ArrowGizzmo {
     }
 }
 
+/// The shape index `draw_gizzmos.slang` draws.
 #[derive(PartialEq, Debug)]
 pub enum GizzmoType {
     Box,
@@ -357,32 +358,36 @@ impl GizzmoResources {
             return;
         }
         let world_to_clip = camera.camera.proj * camera.camera.view;
-        let gizzmos = |range: &Range<usize>| {
-            self.gizzmos
-                .range((MAX_GIZZMOS * frame_in_flight + range.start)..)
-        };
         let state = || {
             RasterState::default()
                 .blends([Blend::Alpha])
                 .backface_culling(false)
         };
-        // An empty range draws no instances.
+        // One pipeline for every shape; an empty range draws no instances.
+        let draw = |shape: GizzmoType, range: &Range<usize>| {
+            DrawGizzmosPass::push_bindings(
+                world_to_clip,
+                self.gizzmos.range(..),
+                (MAX_GIZZMOS * frame_in_flight + range.start) as u32,
+                shape as u32,
+            )
+        };
         cmd.raster(target_size)
             .color_attachment(target, None)
             .draw(
-                DrawAabbs::new(world_to_clip, gizzmos(&self.aabb_range)),
+                draw(GizzmoType::Box, &self.aabb_range),
                 36,
                 self.aabb_range.len() as u32,
                 state(),
             )
             .draw(
-                DrawSpheres::new(world_to_clip, gizzmos(&self.sphere_range)),
+                draw(GizzmoType::Sphere, &self.sphere_range),
                 576,
                 self.sphere_range.len() as u32,
                 state(),
             )
             .draw(
-                DrawArrows::new(world_to_clip, gizzmos(&self.arrow_range)),
+                draw(GizzmoType::Arrow, &self.arrow_range),
                 216,
                 self.arrow_range.len() as u32,
                 state(),

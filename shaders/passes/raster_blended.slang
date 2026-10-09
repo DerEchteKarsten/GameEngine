@@ -1,3 +1,4 @@
+#define USE_CLOCKS
 // Meshlets of blended materials, accumulated for weighted blended order-independent
 // transparency (McGuire and Bavoil 2013); the tonemap pass composites them.
 #include "scene_raster.slang"

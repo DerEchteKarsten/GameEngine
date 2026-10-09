@@ -1,3 +1,4 @@
+#define USE_CLOCKS
 #include "bindless.slang"
 #include "profile.slang"
 #include "datatypes.slang"
