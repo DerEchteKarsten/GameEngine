@@ -23,8 +23,6 @@ futures = {workspace = true}
 tracing = {workspace = true}
 tracing-subscriber = {workspace = true}
 tracing-log = {workspace = true}
-tracing-tracy = {workspace = true, optional = true}
-tracy-client = {workspace = true, optional = true}
 tracing-core = {workspace = true}
 fontdue = {workspace = true}
 ron = {workspace = true}
@@ -39,8 +37,8 @@ half = {workspace = true}
 
 [features]
 default = ["profiling"]
-# The profiler (CPU spans, GPU timings, shader clocks, its editor tab) and Tracy.
-profiling = ["lava/profiling", "dep:tracing-tracy", "dep:tracy-client"]
+# The profiler (CPU spans, GPU timings, shader clocks, its editor tab).
+profiling = ["lava/profiling"]
 dynamic_linking = ["bevy/dynamic_linking"]
 
 [build-dependencies]

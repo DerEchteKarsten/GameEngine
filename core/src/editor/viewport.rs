@@ -21,6 +21,8 @@ pub struct ViewPort {
     pub rect: Rect,
     pub focused: bool,
     pub hovered: bool,
+    /// The scene isn't rendered while set (Render Settings' pause button).
+    pub paused: bool,
     #[reflect(ignore, clone)]
     pub image: BindlessHandle,
     pub image_size: Vec2,

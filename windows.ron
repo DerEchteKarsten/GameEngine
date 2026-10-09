@@ -1,67 +1,40 @@
 (
     docking_nodes: Node(
         split: Horizontal,
-        extend: 0.1094336,
+        extend: 0.10663628,
         left: Node(
             split: Vertical,
             extend: 0.5421812,
             left: Leaf(
-                window: 1,
+                window: 2,
             ),
             right: Leaf(
-                window: 3,
+                window: 4,
             ),
         ),
         right: Node(
             split: Horizontal,
-            extend: 0.5419054,
+            extend: 0.89788955,
             left: Node(
                 split: Vertical,
                 extend: 0.9,
                 left: Leaf(
-                    window: 4,
+                    window: 1,
                 ),
                 right: Leaf(
-                    window: 2,
+                    window: 0,
                 ),
             ),
             right: Leaf(
-                window: 0,
+                window: 3,
             ),
         ),
     ),
     windows: [
         (
             rect: (
-                min: (1705.0647, 0.0),
-                max: (2880.0, 1800.0),
-            ),
-            tabs: [
-                (
-                    label: "Selected",
-                ),
-                (
-                    label: "Profiler",
-                ),
-            ],
-            active_tab: 1,
-        ),
-        (
-            rect: (
-                min: (0.0, 0.0),
-                max: (315.1687, 975.92615),
-            ),
-            tabs: [
-                (
-                    label: "Hierarchy",
-                ),
-            ],
-            active_tab: 0,
-        ),
-        (
-            rect: (
-                min: (315.16876, 1620.0),
-                max: (1705.0647, 1800.0),
+                min: (150.14388, 1581.2999),
+                max: (1279.5598, 1757.0),
             ),
             tabs: [
                 (
@@ -78,24 +51,51 @@
         ),
         (
             rect: (
-                min: (0.0, 975.92615),
-                max: (315.1687, 1800.0),
+                min: (150.14388, 0.0),
+                max: (1279.5598, 1581.2999),
             ),
             tabs: [
                 (
-                    label: "Render Settings",
+                    label: "Viewport",
+                ),
+                (
+                    label: "Profiler",
                 ),
             ],
             active_tab: 0,
         ),
         (
             rect: (
-                min: (315.16876, 0.0),
-                max: (1705.0647, 1620.0),
+                min: (0.0, 0.0),
+                max: (150.14392, 952.61237),
             ),
             tabs: [
                 (
-                    label: "Viewport",
+                    label: "Hierarchy",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (1279.5598, 0.0),
+                max: (1408.0, 1757.0),
+            ),
+            tabs: [
+                (
+                    label: "Selected",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (0.0, 952.61237),
+                max: (150.14392, 1757.0),
+            ),
+            tabs: [
+                (
+                    label: "Render Settings",
                 ),
             ],
             active_tab: 0,

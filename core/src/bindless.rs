@@ -56,6 +56,11 @@ pub fn storage_slots(count: u32) -> Result<u32> {
     STORAGE.alloc(count, max_storage_images())
 }
 
+/// Returns slots from `storage_slots` that no dropped `Image` gives back (the swapchain's).
+pub fn release_storage_slots(first: u32, count: u32) {
+    STORAGE.free.lock().unwrap().extend(first..first + count);
+}
+
 /// Hooks the allocators into lava, call right after `lava::init`. Retired images (`Frame::retire`)
 /// drop only after their frame, so no slot is handed out while a pending frame reads it.
 pub fn init() {

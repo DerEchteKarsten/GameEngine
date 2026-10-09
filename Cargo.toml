@@ -39,8 +39,6 @@ futures = "0.3.31"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 tracing-log = "0.2"
 tracing = {version = "0.1.44"}
-tracing-tracy = {version = "0.11.4", features = ["ondemand"]}
-tracy-client = {version = "0.18.4", features = ["ondemand"]}
 tracing-core = {version = "0.1.36"}
 fontdue = "0.9.3"
 ron = "0.12.1"

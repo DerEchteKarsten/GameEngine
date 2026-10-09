@@ -1834,13 +1834,13 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
 
     /// Draws `len` values as bars from `min` to `max` (averaged where there are more values
     /// than pixels) and returns the index of the first value of the clicked bar.
-    pub fn histogram<'b>(
+    pub fn histogram(
         &mut self,
         width: f32,
         height: f32,
         max: f32,
         min: f32,
-        values: impl Iterator<Item = &'b f32>,
+        values: impl Iterator<Item = f32>,
         len: usize,
     ) -> Option<usize> {
         let size = Self::contain_size(Vec2::new(width, height));

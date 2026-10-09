@@ -1,5 +1,7 @@
 //! Per-frame rendering: swapchain, sync, render resources/settings, the shared scene passes and windowed frame recording.
+use bevy::ecs::change_detection::{DetectChanges, DetectChangesMut};
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect, time::Time};
+use smallvec::SmallVec;
 use std::{
     collections::HashMap,
     mem::offset_of,
@@ -39,7 +41,10 @@ use lava::{
             self, ColorAspect, D32Sfloat, Format, R16G16B16A16Sfloat, R16Sfloat, R32G32B32A32Sfloat,
         },
         slice::{AsImage, ImageView},
-        usage::{ColorAttachmentSampled, ColorAttachmentStorage, DepthAttachmentSampled},
+        usage::{
+            ColorAttachmentSampled, ColorAttachmentSampledStorage, ColorAttachmentStorage,
+            DepthAttachmentSampled,
+        },
     },
     state::Ctx,
     vkobjects::{
@@ -49,7 +54,7 @@ use lava::{
 };
 
 #[cfg(feature = "profiling")]
-use crate::profiler::{GpuFrame, GpuTimings, capture::now_ns};
+use crate::profiler::{GpuTimings, capture};
 use crate::{
     INITIAL_WINDOW_SIZE,
     assets::texture::{GpuTexture, texture_index},
@@ -149,16 +154,44 @@ pub fn aquire_swapchain_image(
 
 pub fn resize_swapchain(
     mut swapchain: ResMut<Swapchain>,
+    mut sync: ResMut<SynchronizationResources>,
     window: Extract<Single<&Window, With<PrimaryWindow>>>,
+    settings: Extract<Option<Res<RenderSettings>>>,
 ) {
+    let swapchain = &mut *swapchain;
+    let mut recreate = false;
+    if let Some(settings) = settings.as_ref()
+        && settings.present_mode != swapchain.swpachain.present_mode
+    {
+        swapchain.swpachain.present_mode = settings.present_mode;
+        recreate = true;
+    }
     let size = window.physical_size();
     if size.to_array() != swapchain.swpachain.size {
         info!("Resized Swapchain");
-        let swapchain = &mut *swapchain;
+        recreate = true;
+    }
+    if recreate {
+        let old_images = swapchain.num_images() as u32;
+        let old_first = swapchain.swpachain.image(0).handle.descriptor_index_set1;
         swapchain
             .swpachain
             .recreate(&swapchain.surface, size.to_array())
             .unwrap();
+        // The new images are unbound, and their count can change with the present mode.
+        let num_images = swapchain.num_images();
+        let first = if num_images as u32 == old_images {
+            old_first
+        } else {
+            bindless::release_storage_slots(old_first, old_images);
+            while sync.render_finished.len() < num_images {
+                sync.render_finished.push(Semaphore::new().unwrap());
+            }
+            bindless::storage_slots(num_images as u32).unwrap()
+        };
+        let mut writes = BindlessWrites::default();
+        swapchain.swpachain.bind_storage(first, &mut writes);
+        writes.submit();
     }
 }
 
@@ -256,7 +289,9 @@ pub struct RenderResources {
     /// because specular highlights times the weight overflow half floats.
     accum: Image<R32G32B32A32Sfloat, ColorAttachmentStorage>,
     /// The product of `1 - alpha` of the blended fragments: how much of `hdr` shows through.
-    revealage: Image<R16Sfloat, ColorAttachmentStorage>,
+    /// The tonemap reads it through the sampler (a typed load of a storage image is several
+    /// times slower on Intel) and resets it as storage.
+    revealage: Image<R16Sfloat, ColorAttachmentSampledStorage>,
     meshlets: Buffer<InstancedMeshlet>,
     /// Visible meshlets of materials with a negative alpha cutoff, drawn after `meshlets`.
     blended_meshlets: Buffer<InstancedMeshlet>,
@@ -276,9 +311,11 @@ pub struct RenderResources {
 pub struct RenderValues {
     meshlet_count: u32,
     instance_count: u32,
+    #[reflect(ignore, clone)]
+    present_modes: SmallVec<[&'static str; 4]>,
 }
 
-#[derive(Resource, Clone, Reflect)]
+#[derive(Resource, Clone, PartialEq, Reflect)]
 #[reflect(Resource)]
 pub struct RenderSettings {
     pub freez_proj: Option<Mat4>,
@@ -292,11 +329,14 @@ pub struct RenderSettings {
     pub pixel_error: f32,
     /// Scales the HDR colour before tonemapping.
     pub exposure: f32,
+    /// Index into the swapchain's `present_modes` (0: lowest latency).
+    pub present_mode: usize,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
         Self {
+            present_mode: 0,
             draw_scene_blas_nodes: false,
             draw_scene_leaf_nodes: false,
             draw_scene_nodes: false,
@@ -315,10 +355,12 @@ pub(crate) fn settings_ui(
     mut ui: UiBuilder,
     res: Res<RenderValues>,
     time: Res<Time>,
-    mut settings: ResMut<RenderSettings>,
+    mut s: ResMut<RenderSettings>,
     cam: Single<(&Camera, &GlobalTransform)>,
+    mut view_port: Option<ResMut<ViewPort>>,
     mut last_times: Local<([Duration; 32], u64)>,
 ) {
+    // Edits a copy, so the settings only count as changed when a value does.
     ui.build("Render Settings", |ui| {
         last_times.1 = (last_times.1 + 1) % 32;
 
@@ -333,44 +375,56 @@ pub(crate) fn settings_ui(
         ui.text(format!("Num Meshlets: {}", res.meshlet_count));
         ui.text(format!("Num Instances: {}", res.instance_count));
         if ui.button("Freez Cam") {
-            settings.freez_proj = Some(cam.0.proj);
-            settings.freez_view = Some(cam.0.view);
-            settings.freez_pos = Some(cam.1.translation().extend(0.0))
+            s.freez_proj = Some(cam.0.proj);
+            s.freez_view = Some(cam.0.view);
+            s.freez_pos = Some(cam.1.translation().extend(0.0))
         }
         if ui.button("Unfreeze Cam") {
-            settings.freez_proj = None;
-            settings.freez_view = None;
-            settings.freez_pos = None;
+            s.freez_proj = None;
+            s.freez_view = None;
+            s.freez_pos = None;
+        }
+        if let Some(vp) = view_port.as_deref_mut()
+            && ui.button(if vp.paused {
+                "Resume Viewport"
+            } else {
+                "Pause Viewport"
+            })
+        {
+            vp.paused = !vp.paused;
+        }
+
+        if !res.present_modes.is_empty() {
+            ui.text("Present Mode");
+            s.present_mode = ui.dropdown(id!(), s.present_mode, &res.present_modes);
         }
 
         ui.horizontal();
         ui.text("Draw Scene Blas Nodes");
-        settings.draw_scene_blas_nodes = ui.checkbox(settings.draw_scene_blas_nodes);
+        s.draw_scene_blas_nodes = ui.checkbox(s.draw_scene_blas_nodes);
         ui.vertical();
 
         ui.horizontal();
         ui.text("Draw Scene Leaf Nodes");
-        settings.draw_scene_leaf_nodes = ui.checkbox(settings.draw_scene_leaf_nodes);
+        s.draw_scene_leaf_nodes = ui.checkbox(s.draw_scene_leaf_nodes);
         ui.vertical();
 
         ui.horizontal();
         ui.text("Draw Scene Nodes");
-        settings.draw_scene_nodes = ui.checkbox(settings.draw_scene_nodes);
+        s.draw_scene_nodes = ui.checkbox(s.draw_scene_nodes);
         ui.vertical();
 
         ui.text("Outline Color");
-        settings.outline_color = ui
-            .color_picker(id!(), settings.outline_color.extend(1.0))
-            .xyz();
+        s.outline_color = ui.color_picker(id!(), s.outline_color.extend(1.0)).xyz();
 
         ui.text("Outline Thickness");
-        settings.outline_radius = ui.slider(id!(), 0.0, 6.0, 300.0, settings.outline_radius);
+        s.outline_radius = ui.slider(id!(), 0.0, 6.0, 300.0, s.outline_radius);
 
         ui.text("LOD Bias");
-        settings.pixel_error = ui.slider(id!(), 0.0, 5.0, 300.0, settings.pixel_error);
+        s.pixel_error = ui.slider(id!(), 0.0, 5.0, 300.0, s.pixel_error);
 
         ui.text("Exposure");
-        settings.exposure = ui.slider(id!(), 0.0, 8.0, 300.0, settings.exposure);
+        s.exposure = ui.slider(id!(), 0.0, 8.0, 300.0, s.exposure);
     });
 }
 
@@ -412,20 +466,14 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
         let frame = slot.begin().unwrap();
         #[cfg(feature = "profiling")]
         if let Some(last) = frame.last_timings() {
-            let mut timings = world.resource_mut::<GpuTimings>();
-            let submit_ns = timings.submitted[frame_in_flight];
-            let last = last.clone();
-            timings.frames.push(GpuFrame {
-                submit_ns,
-                timings: last,
-            });
+            world.resource_mut::<GpuTimings>().slots[frame_in_flight].read_back(last);
         }
         world.run_schedule(RenderSystems::AquireSwapchainImage);
         world.run_schedule(RenderSystems::PreRender);
         record_frame(frame, frame_in_flight, params.get_mut(world).unwrap());
         #[cfg(feature = "profiling")]
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
-            timings.submitted[frame_in_flight] = now_ns();
+            timings.slots[frame_in_flight].submitted = (capture::frame(), capture::now_ns());
         }
     });
 }
@@ -461,11 +509,12 @@ impl RenderResources {
                     bindless::storage_slots(1).unwrap(),
                 )
                 .unwrap(),
-                revealage: Image::new_storage(
+                revealage: Image::new_unified(
                     depth_size.x,
                     depth_size.y,
                     1,
                     bindless::storage_slots(1).unwrap(),
+                    bindless::sampled_slot().unwrap(),
                 )
                 .unwrap(),
                 meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
@@ -499,7 +548,14 @@ impl RenderResources {
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.revealage,
-                Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap(),
+                Image::new_unified(
+                    size.x,
+                    size.y,
+                    1,
+                    bindless::storage_slots(1).unwrap(),
+                    bindless::sampled_slot().unwrap(),
+                )
+                .unwrap(),
             );
             frame.retire(old);
             resources.fresh = true;
@@ -643,7 +699,6 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
             opaque_draw.cast(),
             RasterState::default().blends([Blend::Replace, Blend::Skip, Blend::Skip]),
         )
-        // Tested against the opaque depth without writing it, so every blended layer counts.
         .launch_indirect(
             RasterBlended::new(
                 view,
@@ -662,6 +717,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         .record("Scene");
 
     cmd.begin_scope("post");
+    cmd.flush_all();
     cmd.compute(
         Tonemap::new(
             resources.hdr.whole_view(),
@@ -762,6 +818,10 @@ fn record_frame(
     if let Some(values) = &mut values {
         values.instance_count = instances.instance_count as u32;
         values.meshlet_count = resources.visible_meshlets();
+        values.present_modes.clear();
+        values
+            .present_modes
+            .extend(swapchain.present_modes.iter().map(|(_, name)| *name));
     }
 
     let states = queues.graphics.with(|queue| {
@@ -772,19 +832,20 @@ fn record_frame(
                 &[sync.image_available[frame_in_flight].info()],
                 &[sync.render_finished[swapchain.image_index as usize].info()],
                 |cmd| {
-                    // cmd.clear_image(swapchain.image(), [0.0; 4]);
-                    record_scene(
-                        cmd,
-                        target_image,
-                        target_size,
-                        &mut camera,
-                        &sky,
-                        &instances,
-                        resources,
-                        &setting,
-                        gizzmos.as_deref(),
-                        frame_in_flight,
-                    );
+                    if !target.paused {
+                        record_scene(
+                            cmd,
+                            target_image,
+                            target_size,
+                            &mut camera,
+                            &sky,
+                            &instances,
+                            resources,
+                            &setting,
+                            gizzmos.as_deref(),
+                            frame_in_flight,
+                        );
+                    }
 
                     if let Some(ui_resources) = ui_resources.as_ref() {
                         let ui = RasterUi::new(
@@ -841,6 +902,8 @@ fn record_frame(
 pub struct ViewPortTarget {
     pub image: Option<Image<format::Swapchain, ColorAttachmentStorage>>,
     pub rect: Rect,
+    /// Copied from `ViewPort::paused`: skip the scene passes.
+    pub paused: bool,
 }
 
 #[allow(non_snake_case)]

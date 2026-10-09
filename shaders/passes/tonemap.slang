@@ -8,9 +8,10 @@ struct TonemapBindings {
     // Still cleared (0) where nothing was drawn, which shows the sky.
     Tex2D<float> depth;
     // The weighted blended OIT targets of the raster pass's blended fragments. This pass resets
-    // them where it reads them, so the blended pass doesn't clear every pixel.
+    // them where it reads them, so the blended pass doesn't clear every pixel. `revealage` is
+    // read through the sampler: a storage load of it cost a quarter of the pass.
     MutImage2D<float4> accum;
-    MutImage2D<float> revealage;
+    MutTex2D<float> revealage;
     MutImage2D<float4> out;
     column_major float4x4 inverse_proj;
     column_major float4x4 inverse_view;
@@ -21,7 +22,6 @@ struct TonemapBindings {
 }
 
 [[vk::push_constant]] TonemapBindings bindings;
-
 // Drawn where there is no sky texture, or while it loads.
 static const float3 NO_SKY_COLOR = float3(0.05);
 

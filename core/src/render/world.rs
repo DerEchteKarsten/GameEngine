@@ -196,6 +196,7 @@ pub(super) fn extract_view_port(
         view_port.image = image.handle;
         view_port.image_size = image.extent.as_vec2();
         target.rect = view_port.rect;
+        target.paused = view_port.paused;
     } else {
         // No editor, so no viewport tab: the scene fills the swapchain image.
         target.rect = Rect::from_corners(Vec2::ZERO, UVec2::from(swapchain.size).as_vec2());

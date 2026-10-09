@@ -70,6 +70,7 @@ impl Plugin for EditorPlugin {
         .insert_resource(ViewPort {
             focused: false,
             hovered: false,
+            paused: false,
             image: BindlessHandle::default(),
             image_size: Vec2::ZERO,
             rect: Rect::from_corners(Vec2::ZERO, INITIAL_WINDOW_SIZE),

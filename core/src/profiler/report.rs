@@ -142,17 +142,18 @@ pub struct SpanTotals {
 /// towards their parents too.
 pub fn cpu_spans(frames: &[FrameProfile]) -> Vec<SpanTotals> {
     let mut totals: HashMap<(&str, SpanKind), SpanTotals> = HashMap::new();
-    for span in frames.iter().flat_map(|f| &f.cpu) {
+    let threads = frames.iter().flat_map(|f| &f.threads);
+    for (thread, span) in threads.flat_map(|t| t.spans.iter().map(|s| (t.thread, s))) {
         let duration = span.end_ns - span.start_ns;
         let entry = totals.entry((span.name, span.kind)).or_insert(SpanTotals {
             name: span.name,
             kind: span.kind,
-            thread: Some(span.thread),
+            thread: Some(thread),
             calls: 0,
             total_ns: 0,
             max_ns: 0,
         });
-        if entry.thread != Some(span.thread) {
+        if entry.thread != Some(thread) {
             entry.thread = None;
         }
         entry.calls += 1;
@@ -190,18 +191,18 @@ pub fn summary(frames: &[FrameProfile], memory: &MemoryReport) -> String {
     }
     .unwrap();
 
-    // CPU is the busiest thread's time without waits (see `FrameProfile::busy`), GPU the
+    // CPU is the busiest thread's time without waits (see `ThreadSpans::busy_ns`), GPU the
     // time the GPU executed the frame's commands.
     let frame = distribution(frames.iter().map(|f| ms(f.frame_ns())).collect());
     let cpu = distribution(frames.iter().map(|f| ms(f.cpu_ns())).collect());
     let gpu = distribution(with_gpu.iter().filter_map(|f| f.gpu_ns()).map(ms).collect());
     // Over every frame, so a thread that works only now and then doesn't look busy.
     let mut threads: Vec<(&str, [f64; 4])> = Vec::new();
-    for (thread, _) in frames.iter().flat_map(|f| &f.busy) {
-        if threads.iter().all(|(t, _)| t != thread) {
+    for thread in frames.iter().flat_map(|f| &f.threads).map(|t| t.thread) {
+        if threads.iter().all(|(t, _)| *t != thread) {
             let busy = frames.iter().map(|f| {
-                let busy = f.busy.iter().find(|(t, _)| t == thread);
-                busy.map_or(0.0, |(_, ns)| ms(*ns))
+                let busy = f.threads.iter().find(|t| t.thread == thread);
+                busy.map_or(0.0, |t| ms(t.busy_ns))
             });
             threads.push((thread, distribution(busy.collect())));
         }
@@ -345,18 +346,20 @@ pub fn chrome_trace(frames: &[FrameProfile]) -> String {
     let mut threads: Vec<&str> = vec!["GPU"];
     let mut events: Vec<Value> = Vec::new();
     for frame in frames {
-        for span in &frame.cpu {
-            let tid = match threads.iter().position(|t| *t == span.thread) {
+        for thread in &frame.threads {
+            let tid = match threads.iter().position(|t| *t == thread.thread) {
                 Some(tid) => tid,
                 None => {
-                    threads.push(span.thread);
+                    threads.push(thread.thread);
                     threads.len() - 1
                 }
             };
-            events.push(json!({
-                "name": span.name, "cat": "cpu", "ph": "X", "pid": 1, "tid": tid,
-                "ts": us(span.start_ns), "dur": us(span.end_ns - span.start_ns),
-            }));
+            for span in &thread.spans {
+                events.push(json!({
+                    "name": span.name, "cat": "cpu", "ph": "X", "pid": 1, "tid": tid,
+                    "ts": us(span.start_ns), "dur": us(span.end_ns - span.start_ns),
+                }));
+            }
         }
         for scope in &frame.gpu {
             events.push(json!({
@@ -378,24 +381,35 @@ pub fn chrome_trace(frames: &[FrameProfile]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profiler::capture::CpuSpan;
+    use crate::profiler::{ThreadSpans, capture::CpuSpan};
     use lava::profiling::{GpuScope, ShaderTime};
 
-    fn frame(frame: u64, frame_ms: u64, gpu: &[(&'static str, u16, u64, u64)]) -> FrameProfile {
-        let start_ns = frame * 100_000_000;
+    fn frame(frame: u32, frame_ms: u64, gpu: &[(&'static str, u16, u64, u64)]) -> FrameProfile {
+        let start_ns = frame as u64 * 100_000_000;
         FrameProfile {
             frame,
             start_ns,
             end_ns: start_ns + frame_ms * 1_000_000,
-            busy: vec![("main", frame_ms * 500_000), ("render thread", 1_000_000)],
-            cpu: vec![CpuSpan {
-                name: "update",
-                kind: SpanKind::Other,
-                thread: "main",
-                depth: 0,
-                start_ns,
-                end_ns: start_ns + 1_000_000,
-            }],
+            threads: vec![
+                ThreadSpans {
+                    thread: "main",
+                    busy_ns: frame_ms * 500_000,
+                    spans: vec![CpuSpan {
+                        name: "update",
+                        start_ns,
+                        end_ns: start_ns + 1_000_000,
+                        frame,
+                        depth: 0,
+                        kind: SpanKind::Other,
+                    }],
+                },
+                ThreadSpans {
+                    thread: "render thread",
+                    busy_ns: 1_000_000,
+                    spans: Vec::new(),
+                },
+            ],
+            complete: true,
             gpu: gpu
                 .iter()
                 .map(|&(name, depth, start, end)| GpuScope {
@@ -482,7 +496,7 @@ mod tests {
     #[test]
     fn summary_reports_frame_times_and_scopes() {
         let frames: Vec<_> = (0..4)
-            .map(|i| frame(i, 10 + i, &[("frame", 0, 0, 2), ("Raster", 1, 0, 1)]))
+            .map(|i| frame(i, 10 + i as u64, &[("frame", 0, 0, 2), ("Raster", 1, 0, 1)]))
             .collect();
         let text = summary(&frames, &MemoryReport::default());
         assert!(text.starts_with("Profile of 4 frames (#0..#3), 4 with GPU timings."));
@@ -523,6 +537,6 @@ mod tests {
             .filter(|e| e["ph"] == "M")
             .map(|e| e["args"]["name"].as_str().unwrap())
             .collect();
-        assert_eq!(rows, ["GPU", "main"]);
+        assert_eq!(rows, ["GPU", "main", "render thread"]);
     }
 }

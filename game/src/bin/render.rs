@@ -223,7 +223,7 @@ fn run(args: &Args) -> Result<(), String> {
         .map_err(|err| format!("{}: {err}", output.display()))?;
     #[cfg(feature = "profiling")]
     if let Some(dir) = &args.profile {
-        let profiler = app.world().resource::<Profiler>();
+        let mut profiler = app.world_mut().resource_mut::<Profiler>();
         profiler
             .save(dir)
             .map_err(|err| format!("{}: {err}", dir.display()))?;

@@ -1,4 +1,4 @@
-//! Editor log console and the tracing subscriber: the console's capture layer (logs and Vulkan validation), with `profiling` also Tracy and the profiler's span layer, plus the console UI.
+//! Editor log console and the tracing subscriber: the console's capture layer (logs and Vulkan validation), with `profiling` also the profiler's span layer, plus the console UI.
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
@@ -19,10 +19,6 @@ use crate::id;
 use crate::ui::UiContext;
 use crate::ui::builder::UiBuilder;
 use crate::ui::window::{BorderSettings, DrawSettings};
-
-// #[global_allocator]
-// static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
-//     tracy_client::ProfiledAllocator::new(std::alloc::System, 100);
 
 #[derive(Debug, Clone, Default)]
 pub struct LogEntry {
@@ -289,32 +285,11 @@ struct ConsoleBuffer {
 
 pub struct ConsolePlugin;
 
-#[cfg(feature = "profiling")]
-#[derive(Default)]
-struct TracyConfig(tracing_subscriber::fmt::format::DefaultFields);
-
-#[cfg(feature = "profiling")]
-impl tracing_tracy::Config for TracyConfig {
-    type Formatter = tracing_subscriber::fmt::format::DefaultFields;
-    fn format_fields_in_zone_name(&self) -> bool {
-        true
-    }
-    fn formatter(&self) -> &Self::Formatter {
-        &self.0
-    }
-    fn on_error(&self, client: &tracy_client::Client, error: &'static str) {
-        client.color_message(error, 0xFF000000, 256);
-    }
-    fn stack_depth(&self, metadata: &tracing_core::Metadata<'_>) -> u16 {
-        16
-    }
-}
-
 /// The console's log buffer, filled by the layer [`register_tracing`] installs.
 static LOG: OnceLock<Arc<SharedBuffer>> = OnceLock::new();
 
 /// Installs the global tracing subscriber: logs go to the console and stderr, spans (with the
-/// `profiling` feature) to the profiler and Tracy. `RUST_LOG` overrides the level. Call it
+/// `profiling` feature) to the profiler. `RUST_LOG` overrides the level. Call it
 /// first thing in `main`: bevy creates a system's span when the system is added, and a span
 /// created before there is a subscriber never records. [`ConsolePlugin`] calls it if `main` didn't; later calls do nothing.
 pub fn register_tracing() {
@@ -340,9 +315,7 @@ pub fn register_tracing() {
             })
             .with(fmt);
         #[cfg(feature = "profiling")]
-        let subscriber = subscriber
-            .with(crate::profiler::capture::ProfileLayer)
-            .with(tracing_tracy::TracyLayer::new(TracyConfig::default()));
+        let subscriber = subscriber.with(crate::profiler::capture::ProfileLayer);
         if tracing::subscriber::set_global_default(subscriber).is_err() {
             eprintln!("WARNING: global tracing subscriber already set — the console stays empty");
         }

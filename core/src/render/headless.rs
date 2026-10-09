@@ -14,7 +14,7 @@ use lava::{
 
 use crate::bindless;
 #[cfg(feature = "profiling")]
-use crate::profiler::{GpuFrame, Profiler, capture::now_ns};
+use crate::profiler::{Profiler, capture};
 use crate::render::{
     MainWorld,
     render::{
@@ -117,7 +117,7 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     let resources = renderer.resources.as_mut().unwrap();
     let (image, readback) = (&renderer.image, &renderer.readback);
     #[cfg(feature = "profiling")]
-    let submit_ns = now_ns();
+    let submitted = (capture::frame(), capture::now_ns());
     renderer.pending = frame
         .execute(
             &renderer.queue,
@@ -147,8 +147,7 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     if let Some(timings) = frame.last_timings()
         && let Some(mut profiler) = main_world.get_resource_mut::<Profiler>()
     {
-        let timings = timings.clone();
-        profiler.add_gpu(GpuFrame { submit_ns, timings });
+        profiler.add_gpu(submitted.0, submitted.1, timings);
     }
     drop(frame);
 

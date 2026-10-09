@@ -13,6 +13,6 @@ tracing-subscriber = {workspace = true}
 png = {workspace = true}
 
 [features]
-default = ["dynamic_linking", "profiling"]
+default = ["profiling"]
 profiling = ["core/profiling"]
 dynamic_linking = ["core/dynamic_linking", "bevy/dynamic_linking"]
