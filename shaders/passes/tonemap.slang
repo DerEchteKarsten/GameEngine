@@ -5,7 +5,7 @@
 
 struct TonemapBindings {
     // The opaque scene in linear HDR colour, where it has a depth.
-    Tex2D<float4> hdr;
+    Tex2D<float3> hdr;
     // Still cleared (0) where nothing was drawn, which shows the sky.
     Tex2D<float> depth;
     // The weighted blended OIT targets of the raster pass's blended fragments. This pass resets

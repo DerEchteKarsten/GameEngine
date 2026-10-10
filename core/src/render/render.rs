@@ -38,7 +38,8 @@ use lava::{
     image::{
         Image,
         format::{
-            self, ColorAspect, D32Sfloat, Format, R16G16B16A16Sfloat, R16Sfloat, R32G32B32A32Sfloat,
+            self, B10G11R11UfloatPack32, ColorAspect, D32Sfloat, Format, R8Unorm,
+            R16G16B16A16Sfloat,
         },
         slice::{AsImage, ImageView},
         usage::{
@@ -283,15 +284,17 @@ pub struct ResourceStates {
 pub struct RenderResources {
     depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
     /// The scene in linear HDR colour, the same size as the depth; tonemapped into the target.
-    hdr: Image<R16G16B16A16Sfloat, ColorAttachmentSampled>,
+    /// Half the size of RGBA16F, within 2 levels of it after tonemapping, since the raster pass
+    /// rounds its output (the format truncates).
+    hdr: Image<B10G11R11UfloatPack32, ColorAttachmentSampled>,
     /// Weighted blended OIT of the blended meshlets, composited over `hdr` by the tonemap: the
-    /// weighted sum of their premultiplied colours (rgb) and of their weights (a). 32-bit,
-    /// because specular highlights times the weight overflow half floats.
-    accum: Image<R32G32B32A32Sfloat, ColorAttachmentStorage>,
+    /// weighted sum of their premultiplied colours (rgb) and of their weights (a). Half floats,
+    /// so the blended pass clamps the weighted colour.
+    accum: Image<R16G16B16A16Sfloat, ColorAttachmentStorage>,
     /// The product of `1 - alpha` of the blended fragments: how much of `hdr` shows through.
     /// The tonemap reads it through the sampler (a typed load of a storage image is several
     /// times slower on Intel) and resets it as storage.
-    revealage: Image<R16Sfloat, ColorAttachmentSampledStorage>,
+    revealage: Image<R8Unorm, ColorAttachmentSampledStorage>,
     meshlets: Buffer<InstancedMeshlet>,
     /// Visible meshlets of materials with a negative alpha cutoff, drawn after `meshlets`.
     blended_meshlets: Buffer<InstancedMeshlet>,
