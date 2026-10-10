@@ -1,10 +1,10 @@
-#define USE_CLOCKS
 // Lights the G-buffer, draws the sky where nothing was drawn, composites the blended layers over
 // both and tonemaps the result into the target.
+#define USE_CLOCKS
 #include "bindless.slang"
-#include "profile.slang"
 #include "math.slang"
 #include "lighting.slang"
+#include "profile.slang"
 
 struct CompositeBindings {
     // The opaque surfaces (`GbufferDataPacked`), where there is a depth.
@@ -68,7 +68,7 @@ float3 linear_to_srgb(float3 c) {
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void composite(uint2 dtid: SV_DispatchThreadID) {
-    PROFILE(PROFILE_COMPUTE);
+    CLOCK_REGION("test");
     if (any(dtid >= bindings.view_port_size)) {
         return;
     }

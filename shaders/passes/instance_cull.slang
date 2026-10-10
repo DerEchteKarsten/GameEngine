@@ -1,6 +1,4 @@
-#define USE_CLOCKS
 #include "bindless.slang"
-#include "profile.slang"
 #include "datatypes.slang"
 
 struct InstanceCullBindings {
@@ -42,7 +40,6 @@ bool aabb_in_frustum(float3 center, float3 half_extent, float4x4 world_from_loca
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void instance_cull(uint gid: SV_GroupID, uint dtid: SV_DispatchThreadID, uint gtid: SV_GroupThreadID) {
-    PROFILE(PROFILE_COMPUTE);
     if (dtid < b.num_instances) {
         let transform = b.instance_transforms.val[dtid];
         let aabb = b.instance_aabbs.val[dtid];

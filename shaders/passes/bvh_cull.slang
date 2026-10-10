@@ -1,6 +1,4 @@
-#define USE_CLOCKS
 #include "bindless.slang"
-#include "profile.slang"
 #include "datatypes.slang"
 
 // The sizes of the render resources' buffers, which never change, so the clamps fold.
@@ -320,7 +318,6 @@ void ProcessMeshletBatch(uint meshletBatchStartIndex, uint meshletBatchReadySize
 [numthreads(DAG_CULL_GROUP_SIZE, 1, 1)]
 void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
 {
-    PROFILE(PROFILE_COMPUTE);
     if (b.queue_state.val.node_write_offset == 0) {
         return;
     }

@@ -1,6 +1,4 @@
-#define USE_CLOCKS
 #include "bindless.slang"
-#include "profile.slang"
 
 struct Bindings {
     Tex2D<float> depth;
@@ -33,7 +31,6 @@ bool is_in_radius(int2 dtid, float radius)
 [numthreads(8, 8, 1)]
 void computeMain(int2 dtid: SV_DispatchThreadID)
 {
-    PROFILE(PROFILE_COMPUTE);
     if (any(dtid >= int2(b.viewport_size))) {
         return;
     }

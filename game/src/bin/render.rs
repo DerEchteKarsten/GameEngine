@@ -30,7 +30,7 @@ use tracing_subscriber::{
 };
 
 const USAGE: &str = "usage: render [--frames N] [--profile DIR] [--eye X,Y,Z] [--target X,Y,Z]
-              [--fov DEG] [--size WxH] SCENE OUTPUT.png
+              [--fov DEG] [--size WxH] [--counters NAMES] SCENE OUTPUT.png
 
 Renders the scene file SCENE (.scene or .scene.ron, inside the asset directory)
 and writes the image to OUTPUT.png.
@@ -42,7 +42,9 @@ and writes the image to OUTPUT.png.
   --frames N     render N frames once the scene is loaded (default 1); the image is the last
   --profile DIR  profile those frames: write DIR/profile.txt (summary, also printed) and
                  DIR/profile.json (Chrome trace for Perfetto or chrome://tracing);
-                 needs the `profiling` feature";
+                 needs the `profiling` feature
+  --counters NAMES  comma-separated hardware counters to profile per pass instead of the
+                 default set (`core::profiler::DEFAULT_COUNTERS`), or `none`";
 
 struct Args {
     scene: PathBuf,
@@ -53,6 +55,8 @@ struct Args {
     target: Vec3,
     fov: f32,
     size: UVec2,
+    /// `None` keeps the default counters.
+    counters: Option<Vec<String>>,
 }
 
 fn parse_vec3(arg: &str) -> Option<Vec3> {
@@ -68,6 +72,7 @@ fn parse_args() -> Option<Args> {
     let (mut eye, mut target, mut fov) =
         (Vec3::new(0.0, 0.0, 2.0), Vec3::new(10.0, 0.0, 3.0), 65.0);
     let mut size = UVec2::new(1280, 720);
+    let mut counters = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--frames" => frames = args.next()?.parse().ok().filter(|n| *n > 0)?,
@@ -80,6 +85,13 @@ fn parse_args() -> Option<Args> {
                     .parse()
                     .ok()
                     .filter(|f| *f > 0.0 && *f < 180.0)?
+            }
+            "--counters" => {
+                let names = args.next()?;
+                counters = Some(match names.as_str() {
+                    "none" => Vec::new(),
+                    _ => names.split(',').map(|name| name.trim().to_string()).collect(),
+                });
             }
             "--size" => {
                 let arg = args.next()?;
@@ -106,6 +118,7 @@ fn parse_args() -> Option<Args> {
         target,
         fov,
         size,
+        counters,
     })
 }
 
@@ -149,7 +162,11 @@ fn run(args: &Args) -> Result<(), String> {
     ));
     #[cfg(feature = "profiling")]
     if args.profile.is_some() {
-        app.add_plugins(ProfilerPlugin::default());
+        let mut plugin = ProfilerPlugin::default();
+        if let Some(counters) = &args.counters {
+            plugin.counters = counters.clone();
+        }
+        app.add_plugins(plugin);
     }
     #[cfg(not(feature = "profiling"))]
     if args.profile.is_some() {

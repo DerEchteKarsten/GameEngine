@@ -6,7 +6,7 @@
             split: Vertical,
             extend: 0.5,
             left: Leaf(
-                window: 2,
+                window: 1,
             ),
             right: Leaf(
                 window: 4,
@@ -19,7 +19,7 @@
                 split: Vertical,
                 extend: 0.9,
                 left: Leaf(
-                    window: 1,
+                    window: 2,
                 ),
                 right: Leaf(
                     window: 0,
@@ -51,27 +51,27 @@
         ),
         (
             rect: (
-                min: (308.6375, 0.0),
-                max: (2622.8638, 1620.0),
-            ),
-            tabs: [
-                (
-                    label: "Viewport",
-                ),
-                (
-                    label: "Profiler",
-                ),
-            ],
-            active_tab: 1,
-        ),
-        (
-            rect: (
                 min: (0.0, 0.0),
                 max: (308.63745, 900.0),
             ),
             tabs: [
                 (
                     label: "Hierarchy",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (308.6375, 0.0),
+                max: (2622.8638, 1620.0),
+            ),
+            tabs: [
+                (
+                    label: "Profiler",
+                ),
+                (
+                    label: "Viewport",
                 ),
             ],
             active_tab: 0,

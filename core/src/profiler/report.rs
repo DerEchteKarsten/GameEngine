@@ -1,7 +1,7 @@
-//! Profile reports: a plain-text summary of frame, CPU and GPU times, GPU scopes, shader clock time per pass, top CPU spans and GPU memory, and a Chrome trace of every span.
+//! Profile reports: a plain-text summary of frame, CPU and GPU times, GPU scopes, hardware counters per pass, shader clock regions, top CPU spans and GPU memory, and a Chrome trace of every span.
 use std::{collections::HashMap, fmt::Write};
 
-use lava::profiling::{MemoryReport, PipelineStats};
+use lava::profiling::{CounterUnit, MAX_COUNTERS, MemoryReport, PipelineStats};
 use serde_json::{Value, json};
 
 use crate::profiler::{FrameProfile, capture::SpanKind};
@@ -31,10 +31,18 @@ pub struct ScopeTotals {
     /// Milliseconds per frame.
     pub ms: Vec<f64>,
     pub stats: Option<PipelineStats>,
+    /// Per frame for amounts, averaged over the scope's time for rates (`CounterUnit::is_rate`),
+    /// in the order of the frames' `counters`.
+    pub counters: Option<[f64; MAX_COUNTERS]>,
+    /// The scope time the rates are weighted by while summing.
+    counted_ms: f64,
 }
 
 /// The GPU scopes of `frames` by depth and name, in tree order.
 pub fn gpu_scopes(frames: &[FrameProfile]) -> Vec<ScopeTotals> {
+    let units: Vec<CounterUnit> = frames
+        .first()
+        .map_or(Vec::new(), |f| f.counters.iter().map(|c| c.unit).collect());
     let mut scopes: Vec<ScopeTotals> = Vec::new();
     for frame in frames.iter().filter(|f| !f.gpu.is_empty()) {
         let mut in_frame: Vec<usize> = Vec::new();
@@ -78,37 +86,77 @@ pub fn gpu_scopes(frames: &[FrameProfile]) -> Vec<ScopeTotals> {
                 sum.fragment += stats.fragment;
                 sum.compute += stats.compute;
             }
+            if let Some(values) = scope.counters {
+                let sums = totals.counters.get_or_insert([0.0; MAX_COUNTERS]);
+                for ((sum, value), unit) in sums.iter_mut().zip(values).zip(&units) {
+                    *sum += if unit.is_rate() { value * duration } else { value };
+                }
+                totals.counted_ms += duration;
+            }
+        }
+    }
+    for scope in &mut scopes {
+        let (frames, counted_ms) = (scope.ms.len() as f64, scope.counted_ms);
+        if let Some(sums) = &mut scope.counters {
+            for (sum, unit) in sums.iter_mut().zip(&units) {
+                *sum /= if unit.is_rate() { counted_ms.max(f64::EPSILON) } else { frames };
+            }
         }
     }
     scopes
 }
 
-/// A pass's shader stage over the frames that have shader clock times.
-pub struct ShaderTotals {
+/// A counter value with its unit, e.g. `37.2%`, `12.3 MB`, `1650 MHz`, `4.1M`.
+pub fn format_counter(unit: CounterUnit, value: f64) -> String {
+    let scaled = |value: f64, suffix: &str| {
+        let (value, prefix) = match value.abs() {
+            v if v >= 1e9 => (value / 1e9, "G"),
+            v if v >= 1e6 => (value / 1e6, "M"),
+            v if v >= 1e3 => (value / 1e3, "k"),
+            _ => (value, ""),
+        };
+        format!("{value:.1}{prefix}{suffix}")
+    };
+    match unit {
+        CounterUnit::Percentage => format!("{value:.1}%"),
+        CounterUnit::Nanoseconds => format!("{:.3}ms", value / 1e6),
+        CounterUnit::Bytes => scaled(value, "B"),
+        CounterUnit::BytesPerSecond => scaled(value, "B/s"),
+        CounterUnit::Hertz => format!("{:.0}MHz", value / 1e6),
+        CounterUnit::Kelvin => format!("{value:.0}K"),
+        CounterUnit::Watts => format!("{value:.1}W"),
+        CounterUnit::Volts => format!("{value:.2}V"),
+        CounterUnit::Amps => format!("{value:.2}A"),
+        CounterUnit::Cycles | CounterUnit::Generic => scaled(value, ""),
+    }
+}
+
+/// A pass's clock region over the frames that have region times.
+pub struct RegionTotals {
     pub pass: &'static str,
-    pub stage: &'static str,
+    pub region: &'static str,
     /// Subgroup clock ticks per frame, summed over subgroups.
     pub ticks: f64,
     pub subgroups: f64,
-    /// Of all instrumented shaders' ticks.
+    /// Of all regions' ticks.
     pub share: f64,
 }
 
-/// The shader clock times of `frames` per pass and stage, the largest first.
-pub fn shader_times(frames: &[FrameProfile]) -> Vec<ShaderTotals> {
-    let with_times = frames.iter().filter(|f| !f.shaders.is_empty());
+/// The shader clock regions of `frames` per pass and region, the largest first.
+pub fn region_times(frames: &[FrameProfile]) -> Vec<RegionTotals> {
+    let with_times = frames.iter().filter(|f| !f.regions.is_empty());
     let n = with_times.clone().count().max(1) as f64;
-    let mut totals: Vec<ShaderTotals> = Vec::new();
-    for time in with_times.flat_map(|f| &f.shaders) {
+    let mut totals: Vec<RegionTotals> = Vec::new();
+    for time in with_times.flat_map(|f| &f.regions) {
         let i = match totals
             .iter()
-            .position(|t| t.pass == time.pass && t.stage == time.stage)
+            .position(|t| t.pass == time.pass && t.region == time.region)
         {
             Some(i) => i,
             None => {
-                totals.push(ShaderTotals {
+                totals.push(RegionTotals {
                     pass: time.pass,
-                    stage: time.stage,
+                    region: time.region,
                     ticks: 0.0,
                     subgroups: 0.0,
                     share: 0.0,
@@ -266,19 +314,44 @@ pub fn summary(frames: &[FrameProfile], memory: &MemoryReport) -> String {
         writeln!(out).unwrap();
     }
 
-    let shaders = shader_times(frames);
-    if !shaders.is_empty() {
+    let counters = frames.first().map(|f| f.counters.clone()).unwrap_or_default();
+    if scopes.iter().any(|scope| scope.counters.is_some()) {
         writeln!(
             out,
-            "\nShader time per frame: subgroup clock ticks from `PROFILE`, summed over subgroups\n(they run in parallel; the share says which shaders keep the GPU busy, not the time)\n  {:<30} {:>8} {:>10} {:>12} {:>14}",
-            "pass stage", "share", "subgroups", "Mticks", "ticks/subgroup"
+            "\nGPU counters per pass (amounts per frame, rates averaged over the pass's time)"
         )
         .unwrap();
-        for time in &shaders {
+        for (i, counter) in counters.iter().enumerate() {
+            writeln!(out, "  c{}: {} ({})", i + 1, counter.name, counter.category).unwrap();
+        }
+        write!(out, "  {:<24}", "scope").unwrap();
+        for i in 0..counters.len() {
+            write!(out, " {:>11}", format!("c{}", i + 1)).unwrap();
+        }
+        writeln!(out).unwrap();
+        for scope in scopes.iter().filter(|scope| scope.counters.is_some()) {
+            let name = format!("{}{}", "  ".repeat(scope.depth as usize), scope.name);
+            write!(out, "  {name:<24}").unwrap();
+            for (counter, value) in counters.iter().zip(scope.counters.unwrap()) {
+                write!(out, " {:>11}", format_counter(counter.unit, value)).unwrap();
+            }
+            writeln!(out).unwrap();
+        }
+    }
+
+    let regions = region_times(frames);
+    if !regions.is_empty() {
+        writeln!(
+            out,
+            "\nShader clock regions per frame: subgroup clock ticks from `CLOCK_REGION`, summed over subgroups\n(they run in parallel; the share says which regions keep the GPU busy, not the time)\n  {:<30} {:>8} {:>10} {:>12} {:>14}",
+            "pass region", "share", "subgroups", "Mticks", "ticks/subgroup"
+        )
+        .unwrap();
+        for time in &regions {
             writeln!(
                 out,
                 "  {:<30} {:>7.1}% {:>10.0} {:>12.3} {:>14.0}",
-                format!("{} {}", time.pass, time.stage),
+                format!("{} {}", time.pass, time.region),
                 time.share * 100.0,
                 time.subgroups,
                 time.ticks / 1e6,
@@ -362,11 +435,17 @@ pub fn chrome_trace(frames: &[FrameProfile]) -> String {
             }
         }
         for scope in &frame.gpu {
+            let mut args = json!({ "frame": frame.frame });
+            if let Some(values) = scope.counters {
+                for (counter, value) in frame.counters.iter().zip(values) {
+                    args[&counter.name] = json!(value);
+                }
+            }
             events.push(json!({
                 "name": scope.name, "cat": "gpu", "ph": "X", "pid": 1, "tid": 0,
                 "ts": us(frame.gpu_submit_ns + scope.start_ns),
                 "dur": us(scope.end_ns - scope.start_ns),
-                "args": { "frame": frame.frame },
+                "args": args,
             }));
         }
     }
@@ -382,7 +461,7 @@ pub fn chrome_trace(frames: &[FrameProfile]) -> String {
 mod tests {
     use super::*;
     use crate::profiler::{ThreadSpans, capture::CpuSpan};
-    use lava::profiling::{GpuScope, ShaderTime};
+    use lava::profiling::{GpuScope, RegionTime};
 
     fn frame(frame: u32, frame_ms: u64, gpu: &[(&'static str, u16, u64, u64)]) -> FrameProfile {
         let start_ns = frame as u64 * 100_000_000;
@@ -421,19 +500,21 @@ mod tests {
                         fragment: 10,
                         ..Default::default()
                     }),
+                    counters: None,
                 })
                 .collect(),
             gpu_submit_ns: start_ns,
-            shaders: vec![
-                ShaderTime {
-                    pass: "Raster",
-                    stage: "fragment",
+            counters: Default::default(),
+            regions: vec![
+                RegionTime {
+                    pass: "BvhCull",
+                    region: "traverse",
                     ticks: 3000,
                     subgroups: 10,
                 },
-                ShaderTime {
+                RegionTime {
                     pass: "Composite",
-                    stage: "compute",
+                    region: "sky",
                     ticks: 1000,
                     subgroups: 20,
                 },
@@ -442,20 +523,29 @@ mod tests {
     }
 
     #[test]
-    fn shader_times_are_per_frame_and_sorted_by_share() {
+    fn region_times_are_per_frame_and_sorted_by_share() {
         let frames = [frame(0, 10, &[]), frame(1, 10, &[])];
-        let times = shader_times(&frames);
+        let times = region_times(&frames);
         let rows: Vec<_> = times
             .iter()
-            .map(|t| (t.pass, t.stage, t.ticks, t.subgroups, t.share))
+            .map(|t| (t.pass, t.region, t.ticks, t.subgroups, t.share))
             .collect();
         assert_eq!(
             rows,
             [
-                ("Raster", "fragment", 3000.0, 10.0, 0.75),
-                ("Composite", "compute", 1000.0, 20.0, 0.25)
+                ("BvhCull", "traverse", 3000.0, 10.0, 0.75),
+                ("Composite", "sky", 1000.0, 20.0, 0.25)
             ]
         );
+    }
+
+    #[test]
+    fn counter_values_format_with_their_unit() {
+        assert_eq!(format_counter(CounterUnit::Percentage, 37.24), "37.2%");
+        assert_eq!(format_counter(CounterUnit::Bytes, 12_300_000.0), "12.3MB");
+        assert_eq!(format_counter(CounterUnit::Hertz, 1.65e9), "1650MHz");
+        assert_eq!(format_counter(CounterUnit::Generic, 4_100_000.0), "4.1M");
+        assert_eq!(format_counter(CounterUnit::Nanoseconds, 250_000.0), "0.250ms");
     }
 
     #[test]

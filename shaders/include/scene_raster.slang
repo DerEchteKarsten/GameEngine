@@ -2,7 +2,6 @@
 #pragma once
 #include "datatypes.slang"
 #include "bindless.slang"
-#include "profile.slang"
 #include "math.slang"
 #include "gbuffer_helpers.slang"
 struct VSOutput {
@@ -61,7 +60,6 @@ void scene_mesh(
     out indices uint3 triangles[MAX_MESHLET_TRIANGLES],
     out vertices VSOutput vertices[MAX_MESHLET_VERTICES]
 ) {
-    PROFILE(PROFILE_MESH);
     let index = group.x * MESHLET_STRIDE + group.y;
     if (index >= b.draw.val.meshlet_count) {
         // Past the end of the list, in the last stride.

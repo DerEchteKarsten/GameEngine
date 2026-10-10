@@ -1,4 +1,3 @@
-#define USE_CLOCKS
 // Opaque and alpha-tested meshlets, written into the G-buffer, which the composite pass lights.
 #include "scene_raster.slang"
 

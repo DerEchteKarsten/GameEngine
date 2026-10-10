@@ -1,12 +1,15 @@
-//! Profiler: per-frame wall, CPU and GPU times plus rings of GPU scopes and shader clocks, and the one frame profile (CPU spans from the threads' rings, GPU scopes) built when a frame is selected; shown in the editor's Profiler tab and saved as a text summary plus a Chrome trace.
-use std::{collections::VecDeque, ops::Range, path::Path, path::PathBuf};
+//! Profiler: per-frame wall, CPU and GPU times plus rings of GPU scopes (with hardware counters) and shader clock regions, the counter selection, and the one frame profile (CPU spans from the threads' rings, GPU scopes) built when a frame is selected; shown in the editor's Profiler tab and saved as a text summary plus a Chrome trace.
+use std::{collections::VecDeque, ops::Range, path::Path, path::PathBuf, sync::Arc};
 
 use bevy::{
     app::{App, Last, Plugin},
     ecs::{resource::Resource, system::ResMut},
     log::{error, info, warn},
 };
-use lava::profiling::{FrameTimings, GpuScope, MemoryReport, ShaderTime, memory_report};
+use lava::profiling::{
+    Counter, FrameTimings, GpuScope, MAX_COUNTERS, MemoryReport, RegionTime, counters,
+    memory_report,
+};
 
 use crate::{
     profiler::capture::{CpuSpan, now_ns},
@@ -21,8 +24,22 @@ pub mod ui;
 pub const MAX_FRAMES: usize = 300;
 /// How many frames after its submission a frame's GPU timings arrive at most.
 const GPU_LATENCY: usize = FRAMES_IN_FLIGHT + 1;
-/// GPU scopes and shader times kept per frame.
+/// GPU scopes and shader clock regions kept per frame.
 const GPU_ENTRIES_PER_FRAME: usize = 64;
+/// The counters `ProfilerPlugin` selects by default: clock, vector engine use and L1 traffic on
+/// Intel GPUs, which fit one pass. ANV reads 0 per pass for some counters on the B390 (GPU
+/// Busy, GPU Memory Byte Read/Write, L3 Read/Miss), so none of those. Other devices name their
+/// counters differently, so this selects nothing there.
+pub const DEFAULT_COUNTERS: [&str; 8] = [
+    "AVG GPU Core Frequency",
+    "XVE Active",
+    "XVE Stall",
+    "XVE Threads Occupancy All",
+    "XVE Inst Executed ALU0 All",
+    "Load Store Cache Byte Read",
+    "Load Store Cache Byte Write",
+    "Load Store Cache Hit",
+];
 /// How many frames after it ended a frame's busy-time counters are read: the root spans that
 /// started in it (main's update, the render thread's frame) end only after `end_frame`.
 const BUSY_DELAY: u32 = 2;
@@ -69,8 +86,10 @@ pub struct FrameProfile {
     /// The GPU work submitted in this frame, relative to `gpu_submit_ns`.
     pub gpu: Vec<GpuScope>,
     pub gpu_submit_ns: u64,
-    /// The subgroup clock ticks of every instrumented pass and stage (`profile.slang`).
-    pub shaders: Vec<ShaderTime>,
+    /// The counters the GPU scopes' values belong to.
+    pub counters: Arc<[&'static Counter]>,
+    /// The subgroup clock ticks of every clock region (`CLOCK_REGION` in `profile.slang`).
+    pub regions: Vec<RegionTime>,
     /// False if a thread's ring overwrote spans of this frame.
     pub complete: bool,
 }
@@ -126,9 +145,16 @@ pub struct Profiler {
     pub selected: Option<FrameProfile>,
     pub memory: MemoryReport,
     capacity: usize,
+    /// The counters profiled frame slots record per pass and rendering.
+    pub counters: Arc<[&'static Counter]>,
+    /// Per counter of `lava::profiling::counters::counters()`: whether it is selected or can
+    /// be added to the selection. Computed when the selection changes.
+    pub compatible: Vec<bool>,
+    /// Counter names to select once lava is initialised.
+    pending_counters: Option<Vec<String>>,
     /// Every GPU scope of the last frames with its frame and submit time.
     gpu: VecDeque<(u32, u64, GpuScope)>,
-    shaders: VecDeque<(u32, ShaderTime)>,
+    regions: VecDeque<(u32, RegionTime)>,
     memory_updated: Option<u64>,
     capture: Option<(usize, PathBuf)>,
 }
@@ -160,7 +186,7 @@ impl Profiler {
         self.selected = None;
         self.times.clear();
         self.gpu.clear();
-        self.shaders.clear();
+        self.regions.clear();
         capture::set_enabled(enabled);
         self.start_frame(now_ns());
     }
@@ -171,22 +197,76 @@ impl Profiler {
         self.selected = self.profiles(i..i + 1).pop();
     }
 
+    /// Selects the counters profiled frame slots record. A selection that doesn't fit (see
+    /// `lava::profiling::counters::set_counters`) is refused with an error in the log.
+    pub fn set_counters(&mut self, selection: &[&'static Counter]) {
+        if let Err(err) = counters::set_counters(selection) {
+            error!("can't select these counters: {err}");
+            return;
+        }
+        self.counters = selection.into();
+        // Values recorded with the old selection would be read as the new one's.
+        self.gpu.iter_mut().for_each(|(.., scope)| scope.counters = None);
+        let fits = |counter: &&'static Counter| {
+            let mut with: Vec<_> = selection.to_vec();
+            with.push(*counter);
+            with.len() <= MAX_COUNTERS && counters::passes(&with) == 1
+        };
+        self.compatible = counters::counters()
+            .iter()
+            .map(|counter| selection.iter().any(|s| std::ptr::eq(*s, counter)) || fits(&counter))
+            .collect();
+    }
+
+    /// Selects the counters with these names, in order, skipping those that don't exist or
+    /// don't fit.
+    fn select_counters_by_name(&mut self, names: &[String]) {
+        let mut selection: Vec<&'static Counter> = Vec::new();
+        let mut skipped = Vec::new();
+        for name in names {
+            let counter = counters::counters().iter().find(|c| c.name == *name);
+            match counter {
+                Some(counter) if selection.len() < MAX_COUNTERS => {
+                    selection.push(counter);
+                    if counters::passes(&selection) != 1 {
+                        selection.pop();
+                        skipped.push(name.as_str());
+                    }
+                }
+                _ => skipped.push(name.as_str()),
+            }
+        }
+        if !skipped.is_empty() && !counters::counters().is_empty() {
+            warn!("counters not recorded (unknown, or not in one pass with the others): {skipped:?}");
+        }
+        self.set_counters(&selection);
+    }
+
     /// Hands the GPU timings of the work submitted in `frame` (at `submit_ns`) to it.
     pub fn add_gpu(&mut self, frame: u32, submit_ns: u64, timings: &FrameTimings) {
         let Some(i) = self.index(frame) else { return };
         self.times[i].gpu_ns = Some(root_ns(&timings.scopes));
+        // Frames in flight across a new selection have the old one's counters.
+        let current = timings.counters.len() == self.counters.len()
+            && (timings.counters.iter())
+                .zip(self.counters.iter())
+                .all(|(a, b)| std::ptr::eq(*a, *b));
         let capacity = self.capacity * GPU_ENTRIES_PER_FRAME;
         for scope in &timings.scopes {
             if self.gpu.len() == capacity {
                 self.gpu.pop_front();
             }
-            self.gpu.push_back((frame, submit_ns, scope.clone()));
-        }
-        for time in &timings.shaders {
-            if self.shaders.len() == capacity {
-                self.shaders.pop_front();
+            let mut scope = scope.clone();
+            if !current {
+                scope.counters = None;
             }
-            self.shaders.push_back((frame, time.clone()));
+            self.gpu.push_back((frame, submit_ns, scope));
+        }
+        for time in &timings.regions {
+            if self.regions.len() == capacity {
+                self.regions.pop_front();
+            }
+            self.regions.push_back((frame, time.clone()));
         }
     }
 
@@ -300,8 +380,9 @@ impl Profiler {
                 frame.gpu_submit_ns = *submit_ns;
                 frame.gpu.push(scope.clone());
             }
-            let shaders = self.shaders.iter().filter(|(f, _)| *f == frame.frame);
-            frame.shaders = shaders.map(|(_, time)| time.clone()).collect();
+            frame.counters = self.counters.clone();
+            let regions = self.regions.iter().filter(|(f, _)| *f == frame.frame);
+            frame.regions = regions.map(|(_, time)| time.clone()).collect();
         }
         frames
     }
@@ -330,7 +411,8 @@ impl GpuSlot {
     pub fn read_back(&mut self, timings: &FrameTimings) {
         self.read = self.submitted;
         self.timings.scopes.clone_from(&timings.scopes);
-        self.timings.shaders.clone_from(&timings.shaders);
+        self.timings.counters.clone_from(&timings.counters);
+        self.timings.regions.clone_from(&timings.regions);
         self.ready = true;
     }
 }
@@ -351,6 +433,9 @@ fn end_frame(mut profiler: ResMut<Profiler>) {
     let frame = capture::frame();
     capture::set_frame(frame + 1);
     let profiler = &mut *profiler;
+    if let Some(names) = profiler.pending_counters.take() {
+        profiler.select_counters_by_name(&names);
+    }
     if profiler.enabled
         && profiler
             .memory_updated
@@ -398,6 +483,9 @@ pub struct ProfilerPlugin {
     /// Saves a profile of the first this many frames into the directory (see
     /// [`Profiler::save`]), once their GPU timings arrived.
     pub capture: Option<(usize, PathBuf)>,
+    /// The hardware counters to record per pass, by name (`Profiler::set_counters` changes
+    /// them later); default `DEFAULT_COUNTERS`.
+    pub counters: Vec<String>,
 }
 
 impl Default for ProfilerPlugin {
@@ -405,6 +493,7 @@ impl Default for ProfilerPlugin {
         Self {
             enabled: true,
             capture: None,
+            counters: DEFAULT_COUNTERS.map(String::from).to_vec(),
         }
     }
 }
@@ -420,8 +509,11 @@ impl Plugin for ProfilerPlugin {
             selected: None,
             memory: MemoryReport::default(),
             capacity,
+            counters: Arc::new([]),
+            compatible: Vec::new(),
+            pending_counters: Some(self.counters.clone()),
             gpu: VecDeque::with_capacity(capacity * GPU_ENTRIES_PER_FRAME),
-            shaders: VecDeque::with_capacity(capacity * GPU_ENTRIES_PER_FRAME),
+            regions: VecDeque::with_capacity(capacity * GPU_ENTRIES_PER_FRAME),
             memory_updated: None,
             capture: self.capture.clone(),
         };
