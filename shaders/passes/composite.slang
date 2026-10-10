@@ -1,11 +1,14 @@
 #define USE_CLOCKS
+// Lights the G-buffer, draws the sky where nothing was drawn, composites the blended layers over
+// both and tonemaps the result into the target.
 #include "bindless.slang"
 #include "profile.slang"
 #include "math.slang"
+#include "lighting.slang"
 
-struct TonemapBindings {
-    // The opaque scene in linear HDR colour, where it has a depth.
-    Tex2D<float3> hdr;
+struct CompositeBindings {
+    // The opaque surfaces (`GbufferDataPacked`), where there is a depth.
+    Tex2D<uint4> gbuffer;
     // Still cleared (0) where nothing was drawn, which shows the sky.
     Tex2D<float> depth;
     // The weighted blended OIT targets of the raster pass's blended fragments. This pass resets
@@ -22,7 +25,7 @@ struct TonemapBindings {
 
 [SpecializationConstant] const uint sky;
 
-[[vk::push_constant]] TonemapBindings bindings;
+[[vk::push_constant]] CompositeBindings bindings;
 // Drawn where there is no sky texture, or while it loads.
 static const float3 NO_SKY_COLOR = float3(0.05);
 
@@ -64,27 +67,27 @@ float3 linear_to_srgb(float3 c) {
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void tonemap(uint2 dtid: SV_DispatchThreadID) {
+void composite(uint2 dtid: SV_DispatchThreadID) {
     PROFILE(PROFILE_COMPUTE);
     if (any(dtid >= bindings.view_port_size)) {
         return;
     }
-    var hdr: float3;
+    var color: float3;
     if (bindings.depth.Load(dtid) == 0.0) {
-        hdr = sky_color(dtid);
+        color = sky_color(dtid);
     } else {
-        hdr = bindings.hdr.Load(dtid).rgb;
+        color = light(GbufferDataPacked::from_uint4(bindings.gbuffer.Load(dtid)).unpack(), -view_dir(dtid));
     }
     let revealage = bindings.revealage.Load(dtid);
-    // Most pixels have no blended layer (revealage stays 1), so they skip the 16-byte `accum`.
+    // Most pixels have no blended layer (revealage stays 1), so they skip the 8-byte `accum`.
     if (revealage < 1.0) {
         let accum = bindings.accum.Load(dtid);
         // The weighted average colour of the blended layers, over what they let through.
         let blended = accum.rgb / max(accum.a, 1e-5);
-        hdr = lerp(blended, hdr, revealage);
+        color = lerp(blended, color, revealage);
         bindings.accum.Store(dtid, float4(0.0));
         bindings.revealage.Store(dtid, 1.0);
     }
-    hdr *= bindings.exposure;
-    bindings.out.Store(dtid, float4(linear_to_srgb(aces(hdr)), 1.0));
+    color *= bindings.exposure;
+    bindings.out.Store(dtid, float4(linear_to_srgb(aces(color)), 1.0));
 }

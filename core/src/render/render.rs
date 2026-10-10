@@ -38,8 +38,7 @@ use lava::{
     image::{
         Image,
         format::{
-            self, B10G11R11UfloatPack32, ColorAspect, D32Sfloat, Format, R8Unorm,
-            R16G16B16A16Sfloat,
+            self, ColorAspect, D32Sfloat, Format, R8Unorm, R16G16B16A16Sfloat, R32G32B32A32Uint,
         },
         slice::{AsImage, ImageView},
         usage::{
@@ -72,8 +71,9 @@ use crate::{
     ui::{UiResources, builder::UiBuilder},
 };
 use lava::bindings::{
-    BvhCull, DrawOutline, InstanceBvhRoot, InstanceCull, InstanceMeshletIndex, InstancedMeshlet,
-    MeshletDraw, Raster, RasterBlended, RasterOutline, RasterUi, Tonemap, TraversalVariables,
+    BvhCull, Composite, DrawOutline, InstanceBvhRoot, InstanceCull, InstanceMeshletIndex,
+    InstancedMeshlet, MeshletDraw, Raster, RasterBlended, RasterOutline, RasterUi,
+    TraversalVariables,
 };
 
 /// `MESHLET_STRIDE` in `datatypes.slang`: `groups_y` of every `MeshletDraw`.
@@ -283,16 +283,15 @@ pub struct ResourceStates {
 
 pub struct RenderResources {
     depth_attachment: Image<D32Sfloat, DepthAttachmentSampled>,
-    /// The scene in linear HDR colour, the same size as the depth; tonemapped into the target.
-    /// Half the size of RGBA16F, within 2 levels of it after tonemapping, since the raster pass
-    /// rounds its output (the format truncates).
-    hdr: Image<B10G11R11UfloatPack32, ColorAttachmentSampled>,
-    /// Weighted blended OIT of the blended meshlets, composited over `hdr` by the tonemap: the
+    /// The opaque surfaces (`pack_gbuffer` in `gbuffer.slang`), the same size as the depth; the
+    /// composite pass lights them into the target.
+    gbuffer: Image<R32G32B32A32Uint, ColorAttachmentSampled>,
+    /// Weighted blended OIT of the blended meshlets, composited over the lit G-buffer: the
     /// weighted sum of their premultiplied colours (rgb) and of their weights (a). Half floats,
     /// so the blended pass clamps the weighted colour.
     accum: Image<R16G16B16A16Sfloat, ColorAttachmentStorage>,
-    /// The product of `1 - alpha` of the blended fragments: how much of `hdr` shows through.
-    /// The tonemap reads it through the sampler (a typed load of a storage image is several
+    /// The product of `1 - alpha` of the blended fragments: how much of the surface behind them
+    /// shows through. The composite pass reads it through the sampler (a typed load of a storage image is several
     /// times slower on Intel) and resets it as storage.
     revealage: Image<R8Unorm, ColorAttachmentSampledStorage>,
     meshlets: Buffer<InstancedMeshlet>,
@@ -498,7 +497,7 @@ impl RenderResources {
                     bindless::sampled_slot().unwrap(),
                 )
                 .unwrap(),
-                hdr: Image::new_sampled(
+                gbuffer: Image::new_sampled(
                     depth_size.x,
                     depth_size.y,
                     1,
@@ -540,7 +539,7 @@ impl RenderResources {
             );
             frame.retire(old);
             let old = std::mem::replace(
-                &mut resources.hdr,
+                &mut resources.gbuffer,
                 Image::new_sampled(size.x, size.y, 1, bindless::sampled_slot().unwrap()).unwrap(),
             );
             frame.retire(old);
@@ -606,7 +605,7 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
     let (view, proj) = (camera.camera.view, camera.camera.proj);
     cmd.begin_scope("cull");
     // Only once: bvh_cull leaves every queue slot and batch counter it consumes as filled here,
-    // and the tonemap resets every pixel of `accum` and `revealage` the blended pass drew to.
+    // and the composite pass resets every pixel of `accum` and `revealage` the blended pass drew to.
     if resources.fresh {
         resources.fresh = false;
         cmd.fill_buffer(resources.bvh_node_stack.range(..), !0);
@@ -685,9 +684,10 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         );
     }
     cmd.end_scope();
-    // Also without instances: it clears the depth, and the tonemap draws the sky where it stays 0.
+    // Also without instances: it clears the depth, and the composite pass draws the sky where it
+    // stays 0.
     cmd.raster(target_size)
-        .color_attachment(resources.hdr.whole_view(), None)
+        .color_attachment(resources.gbuffer.whole_view(), None)
         .color_attachment(resources.accum.whole_view(), None)
         .color_attachment(resources.revealage.whole_view(), None)
         .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]))
@@ -724,8 +724,8 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
     cmd.begin_scope("post");
     // cmd.flush_all();
     cmd.compute(
-        Tonemap::push_bindings(
-            resources.hdr.whole_view(),
+        Composite::push_bindings(
+            resources.gbuffer.whole_view(),
             resources.depth_attachment.whole_view(),
             resources.accum.whole_view(),
             resources.revealage.whole_view(),

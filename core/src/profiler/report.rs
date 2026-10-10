@@ -432,7 +432,7 @@ mod tests {
                     subgroups: 10,
                 },
                 ShaderTime {
-                    pass: "Tonemap",
+                    pass: "Composite",
                     stage: "compute",
                     ticks: 1000,
                     subgroups: 20,
@@ -453,7 +453,7 @@ mod tests {
             rows,
             [
                 ("Raster", "fragment", 3000.0, 10.0, 0.75),
-                ("Tonemap", "compute", 1000.0, 20.0, 0.25)
+                ("Composite", "compute", 1000.0, 20.0, 0.25)
             ]
         );
     }

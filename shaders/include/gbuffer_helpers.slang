@@ -1,3 +1,5 @@
+// kajiya's G-buffer layout in one RGBA32 texel: albedo (8:8:8, occlusion in the spare byte),
+// normal (11:10:11), roughness and metalness (2 x f16), emissive (shared-exponent rgb9e5).
 #pragma once
 #include "datatypes.slang"
 #include "packing.slang"
@@ -8,6 +10,7 @@ struct GbufferData {
     float3 normal;
     float roughness;
     float metalness;
+    float occlusion;
 
     static GbufferData create_zero() {
         GbufferData res;
@@ -16,12 +19,13 @@ struct GbufferData {
         res.normal = 0;
         res.roughness = 0;
         res.metalness = 0;
+        res.occlusion = 0;
         return res;
     }
 
     GbufferDataPacked pack() {
         float4 res = 0.0;
-        res.x = asfloat(pack_color_888(albedo));
+        res.x = asfloat(pack_color_888(albedo) | (pack_unorm(occlusion, 8) << 24));
         res.y = pack_normal_11_10_11(normal);
 
         float2 roughness_metalness = float2(roughness_to_perceptual_roughness(roughness), metalness);
@@ -65,6 +69,7 @@ struct GbufferDataPacked {
         res.roughness = perceptual_roughness_to_roughness(roughness_metalness.x);
         res.metalness = roughness_metalness.y;
         res.emissive = unpack_emissive();
+        res.occlusion = unpack_unorm(data0.x >> 24, 8);
 
         return res;
     }
