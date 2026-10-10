@@ -1,5 +1,5 @@
 //! Engine core: assembles bevy, rendering, assets, scene, UI, editor and physics plugins, and the shared asset setup.
-// Needed to call `RasterBuilder`'s draw methods, whose return type is `{ N + 1 }`.
+// Needed to call `RasterBuilder`'s attachment and draw methods, which return it one larger.
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 #![feature(integer_casts)]
