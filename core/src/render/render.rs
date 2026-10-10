@@ -329,7 +329,7 @@ pub struct RenderSettings {
     pub pixel_error: f32,
     /// Scales the HDR colour before tonemapping.
     pub exposure: f32,
-    /// Index into the swapchain's `present_modes` (0: lowest latency).
+    /// Index into the swapchain's `present_modes` (0: FIFO).
     pub present_mode: usize,
 }
 
