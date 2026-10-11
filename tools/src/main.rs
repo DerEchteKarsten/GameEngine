@@ -241,8 +241,9 @@ fn crate_deps(root: &Path) -> String {
         .iter()
         .map(|c| {
             let toml = read(&root.join(c).join("Cargo.toml"));
+            let toml = toml.split("[dev-dependencies]").next().unwrap();
             let deps: Vec<&str> = PATH_DEP_RE
-                .captures_iter(&toml)
+                .captures_iter(toml)
                 .map(|m| m.get(1).unwrap().as_str())
                 .collect();
             let deps = if deps.is_empty() {

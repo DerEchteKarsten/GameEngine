@@ -1,4 +1,4 @@
-//! Sample game binary: boots the engine and spawns an editor camera and glTF scene
+//! Sample game binary: boots the engine and spawns an editor camera and the skybox
 use core::{
     CorePlugin,
     editor::camera::EditorCamera,
