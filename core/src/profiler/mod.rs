@@ -7,7 +7,7 @@ use bevy::{
     log::{error, info, warn},
 };
 use lava::profiling::{
-    Counter, FrameTimings, GpuScope, MAX_COUNTERS, MemoryReport, RegionTime, counters,
+    Counter, GpuFrameTimings, GpuScope, MAX_COUNTERS, MemoryReport, RegionTime, counters,
     memory_report,
 };
 
@@ -128,7 +128,10 @@ fn busy_per_frame(
         if frame.start_ns >= span.end_ns {
             break;
         }
-        let ns = span.end_ns.min(frame.end_ns).saturating_sub(span.start_ns.max(frame.start_ns));
+        let ns = span
+            .end_ns
+            .min(frame.end_ns)
+            .saturating_sub(span.start_ns.max(frame.start_ns));
         add(first + i, sign * ns as i64);
     }
 }
@@ -206,7 +209,9 @@ impl Profiler {
         }
         self.counters = selection.into();
         // Values recorded with the old selection would be read as the new one's.
-        self.gpu.iter_mut().for_each(|(.., scope)| scope.counters = None);
+        self.gpu
+            .iter_mut()
+            .for_each(|(.., scope)| scope.counters = None);
         let fits = |counter: &&'static Counter| {
             let mut with: Vec<_> = selection.to_vec();
             with.push(*counter);
@@ -237,13 +242,15 @@ impl Profiler {
             }
         }
         if !skipped.is_empty() && !counters::counters().is_empty() {
-            warn!("counters not recorded (unknown, or not in one pass with the others): {skipped:?}");
+            warn!(
+                "counters not recorded (unknown, or not in one pass with the others): {skipped:?}"
+            );
         }
         self.set_counters(&selection);
     }
 
     /// Hands the GPU timings of the work submitted in `frame` (at `submit_ns`) to it.
-    pub fn add_gpu(&mut self, frame: u32, submit_ns: u64, timings: &FrameTimings) {
+    pub fn add_gpu(&mut self, frame: u32, submit_ns: u64, timings: &GpuFrameTimings) {
         let Some(i) = self.index(frame) else { return };
         self.times[i].gpu_ns = Some(root_ns(&timings.scopes));
         // Frames in flight across a new selection have the old one's counters.
@@ -402,13 +409,13 @@ pub struct GpuSlot {
     pub submitted: (u32, u64),
     /// The frame and submit time of `timings`.
     pub read: (u32, u64),
-    pub timings: FrameTimings,
+    pub timings: GpuFrameTimings,
     pub ready: bool,
 }
 
 impl GpuSlot {
     /// Keeps the timings of the slot's last submission, reusing their buffers.
-    pub fn read_back(&mut self, timings: &FrameTimings) {
+    pub fn read_back(&mut self, timings: &GpuFrameTimings) {
         self.read = self.submitted;
         self.timings.scopes.clone_from(&timings.scopes);
         self.timings.counters.clone_from(&timings.counters);

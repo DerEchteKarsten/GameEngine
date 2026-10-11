@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::app::{App, Plugin, Update};
 use bevy::ecs::prelude::*;
-use bevy::math::{Rect, VectorSpace};
 use glam::{Vec2, Vec4};
 use lava::state::raw_vulkan::{DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT};
 use tracing::Level;
@@ -18,6 +17,7 @@ use tracing_subscriber::{Layer, fmt};
 use crate::id;
 use crate::ui::UiContext;
 use crate::ui::builder::UiBuilder;
+use crate::ui::widgets::{Ellipsis, fit_text};
 use crate::ui::window::{BorderSettings, DrawSettings};
 
 #[derive(Debug, Clone, Default)]
@@ -361,35 +361,27 @@ fn console_window(
         .fetch_add(1, std::sync::atomic::Ordering::Release);
 
     ui_builder.build("Console", |ui| {
-        ui.horizontal();
-        ui.text("Level:");
-
-        let prev = ui_state.min_level;
-        ui_state.min_level =
-            ui.dropdown(id!(), ui_state.min_level as usize, &LogEntry::LEVEL_NAMES) as u8;
-        let min_level_changed = prev != ui_state.min_level;
-
-        ui.text("Filter:");
-        let filter_changed = ui.text_input(id!(), &mut ui_state.filter_text, 300.0);
-
-        ui.text("Auto-scroll");
-        ui_state.auto_scroll = ui.checkbox(ui_state.auto_scroll);
-
         let head = log.buffer.head.load(std::sync::atomic::Ordering::Relaxed) as usize;
-        if ui.button("Clear log") {
-            log.buffer.head.store(0, Ordering::Relaxed);
-            ui_state.filter_buf_head = 0;
-            ui_state.old_head = head.saturating_sub(MAX_ENTIRES);
-            ui_state.matches = 0;
-        }
+        let (min_level_changed, filter_changed) = ui.row(|ui| {
+            ui.label("Level:");
+            let prev = ui_state.min_level;
+            ui_state.min_level =
+                ui.dropdown(id!(), ui_state.min_level as usize, &LogEntry::LEVEL_NAMES) as u8;
 
-        ui.vertical();
+            ui.label("Filter:");
+            let filter_changed = ui.text_input(id!(), &mut ui_state.filter_text, 300.0);
 
-        let mut rect = ui.clip_rect;
-        rect.min.y = ui.cursor.y;
-        let size = rect.size()
-            - (UiContext::WINDOW_PAD.as_vec2() + UiContext::ROUNDING.max(UiContext::BORDER) as f32)
-                * 2.0;
+            ui_state.auto_scroll = ui.checkbox("Auto-scroll", ui_state.auto_scroll);
+
+            if ui.button("Clear log") {
+                log.buffer.head.store(0, Ordering::Relaxed);
+                ui_state.filter_buf_head = 0;
+                ui_state.old_head = head.saturating_sub(MAX_ENTIRES);
+                ui_state.matches = 0;
+            }
+            (prev != ui_state.min_level, filter_changed)
+        });
+        let size = ui.available_size();
 
         let filter_lc = ui_state.filter_text.to_lowercase();
         let min_level = ui_state.min_level;
@@ -430,9 +422,10 @@ fn console_window(
         }
         ui_state.old_head = head;
         let len = ui_state.matches.min(MAX_ENTIRES);
-        ui.text_container(
+        ui.list(
             id!(),
             size,
+            len,
             ui_state.auto_scroll,
             |ui, i| {
                 let offset = if ui_state.matches < MAX_ENTIRES {
@@ -443,34 +436,16 @@ fn console_window(
                 let idx = (offset + i) % MAX_ENTIRES;
                 let entry_idx = &ui_state.filter_buf[idx];
                 let entry = buffer[*entry_idx as usize].clone();
-                let max_len = ((size.x
-                    / (UiContext::ATLAS_CELL_SIZE.x + UiContext::CHARACTER_ADVANCE_WIDTH) as f32)
-                    .floor() as usize)
-                    .saturating_sub(3);
-                let str;
-                let (message, mut level_color) = entry.format();
-                let message = if message.len() > max_len {
-                    str = format!("{}...", &message[..message.ceil_char_boundary(max_len)]);
-                    &str
-                } else {
-                    &message
-                };
-                let size = UiContext::text_size(message);
-                let rect = Rect::from_corners(ui.cursor, ui.cursor + size);
-                if ui.hoverd(rect)
-                    || ui_state
-                        .inspecting
-                        .as_ref()
-                        .is_some_and(|i| i.1 == *entry_idx)
-                {
-                    level_color *= 1.4;
-                }
-                ui.colored_text(message, level_color);
-                if ui.prev_element_hoverd() && ui.ctx.input.primary_pressed {
+                let (message, color) = entry.format();
+                let message = fit_text(&message, ui.available_size().x, Ellipsis::End);
+                let inspected = ui_state
+                    .inspecting
+                    .as_ref()
+                    .is_some_and(|i| i.1 == *entry_idx);
+                if ui.selectable(&message, color, inspected) {
                     ui_state.inspecting = Some((entry, *entry_idx));
                 }
             },
-            len,
         );
     });
 }
@@ -496,18 +471,15 @@ fn console_inspector(mut ui: UiBuilder, ui_state: Res<ConsoleUiState>) {
             }
         }
 
-        let width = ui.ctx.window_rect.width() - UiContext::INDENT.x as f32 - 30.0;
         ui.collapsable(true, id!(), "Message", |ui| {
-            ui.wrapping_text(
-                &entry.buffer[..(entry.location as usize)],
-                width,
-                UiContext::TEXT,
-            );
+            let width = ui.available_size().x;
+            ui.wrapping_text(&entry.buffer[..(entry.location as usize)], width, UiContext::TEXT);
         });
         let location = &entry.buffer[entry.location as usize..entry.location_end()];
         ui.collapsable(true, id!(), "Location", |ui| {
-            ui.wrapping_text(format!("{}", location,), width, UiContext::ACENT);
-            if ui.prev_element_hoverd() && ui.ctx.input.primary_pressed && ui.ctx.ctrl {
+            let width = ui.available_size().x;
+            ui.wrapping_text(location, width, UiContext::ACENT);
+            if ui.prev_clicked() && ui.ctx.ctrl {
                 let mut cmd = std::process::Command::new("zeditor");
                 cmd.arg(location);
                 cmd.spawn().unwrap();

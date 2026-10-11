@@ -9,7 +9,7 @@ use crate::{
     physics::bvh::Raycast,
     scene::{Instance, camera::Camera, file::save_scene},
     ui::{
-        MultiInput, UiContext,
+        MultiInput,
         builder::{UiBuilder, UiWindowBuilder},
     },
 };
@@ -36,7 +36,7 @@ use bevy::{
     },
     window::Window,
 };
-use glam::{Mat3, Mat4, Vec2, Vec3};
+use glam::{Mat3, Mat4, Vec3};
 
 #[derive(Component, Reflect)]
 #[component(storage = "SparseSet")]
@@ -46,7 +46,7 @@ pub struct Selected;
 pub(crate) fn hierarchy_ui(
     mut ui: UiBuilder,
     mut cmd: Commands,
-    mut instances: Query<(
+    instances: Query<(
         Entity,
         Has<Selected>,
         Option<&Name>,
@@ -65,59 +65,41 @@ pub(crate) fn hierarchy_ui(
             cmd.spawn(Transform::default());
         }
         // Saves the selected entity's descendants; `.ron` picks the RON layout.
-        ui.horizontal();
-        ui.text_input(id!(), &mut save_path, 200.0);
-        if ui.button("save")
-            && let Ok(root) = selected.single()
-        {
-            let path = save_path.clone();
-            cmd.queue(
-                move |world: &mut World| match save_scene(world, root, &path) {
-                    Ok(()) => info!("saved {path}"),
-                    Err(err) => error!("saving {path}: {err:#}"),
-                },
-            );
+        ui.row(|ui| {
+            ui.text_input(id!(), &mut save_path, 200.0);
+            if ui.button("save")
+                && let Ok(root) = selected.single()
+            {
+                let path = save_path.clone();
+                cmd.queue(
+                    move |world: &mut World| match save_scene(world, root, &path) {
+                        Ok(()) => info!("saved {path}"),
+                        Err(err) => error!("saving {path}: {err:#}"),
+                    },
+                );
+            }
+        });
+
+        let mut roots: Vec<Entity> = instances
+            .iter()
+            .filter(|(_, _, _, _, parent, _, _)| parent.is_none())
+            .map(|(e, _, _, _, _, _, _)| e)
+            .collect();
+        roots.sort();
+        for root in roots {
+            draw_entity_node(&mut cmd, ui, root, &instances, &selected, components);
         }
-        ui.vertical();
-
-        let dropped = ui.drop_target::<Entity>(
-            |_| true,
-            |ui| {
-                let mut roots: Vec<Entity> = instances
-                    .iter()
-                    .filter(|(_, _, _, _, parent, _, _)| parent.is_none())
-                    .map(|(e, _, _, _, _, _, _)| e)
-                    .collect();
-
-                roots.sort();
-
-                let mut content_max = ui.content_max;
-                for root in roots {
-                    draw_entity_node(
-                        &mut cmd,
-                        ui,
-                        root,
-                        &mut instances,
-                        &selected,
-                        components,
-                        &mut content_max,
-                    );
+        if keys.just_pressed(KeyCode::Delete) && ui.ctx.focused.is_some() {
+            for e in &selected {
+                // Despawning a resource panics the next system that reads it.
+                if instances.get(e).is_ok_and(|i| i.6.is_none()) {
+                    cmd.entity(e).despawn();
                 }
-                ui.content_max = ui.content_max.max(content_max);
-                if keys.just_pressed(KeyCode::Delete) && ui.ctx.focused.is_some() {
-                    for e in selected {
-                        // Despawning a resource panics the next system that reads it.
-                        if instances.get(e).is_ok_and(|i| i.6.is_none()) {
-                            cmd.entity(e).despawn();
-                        }
-                    }
-                }
-                ui.content_max = ui
-                    .content_max
-                    .max(ui.clip_rect.size() - UiContext::WINDOW_PAD.as_vec2());
-            },
-        );
-        if let Some(entity) = dropped {
+            }
+        }
+        // Dropping an entity below the tree makes it a root.
+        ui.space(ui.available_size());
+        if let Some(entity) = ui.drop_target::<Entity>(|_| true) {
             cmd.entity(entity).remove_parent_in_place();
         }
     });
@@ -127,7 +109,7 @@ fn draw_entity_node(
     cmd: &mut Commands,
     ui: &mut UiWindowBuilder,
     this_entity: Entity,
-    instances: &mut Query<(
+    instances: &Query<(
         Entity,
         Has<Selected>,
         Option<&Name>,
@@ -138,7 +120,6 @@ fn draw_entity_node(
     )>,
     selected: &Query<Entity, With<Selected>>,
     components: &Components,
-    content_max: &mut Vec2,
 ) {
     let Ok((_, is_selected, name, children, _, instance, resource)) = instances.get(this_entity)
     else {
@@ -158,66 +139,32 @@ fn draw_entity_node(
     } else {
         format!("Entity {}", this_entity.index())
     };
-    let has_children = children.is_some();
 
-    ui.disabled(!is_selected);
-    ui.drag_source(
-        this_entity,
-        || this_entity,
-        |ui| {
-            let dropped = ui.drop_target::<Entity>(
-                |_| true,
-                |ui| {
-                    ui.content_max = if has_children {
-                        ui.collapsable(true, this_entity, &label, |ui| {
-                            let size = ui.content_max;
-                            let Ok((_, _, _, children, _, _, _)) = instances.get(this_entity)
-                            else {
-                                return size;
-                            };
-                            let mut children = children
-                                .as_ref()
-                                .unwrap()
-                                .iter()
-                                .copied()
-                                .collect::<Vec<_>>();
-                            children.sort();
-                            for child in children {
-                                draw_entity_node(
-                                    cmd,
-                                    ui,
-                                    child,
-                                    instances,
-                                    selected,
-                                    components,
-                                    content_max,
-                                );
-                            }
-                            *content_max = content_max.max(ui.content_max);
-                            size
-                        })
-                        .unwrap_or(ui.content_max)
-                    } else {
-                        ui.text(&label);
-                        ui.content_max
-                    };
-                },
-            );
-            if let Some(entity) = dropped
-                && entity != this_entity
-            {
-                cmd.entity(entity).set_parent_in_place(this_entity);
-            }
-        },
-        |ui| ui.text(&label),
-    );
-    ui.disabled(true);
-
-    if ui.prev_element_hoverd() && ui.ctx.input.primary_pressed {
+    let open = if children.is_some() {
+        ui.header(this_entity, &label, true, is_selected)
+    } else {
+        ui.selectable(&label, ui.text_color(), is_selected);
+        false
+    };
+    ui.drag_source(this_entity, || this_entity, |ui| ui.text(&label));
+    if let Some(entity) = ui.drop_target::<Entity>(|e| *e != this_entity) {
+        cmd.entity(entity).set_parent_in_place(this_entity);
+    }
+    if ui.prev_clicked() {
         for e in selected {
             cmd.entity(e).remove::<Selected>();
         }
         cmd.entity(this_entity).insert(Selected);
+    }
+
+    if open && let Some(children) = children {
+        let mut children = children.iter().copied().collect::<Vec<_>>();
+        children.sort();
+        ui.indent(|ui| {
+            for child in children {
+                draw_entity_node(cmd, ui, child, instances, selected, components);
+            }
+        });
     }
 }
 

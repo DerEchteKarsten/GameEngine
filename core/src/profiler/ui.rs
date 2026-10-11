@@ -39,7 +39,6 @@ const CHAR_WIDTH: f32 = UiContext::ATLAS_CELL_SIZE.x as f32;
 pub(crate) struct ProfilerView {
     /// The visible part of the timeline in ns since the frame started; `None` shows all of it.
     range: Option<(f64, f64)>,
-    drag_from: Option<f32>,
     /// The selected frame's header and table rows, and its number.
     tables: Option<(u32, Tables)>,
     /// Index into `SPAN_FILTERS`.
@@ -52,22 +51,17 @@ const NAME_CHARS: usize = 56;
 
 struct SpanRow {
     kind: SpanKind,
-    name: &'static str,
     cells: [String; 6],
 }
 
 struct Tables {
     header: String,
     scopes: Vec<[String; 6]>,
-    /// `c1: name` per counter, then a row per scope that has counters: its name and values.
     counter_legend: Vec<String>,
     counters: Vec<Vec<String>>,
     regions: Vec<[String; 5]>,
     spans: Vec<SpanRow>,
 }
-
-/// Width of a counter column, in characters.
-const COUNTER_CHARS: usize = 12;
 
 fn tables(frame: &FrameProfile) -> Tables {
     let mut busy: Vec<_> = frame
@@ -97,8 +91,7 @@ fn tables(frame: &FrameProfile) -> Tables {
     let frames = std::slice::from_ref(frame);
     let gpu = frame.gpu_ns().map_or(0.0, ms);
     let totals = gpu_scopes(frames);
-    let counter_legend = frame.counters.iter().enumerate();
-    let counter_legend = counter_legend.map(|(i, c)| format!("c{}: {}", i + 1, c.name));
+    let counter_legend = frame.counters.iter().map(|c| c.name.clone());
     let counters = totals.iter().filter_map(|scope| {
         let values = scope.counters?;
         let name = format!("{}{}", "  ".repeat(scope.depth as usize), scope.name);
@@ -120,9 +113,8 @@ fn tables(frame: &FrameProfile) -> Tables {
     });
     let spans = cpu_spans(frames).into_iter().map(|span| SpanRow {
         kind: span.kind,
-        name: span.name,
         cells: [
-            span.name.chars().take(NAME_CHARS).collect(),
+            span.name.to_string(),
             span.kind.label().to_string(),
             format!("{:.3}", ms(span.total_ns)),
             span.calls.to_string(),
@@ -166,23 +158,6 @@ fn name_color(name: &str) -> Vec4 {
     Vec4::new(channel(r), channel(g), channel(b), 1.0)
 }
 
-/// Width left of the tab's visible area. Not `remaining_width`, which includes last frame's
-/// content, so anything sized by it grows a little every frame.
-fn visible_width(ui: &UiWindowBuilder) -> f32 {
-    (ui.clip_rect.max.x - ui.cursor.x - 20.0).max(0.0)
-}
-
-/// A row of cells at fixed x offsets, in characters.
-fn row(ui: &mut UiWindowBuilder, columns: &[usize], cells: &[String], color: Vec4) {
-    ui.horizontal();
-    let x = ui.cursor.x;
-    for (column, cell) in columns.iter().zip(cells) {
-        ui.cursor.x = x + *column as f32 * CHAR_WIDTH;
-        ui.colored_text(cell, color);
-    }
-    ui.vertical();
-}
-
 struct Bar {
     name: &'static str,
     wait: bool,
@@ -219,7 +194,6 @@ fn lane_rows(bars: impl Iterator<Item = Bar>) -> u16 {
 /// Draws the timeline's lanes one below the other.
 struct Lanes {
     area: Rect,
-    clip: Rect,
     cursor: Option<Vec2>,
     /// Timeline ns at the left edge and per pixel.
     start: f64,
@@ -231,15 +205,12 @@ struct Lanes {
 
 impl Lanes {
     fn draw(&mut self, ui: &mut UiWindowBuilder, lane: &str, bars: impl Iterator<Item = Bar>) {
-        let viewport = ui.ctx.viewport_size;
         let area = self.area;
-        ui.ctx.window.draw_text(
+        ui.paint_text(
             Vec2::new(area.min.x, self.y),
-            UiContext::TEXT_DIM,
             lane,
-            viewport,
-            self.clip,
-            false,
+            UiContext::TEXT_DIM,
+            ui.clip_rect,
         );
         self.y += ROW_HEIGHT;
         let x_of = |ns: u64| {
@@ -256,33 +227,16 @@ impl Lanes {
             }
             let top = self.y + bar.depth as f32 * ROW_HEIGHT;
             let rect = Rect::new(x0, top, x1, top + ROW_HEIGHT - 2.0);
-            ui.ctx.window.draw_rect(
-                rect,
-                None,
-                // Waits are idle time, so they stay in the background.
-                if bar.wait {
-                    UiContext::S2
-                } else {
-                    name_color(bar.name)
-                },
-                viewport,
-                self.clip,
-                false,
-                BindlessHandle::default(),
-            );
+            // Waits are idle time, so they stay in the background.
+            let (fill, text) = if bar.wait {
+                (UiContext::S2, UiContext::TEXT_DIM)
+            } else {
+                (name_color(bar.name), UiContext::BG_DARK)
+            };
+            ui.paint_rect(rect, fill);
             if rect.width() > 3.0 * CHAR_WIDTH {
-                ui.ctx.window.draw_text(
-                    Vec2::new(rect.min.x + 2.0, rect.min.y + 1.0),
-                    if bar.wait {
-                        UiContext::TEXT_DIM
-                    } else {
-                        UiContext::BG_DARK
-                    },
-                    bar.name,
-                    viewport,
-                    rect.intersect(self.clip),
-                    false,
-                );
+                let pos = Vec2::new(rect.min.x + 2.0, rect.min.y + 1.0);
+                ui.paint_text(pos, bar.name, text, rect);
             }
             if self.cursor.is_some_and(|pos| rect.contains(pos)) {
                 self.hovered = Some(format!(
@@ -310,43 +264,34 @@ fn timeline(ui: &mut UiWindowBuilder, frame: &FrameProfile, view: &mut ProfilerV
         .sum::<u16>()
         + lane_rows(gpu_bars(frame));
     let height = rows as f32 * ROW_HEIGHT;
-    let size = Vec2::new(visible_width(ui), (height + 20.0).min(600.0));
+    let size = Vec2::new(ui.available_size().x, (height + 20.0).min(600.0));
 
     ui.container(id!(), size, |ui| {
         let area = Rect::from_corners(ui.cursor, ui.cursor + Vec2::new(size.x - 30.0, height));
-        let cursor = ui.ctx.input.cursor_pos.filter(|_| ui.hoverd(area));
+        let cursor = ui.ctx.input.cursor_pos.filter(|_| ui.hovered(area));
 
         // Wheel zooms around the cursor, dragging pans.
         let (mut start, mut end) = view.range.unwrap_or(full);
         let ns_per_px = (end - start) / area.width() as f64;
-        if let Some(pos) = cursor {
+        let wheel = ui.scroll_over(area);
+        if wheel != 0.0
+            && let Some(pos) = cursor
+        {
             let at = start + (pos.x - area.min.x) as f64 * ns_per_px;
-            let delta = ui.ctx.scroll_delta.y;
-            if delta != 0.0 {
-                let zoom = if delta > 0.0 { 0.8 } else { 1.25 };
-                start = at - (at - start) * zoom;
-                end = at + (end - at) * zoom;
-                view.range = Some((start, end));
-            }
-            ui.scroll_consumed = true;
+            let zoom = if wheel > 0.0 { 0.8 } else { 1.25 };
+            start = at - (at - start) * zoom;
+            end = at + (end - at) * zoom;
+            view.range = Some((start, end));
         }
-        match (cursor, ui.ctx.input.primary_pressing, view.drag_from) {
-            (Some(pos), true, None) => view.drag_from = Some(pos.x),
-            (_, true, Some(from)) => {
-                let x = ui.ctx.input.cursor_pos.map_or(from, |p| p.x);
-                let shift = (from - x) as f64 * ns_per_px;
-                start += shift;
-                end += shift;
-                view.range = Some((start, end));
-                view.drag_from = Some(x);
-            }
-            (_, false, _) => view.drag_from = None,
-            _ => {}
+        if let Some(drag) = ui.drag(id!(), area) {
+            let shift = -drag.delta.x as f64 * ns_per_px;
+            start += shift;
+            end += shift;
+            view.range = Some((start, end));
         }
 
         let mut lanes = Lanes {
             area,
-            clip: ui.clip_rect,
             cursor,
             start,
             ns_per_px: (end - start) / area.width() as f64,
@@ -359,14 +304,7 @@ fn timeline(ui: &mut UiWindowBuilder, frame: &FrameProfile, view: &mut ProfilerV
         }
         lanes.draw(ui, "GPU", gpu_bars(frame));
         // Gives the container its content size.
-        ui.rect(
-            area.size(),
-            DrawSettings {
-                color: Vec4::ZERO,
-                border: None,
-                ..Default::default()
-            },
-        );
+        ui.space(area.size());
         if let Some(label) = lanes.hovered {
             ui.tooltip_label(label);
         }
@@ -382,8 +320,10 @@ pub(crate) fn profiler_ui(
         let (profiler, view) = (&mut *profiler, &mut *view);
         // While recording, the last frame is still running.
         let closed = profiler.times.len() - !profiler.paused as usize;
-        let times = profiler.times.range(..closed);
-        let recent = times.clone().skip(closed.saturating_sub(RECENT_FRAMES));
+        let recent = profiler
+            .times
+            .range(..closed)
+            .skip(closed.saturating_sub(RECENT_FRAMES));
         let frame_time = mean(recent.clone().map(|t| ms(t.frame_ns())));
         let cpu = mean(
             recent
@@ -392,50 +332,51 @@ pub(crate) fn profiler_ui(
                 .map(|t| ms(t.cpu_ns)),
         );
         let gpu = mean(recent.filter_map(|t| t.gpu_ns).map(ms));
-        let width = visible_width(ui) - 10.0;
+        let fps = 1000.0 / frame_time.max(f64::EPSILON);
+        let width = ui.available_size().x;
         let max = (frame_time * 2.0).max(1.0) as f32;
 
-        ui.horizontal();
-        ui.text("Profile");
-        let enabled = ui.checkbox(profiler.enabled);
-        if enabled != profiler.enabled {
-            profiler.set_enabled(enabled);
-            return;
-        }
-        if !profiler.enabled {
-            ui.text(format!(
-                "Frame {frame_time:.2} ms ({:.0} fps)",
-                1000.0 / frame_time.max(f64::EPSILON)
-            ));
-            ui.vertical();
-            let frame_ms = times.map(|t| ms(t.frame_ns()) as f32);
-            ui.histogram(width, 40.0, max, 0.0, frame_ms, closed.max(1));
-            return;
-        }
-        if ui.button(if profiler.paused { "Resume" } else { "Pause" }) {
-            profiler.set_paused(!profiler.paused);
-            return;
-        }
-        if ui.button("Save capture") {
-            let time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            let dir = PathBuf::from("profiles").join(time.to_string());
-            match profiler.save(&dir) {
-                Ok(()) => info!("saved the profile to {}", dir.display()),
-                Err(err) => error!("failed to save the profile to {}: {err}", dir.display()),
+        // Set when a button changed the profiler, which then has nothing to show this frame.
+        let mut changed = false;
+        ui.row(|ui| {
+            let enabled = ui.checkbox("Profile", profiler.enabled);
+            if enabled != profiler.enabled {
+                profiler.set_enabled(enabled);
+                changed = true;
+            } else if !profiler.enabled {
+                ui.label(format!("Frame {frame_time:.2} ms ({fps:.0} fps)"));
+            } else if ui.button(if profiler.paused { "Resume" } else { "Pause" }) {
+                profiler.set_paused(!profiler.paused);
+                changed = true;
+            } else if ui.button("Save capture") {
+                let time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let dir = PathBuf::from("profiles").join(time.to_string());
+                match profiler.save(&dir) {
+                    Ok(()) => info!("saved the profile to {}", dir.display()),
+                    Err(err) => error!("failed to save the profile to {}: {err}", dir.display()),
+                }
+                changed = true;
+            } else {
+                if ui.button("Fit timeline") {
+                    view.range = None;
+                }
+                ui.label(format!(
+                    "Frame {frame_time:.2} ms ({fps:.0} fps), CPU {cpu:.2} ms, GPU {gpu:.2} ms"
+                ));
             }
+        });
+        if changed {
             return;
         }
-        if ui.button("Fit timeline") {
-            view.range = None;
+        let times = profiler.times.range(..closed);
+        if !profiler.enabled {
+            let frame_ms = times.map(|t| ms(t.frame_ns()) as f32);
+            ui.histogram(width, 48.0, max, 0.0, frame_ms, closed.max(1));
+            return;
         }
-        ui.text(format!(
-            "Frame {frame_time:.2} ms ({:.0} fps), CPU {cpu:.2} ms, GPU {gpu:.2} ms",
-            1000.0 / frame_time.max(f64::EPSILON)
-        ));
-        ui.vertical();
 
         let mut clicked = None;
         let graphs: [(&str, fn(&FrameTimes) -> f32); 3] = [
@@ -451,7 +392,7 @@ pub(crate) fn profiler_ui(
         for (label, value) in graphs {
             ui.text(label);
             let values = times.clone().map(value);
-            clicked = clicked.or(ui.histogram(width, 40.0, max, 0.0, values, closed.max(1)));
+            clicked = clicked.or(ui.histogram(width, 48.0, max, 0.0, values, closed.max(1)));
         }
         if let Some(i) = clicked {
             profiler.select(i);
@@ -462,7 +403,7 @@ pub(crate) fn profiler_ui(
 
         let Some(frame) = &profiler.selected else {
             ui.text("Click a frame in the graphs to inspect it.");
-            memory(ui, &profiler.memory, width);
+            memory(ui, &profiler.memory);
             return;
         };
         if view.tables.as_ref().is_none_or(|(f, _)| *f != frame.frame) {
@@ -479,51 +420,28 @@ pub(crate) fn profiler_ui(
             ..
         } = &view.tables.as_ref().unwrap().1;
         ui.collapsable(true, id!(), "GPU scopes", |ui| {
-            let header = ["scope", "ms", "% GPU", "fragments", "compute", "mesh"];
-            let columns = [0, 28, 38, 46, 58, 70];
-            row(ui, &columns, &header.map(String::from), UiContext::TEXT_DIM);
-            for cells in scopes {
-                row(ui, &columns, cells, UiContext::TEXT);
-            }
+            let header_labels = ["scope", "ms", "% GPU", "fragments", "compute", "mesh"];
+            ui.table(header_labels.iter(), scopes.iter().map(|i| i.iter()));
         });
         if !counters.is_empty() {
             ui.collapsable(true, id!(), "GPU counters", |ui| {
-                let columns: Vec<usize> = (0..=counter_legend.len())
-                    .map(|i| {
-                        if i == 0 {
-                            0
-                        } else {
-                            28 + (i - 1) * COUNTER_CHARS
-                        }
-                    })
-                    .collect();
-                let header = std::iter::once("scope".to_string())
-                    .chain((1..=counter_legend.len()).map(|i| format!("c{i}")));
-                row(
-                    ui,
-                    &columns,
-                    &header.collect::<Vec<_>>(),
-                    UiContext::TEXT_DIM,
+                ui.table(
+                    std::iter::once("Name").chain(counter_legend.iter().map(|s| s.as_str())),
+                    counters.iter().map(|i| i.iter()),
                 );
-                for cells in counters {
-                    row(ui, &columns, cells, UiContext::TEXT);
-                }
             });
         }
         if !regions.is_empty() {
             ui.collapsable(true, id!(), "Shader clock regions", |ui| {
-                let header = [
+                let header_labels = [
                     "pass region",
                     "share %",
                     "subgroups",
                     "Mticks",
                     "ticks/subgroup",
                 ];
-                let columns = [0, 32, 42, 54, 64];
-                row(ui, &columns, &header.map(String::from), UiContext::TEXT_DIM);
-                for cells in regions {
-                    row(ui, &columns, cells, UiContext::TEXT);
-                }
+
+                ui.table(header_labels.iter(), regions.iter().map(|i| i.iter()));
             });
         }
         let span_filter = &mut view.span_filter;
@@ -533,48 +451,19 @@ pub(crate) fn profiler_ui(
                 .get(*span_filter)
                 .copied()
                 .unwrap_or(Some(SpanKind::Other));
-            let shown: Vec<&SpanRow> = spans
+            let shown = spans
                 .iter()
-                .filter(|span| kind.is_none_or(|kind| span.kind == kind))
-                .collect();
+                .filter(|span| kind.is_none_or(|kind| span.kind == kind));
 
             let header = ["span", "kind", "ms", "calls", "max ms", "thread"];
-            let columns = [
-                0,
-                NAME_CHARS + 2,
-                NAME_CHARS + 11,
-                NAME_CHARS + 21,
-                NAME_CHARS + 29,
-                NAME_CHARS + 39,
-            ];
-            row(ui, &columns, &header.map(String::from), UiContext::TEXT_DIM);
-            let line = (UiContext::ATLAS_CELL_SIZE.y + UiContext::ELEMENT_GAP.y) as f32;
-            let size = Vec2::new(
-                visible_width(ui),
-                (shown.len() as f32 * line + 10.0).min(600.0),
-            );
-            ui.text_container(
-                id!(),
-                size,
-                false,
-                |ui, i| {
-                    let span = shown[i];
-                    let name = from_pos_size(ui.cursor, UiContext::text_size(&span.cells[0]));
-                    let hovered = span.name.len() > span.cells[0].len() && ui.hoverd(name);
-                    row(ui, &columns, &span.cells, UiContext::TEXT);
-                    if hovered {
-                        ui.tooltip_label(span.name);
-                    }
-                },
-                shown.len(),
-            );
+            ui.table(header.iter(), shown.map(|i| i.cells.iter()));
         });
-        memory(ui, &profiler.memory, width);
+        memory(ui, &profiler.memory);
     });
 }
 
-/// The device's counters with a checkbox each; counters that don't fit the selection (more
-/// than `MAX_COUNTERS`, or a second pass) are dimmed and can't be ticked.
+/// The device's counters, one row each, highlighted while selected; counters that don't fit the
+/// selection (more than `MAX_COUNTERS`, or a second pass) are dimmed and can't be picked.
 fn counter_picker(ui: &mut UiWindowBuilder, profiler: &mut Profiler) {
     let all = counters::counters();
     if all.is_empty() {
@@ -588,39 +477,17 @@ fn counter_picker(ui: &mut UiWindowBuilder, profiler: &mut Profiler) {
     let compatible = &profiler.compatible;
     let mut toggled = None;
     ui.collapsable(false, id!(), label, |ui| {
-        let line = (UiContext::ATLAS_CELL_SIZE.y + UiContext::ELEMENT_GAP.y) as f32;
-        let size = Vec2::new(
-            visible_width(ui),
-            (all.len() as f32 * line + 10.0).min(400.0),
-        );
-        ui.text_container(
-            id!(),
-            size,
-            false,
-            |ui, i| {
-                let counter = &all[i];
-                let on = selected.iter().any(|s| std::ptr::eq(*s, counter));
-                let label = format!("{}: {}", counter.category, counter.name);
-                ui.horizontal();
-                if compatible.get(i).copied().unwrap_or(false) {
-                    if ui.checkbox(on) != on {
-                        toggled = Some(i);
-                    }
-                    ui.text(&label);
-                } else {
-                    ui.colored_text(format!("    {label}"), UiContext::TEXT_DIM);
-                }
-                ui.vertical();
-                let rect = from_pos_size(
-                    Vec2::new(ui.cursor.x, ui.cursor.y - line),
-                    Vec2::new(visible_width(ui), line),
-                );
-                if ui.hoverd(rect) {
-                    ui.tooltip_label(&counter.description);
-                }
-            },
-            all.len(),
-        );
+        let size = Vec2::new(ui.available_size().x, 400.0);
+        ui.list(id!(), size, all.len(), false, |ui, i| {
+            let counter = &all[i];
+            let on = selected.iter().any(|s| std::ptr::eq(*s, counter));
+            let label = format!("{}: {}", counter.category, counter.name);
+            let compatible = compatible.get(i).copied().unwrap_or(false);
+            if ui.disabled(!compatible, |ui| ui.selectable(&label, ui.text_color(), on)) {
+                toggled = Some(i);
+            }
+            ui.tooltip(&counter.description);
+        });
     });
     if let Some(i) = toggled {
         let counter = &all[i];
@@ -635,8 +502,9 @@ fn counter_picker(ui: &mut UiWindowBuilder, profiler: &mut Profiler) {
     }
 }
 
-fn memory(ui: &mut UiWindowBuilder, memory: &MemoryReport, width: f32) {
+fn memory(ui: &mut UiWindowBuilder, memory: &MemoryReport) {
     ui.collapsable(true, id!(), "GPU memory", |ui| {
+        let width = ui.available_size().x;
         let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
         ui.text(format!(
             "{:.1} MiB allocated in {} blocks, {:.1} MiB reserved",

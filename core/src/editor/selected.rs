@@ -1,5 +1,4 @@
 //! Reflection-driven inspector panel for editing components of the selected entity.
-use core::f32;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use bevy::{
@@ -14,19 +13,17 @@ use bevy::{
     },
     reflect::{PartialReflect, Reflect, ReflectMut, TypeRegistry, reflect_trait},
 };
-use glam::{EulerRot, Mat3, Quat, Vec2, Vec3};
+use glam::{EulerRot, Quat, Vec2, Vec3};
 
 use crate::{
     editor::picking::Selected,
     ui::{
         UiContext,
         builder::{UiBuilder, UiWindowBuilder},
-        window::{DrawSettings, Drawable},
+        widgets::{Ellipsis, fit_text},
+        window::DrawSettings,
     },
 };
-
-const INPUT_WIDTH: f32 = 300.0;
-const INPUT_SPACING: f32 = 13.0;
 
 #[reflect_trait]
 pub trait EditorView {
@@ -39,302 +36,94 @@ pub trait EditorView {
     ) -> bool;
 }
 
-impl EditorView for f32 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let before = ui.cursor.x;
-        let val = *self;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        *self = ui.float_input(id, val as f64, INPUT_WIDTH) as f32;
-        ui.cursor.x = before;
-        ui.vertical();
-        *self != val
-    }
+/// `EditorView` for number types, edited with `$input` through `$wide`.
+macro_rules! number_view {
+    ($input:ident, $wide:ty: $($t:ty),*) => {$(
+        impl EditorView for $t {
+            fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, id: u64, _: &TypeRegistry) -> bool {
+                let val = *self;
+                *self = ui.property(name, |ui, width| ui.$input(id, val as $wide, width)) as $t;
+                *self != val
+            }
+        }
+    )*};
 }
+number_view!(float_input, f64: f32, f64);
+number_view!(int_input, i64: i32, u32, u64);
 
-impl EditorView for f64 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let before = ui.cursor.x;
-        let val = *self;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        *self = ui.float_input(id, val, INPUT_WIDTH);
-        ui.cursor.x = before;
-        ui.vertical();
-        *self != val
-    }
+/// `EditorView` for vector types, one number field per component.
+macro_rules! vector_view {
+    ($($t:ty),*) => {$(
+        impl EditorView for $t {
+            fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, id: u64, _: &TypeRegistry) -> bool {
+                let val = *self;
+                let values = val.to_array().map(|c| c as f64);
+                let values = ui.property(name, |ui, width| ui.float_inputs(id, values, width));
+                *self = <$t>::from_array(values.map(|c| c as f32));
+                *self != val
+            }
+        }
+    )*};
 }
-
-impl EditorView for i32 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let before = ui.cursor.x;
-        let val = *self;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        *self = ui.int_input(id, val as i64, INPUT_WIDTH) as i32;
-        ui.cursor.x = before;
-        ui.vertical();
-        *self != val
-    }
-}
-
-impl EditorView for u32 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let before = ui.cursor.x;
-        let val = *self;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        *self = ui.int_input(id, val as i64, INPUT_WIDTH) as u32;
-        ui.cursor.x = before;
-        ui.vertical();
-        *self != val
-    }
-}
-
-impl EditorView for u64 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let before = ui.cursor.x;
-        let val = *self;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        *self = ui.int_input(id, val as i64, INPUT_WIDTH) as u64;
-        ui.cursor.x = before;
-        ui.vertical();
-        *self != val
-    }
-}
+vector_view!(Vec2, Vec3, glam::Vec4);
 
 impl EditorView for bool {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        _id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        let before = ui.cursor.x;
-        ui.text(name);
+    fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, _: u64, _: &TypeRegistry) -> bool {
         let val = *self;
-        ui.cursor.x += ui.remaining_width() - (UiContext::ATLAS_CELL_SIZE.x as f32 + INPUT_SPACING);
-        *self = ui.checkbox(val);
-        ui.cursor.x = before;
-        ui.vertical();
+        *self = ui.property(name, |ui, _| ui.checkbox("", val));
         *self != val
     }
 }
 
 impl EditorView for String {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let before = ui.cursor.x;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        let changed = ui.text_input(id, self, INPUT_WIDTH);
-        ui.cursor.x = before;
-        ui.vertical();
-        changed
+    fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, id: u64, _: &TypeRegistry) -> bool {
+        ui.property(name, |ui, width| ui.text_input(id, self, width))
     }
 }
 
-impl EditorView for glam::Vec2 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
+impl EditorView for Quat {
+    fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, id: u64, _: &TypeRegistry) -> bool {
         let val = *self;
-        let before = ui.cursor.x;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        let width = width(2.0);
-        self.x = ui.float_input(id, val.x as f64, width) as f32;
-        self.y = ui.float_input(id + 1, val.y as f64, width) as f32;
-        ui.cursor.x = before;
-        ui.vertical();
-        *self != val
-    }
-}
-
-fn width(n: f32) -> f32 {
-    INPUT_WIDTH / n
-        - UiContext::ELEMENT_GAP.x as f32
-        - UiContext::CHILD_PAD.x as f32
-        - UiContext::ROUNDING.max(UiContext::BORDER) as f32
-}
-
-impl EditorView for glam::Vec3 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let val = *self;
-        let before = ui.cursor.x;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        let width = width(3.0);
-        self.x = ui.float_input(id, val.x as f64, width) as f32;
-        self.y = ui.float_input(id + 1, val.y as f64, width) as f32;
-        self.z = ui.float_input(id + 2, val.z as f64, width) as f32;
-        ui.cursor.x = before;
-        ui.vertical();
-        *self != val
-    }
-}
-
-impl EditorView for glam::Vec4 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let val = *self;
-        let before = ui.cursor.x;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        let width = width(4.0);
-
-        self.x = ui.float_input(id, val.x as f64, width) as f32;
-        self.y = ui.float_input(id + 1, val.y as f64, width) as f32;
-        self.z = ui.float_input(id + 2, val.z as f64, width) as f32;
-        self.w = ui.float_input(id + 3, val.w as f64, width) as f32;
-        ui.cursor.x = before;
-        ui.vertical();
-        *self != val
-    }
-}
-
-impl EditorView for glam::Quat {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let val = *self;
-
-        let before = ui.cursor.x;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        let width = width(3.0);
-        let (x, y, z) = self.to_euler(EulerRot::XYZ);
-        let x = ui.float_input(id, x as f64, width) as f32;
-        let y = ui.float_input(id + 1, y as f64, width) as f32;
-        let z = ui.float_input(id + 2, z as f64, width) as f32;
-        *self = glam::Quat::from_euler(EulerRot::XYZ, x, y, z);
-        ui.cursor.x = before;
-        ui.vertical();
+        let (x, y, z) = val.to_euler(EulerRot::XYZ);
+        let [x, y, z] = ui
+            .property(name, |ui, width| {
+                ui.float_inputs(id, [x, y, z].map(|c| c as f64), width)
+            })
+            .map(|c| c as f32);
+        *self = Quat::from_euler(EulerRot::XYZ, x, y, z);
         *self != val
     }
 }
 
 impl EditorView for glam::Mat4 {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
+    fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, id: u64, registry: &TypeRegistry) -> bool {
         ui.text(name);
-        let x_axis = self.x_axis.ui(ui, "|    x-Axis", id, _registry);
-        let y_axis = self.y_axis.ui(ui, "|    y-Axis", id + 4, _registry);
-        let z_axis = self.z_axis.ui(ui, "|    z-Axis", id + 8, _registry);
-        let w_axis = self.w_axis.ui(ui, "|    w-Axis", id + 12, _registry);
-        x_axis || y_axis || z_axis || w_axis
+        ui.indent(|ui| {
+            let axes = ["x-Axis", "y-Axis", "z-Axis", "w-Axis"];
+            let mut changed = false;
+            for (i, name) in axes.into_iter().enumerate() {
+                changed |= self.col_mut(i).ui(ui, name, child_id(id, i), registry);
+            }
+            changed
+        })
     }
 }
 
 impl EditorView for glam::Affine3A {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
+    fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, id: u64, registry: &TypeRegistry) -> bool {
         ui.text(name);
-        let det = self.matrix3.determinant();
-
-        let mut scale = Vec3::new(
-            self.matrix3.x_axis.length() * det.signum(),
-            self.matrix3.y_axis.length(),
-            self.matrix3.z_axis.length(),
-        );
-
-        let inv_scale = scale.recip();
-
-        let mut rotation = Quat::from_mat3(&Mat3::from_cols(
-            (self.matrix3.x_axis * inv_scale.x).into(),
-            (self.matrix3.y_axis * inv_scale.y).into(),
-            (self.matrix3.z_axis * inv_scale.z).into(),
-        ));
-
-        let changed = scale.ui(ui, "|    scale", id, _registry)
-            || rotation.ui(ui, "|    rotation", id + 3, _registry)
-            || self
-                .translation
-                .to_vec3()
-                .ui(ui, "|    translation", id + 6, _registry);
+        let (mut scale, mut rotation, mut translation) = self.to_scale_rotation_translation();
+        let changed = ui.indent(|ui| {
+            let scale = scale.ui(ui, "scale", child_id(id, 0), registry);
+            let rotation = rotation.ui(ui, "rotation", child_id(id, 1), registry);
+            let translation = translation.ui(ui, "translation", child_id(id, 2), registry);
+            scale || rotation || translation
+        });
         if changed {
-            let rotation = rotation.normalize();
             *self = glam::Affine3A::from_scale_rotation_translation(
                 scale,
-                rotation,
-                self.translation.into(),
+                rotation.normalize(),
+                translation,
             );
         }
         changed
@@ -342,28 +131,13 @@ impl EditorView for glam::Affine3A {
 }
 
 impl EditorView for Entity {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        _id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        let label = format!("Entity {}", self.index());
-        let width = UiContext::text_len(&label);
-        let before = ui.cursor.x;
-        ui.horizontal();
-        ui.text(name);
-        ui.cursor.x = ui.remaining_width() - width;
-        ui.text(label);
-        ui.cursor.x = before;
-        ui.vertical();
-
+    fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, _: u64, _: &TypeRegistry) -> bool {
+        ui.property(name, |ui, _| ui.label(format!("Entity {}", self.index())));
         false
     }
 }
 
-/// A boxed asset path that accepts dropped `Handle<A>`s. `width` is the width of the box.
+/// A boxed asset path, `width` wide, that accepts dropped `Handle<A>`s.
 fn handle_slot<A: Asset>(
     ui: &mut UiWindowBuilder,
     handle: Option<&Handle<A>>,
@@ -376,98 +150,51 @@ fn handle_slot<A: Asset>(
             .unwrap_or_else(|| "Unknown".to_string()),
         None => "None".to_string(),
     };
-    let pad = UiWindowBuilder::child_offset();
-    let inner_width = width - pad.x * 2.0;
-    // Keep the end of a long path: that is where the file name and sub-asset label are.
-    let max_chars = (inner_width / UiContext::text_len(" ")) as usize;
-    let chars = label.chars().count();
-    let label = if chars > max_chars && max_chars > 2 {
-        let tail: String = label.chars().skip(chars - (max_chars - 2)).collect();
-        format!("..{tail}")
-    } else {
-        label
-    };
-    let color = if ui.disable_all_input || handle.is_none() {
+    let color = if handle.is_none() {
         UiContext::TEXT_DIM
     } else {
-        UiContext::TEXT
+        ui.text_color()
     };
-
-    ui.asset_drop_target::<A>(|ui| {
-        let size = Vec2::new(width, UiContext::ATLAS_CELL_SIZE.y as f32 + pad.y * 2.0);
-        ui.rect(size, DrawSettings::default());
-        let rect = ui.prev_element;
-        ui.ctx.window.draw_text(
-            (rect.min + pad).round(),
-            color,
-            &label,
-            ui.ctx.viewport_size,
-            rect.intersect(ui.clip_rect),
-            false,
-        );
-    })
+    let pad = UiWindowBuilder::child_offset();
+    ui.rect(
+        Vec2::new(width, UiWindowBuilder::widget_height()),
+        DrawSettings::default(),
+    );
+    let rect = ui.prev_element;
+    // Keep the end of a long path: that is where the file name and sub-asset label are.
+    let label = fit_text(&label, width - pad.x * 2.0, Ellipsis::Start);
+    ui.paint_text((rect.min + pad).round(), &label, color, rect);
+    ui.asset_drop_target::<A>()
 }
 
 impl<A: Asset> EditorView for Handle<A> {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        _id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
-        ui.horizontal();
-        ui.text(name);
-        let before = ui.cursor.x;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        let dropped = handle_slot(ui, Some(&*self), INPUT_WIDTH);
-        ui.cursor.x = before;
-        ui.vertical();
-        match dropped {
-            Some(handle) => {
-                *self = handle;
-                true
-            }
-            None => false,
-        }
+    fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, _: u64, _: &TypeRegistry) -> bool {
+        let dropped = ui.property(name, |ui, width| handle_slot(ui, Some(&*self), width));
+        dropped.map(|handle| *self = handle).is_some()
     }
 }
 
 impl<A: Asset> EditorView for Option<Handle<A>> {
-    fn ui(
-        &mut self,
-        ui: &mut UiWindowBuilder,
-        name: &str,
-        _id: u64,
-        _registry: &TypeRegistry,
-    ) -> bool {
+    fn ui(&mut self, ui: &mut UiWindowBuilder, name: &str, _: u64, _: &TypeRegistry) -> bool {
         const CLEAR: &str = "x";
         let clear_width = UiContext::text_len(CLEAR)
             + UiWindowBuilder::child_offset().x * 2.0
             + UiContext::ELEMENT_GAP.x as f32;
-
-        ui.horizontal();
-        ui.text(name);
-        let before = ui.cursor.x;
-        ui.cursor.x += ui.remaining_width() - (INPUT_WIDTH + INPUT_SPACING);
-        let dropped = handle_slot(ui, self.as_ref(), INPUT_WIDTH - clear_width);
-        let cleared = self.is_some() && ui.button(CLEAR);
-        ui.cursor.x = before;
-        ui.vertical();
-
+        let (dropped, cleared) = ui.property(name, |ui, width| {
+            let dropped = handle_slot(ui, self.as_ref(), width - clear_width);
+            (dropped, self.is_some() && ui.button(CLEAR))
+        });
+        let changed = dropped.is_some() || cleared;
         if let Some(handle) = dropped {
             *self = Some(handle);
-            true
         } else if cleared {
             *self = None;
-            true
-        } else {
-            false
         }
+        changed
     }
 }
 
-fn child_id(id: u64, i: usize) -> u64 {
+fn child_id(id: u64, i: impl Hash) -> u64 {
     let mut hash = DefaultHasher::new();
     i.hash(&mut hash);
     id.hash(&mut hash);
@@ -506,12 +233,13 @@ fn draw_reflect_value(
                     let Some(field_val) = s.field_at_mut(i) else {
                         continue;
                     };
-                    let mut hash = DefaultHasher::new();
-                    field_name.hash(&mut hash);
-                    id.hash(&mut hash);
-                    let child_id = hash.finish();
-                    changed |=
-                        draw_reflect_value(ui, Some(&field_name), child_id, field_val, registry);
+                    changed |= draw_reflect_value(
+                        ui,
+                        Some(&field_name),
+                        child_id(id, &field_name),
+                        field_val,
+                        registry,
+                    );
                 }
             });
         }
@@ -616,21 +344,19 @@ fn draw_reflect_value(
                 format!("{}{}{{{}}}", label, type_short, v.len()),
                 |ui| {
                     for (i, item) in v.iter().enumerate() {
-                        let before = ui.disable_all_input;
-                        ui.disabled(true);
-                        let child_id = child_id(id, i);
-                        changed |= draw_reflect_value(
-                            ui,
-                            Some(""),
-                            id,
-                            unsafe {
-                                (item as *const dyn PartialReflect as *mut dyn PartialReflect)
-                                    .as_mut()
-                                    .unwrap()
-                            },
-                            registry,
-                        );
-                        ui.disabled(before);
+                        changed |= ui.disabled(true, |ui| {
+                            draw_reflect_value(
+                                ui,
+                                Some(""),
+                                child_id(id, i),
+                                unsafe {
+                                    (item as *const dyn PartialReflect as *mut dyn PartialReflect)
+                                        .as_mut()
+                                        .unwrap()
+                                },
+                                registry,
+                            )
+                        });
                     }
                 },
             );
@@ -746,30 +472,27 @@ pub(crate) fn selected_ui(world: &mut World, state: &mut SystemState<UiBuilder<'
             for (mutable, name, component_id, reflected) in components {
                 let mutable = mutable && name != "Children";
                 if let Some(mut reflected) = reflected {
-                    ui.disabled(!mutable);
-                    let changed = draw_reflect_value(
-                        ui,
-                        None,
-                        component_id.index() as u64,
-                        reflected.as_mut() as &mut dyn PartialReflect,
-                        &registry,
-                    );
+                    let changed = ui.disabled(!mutable, |ui| {
+                        draw_reflect_value(
+                            ui,
+                            None,
+                            component_id.index() as u64,
+                            reflected.as_mut() as &mut dyn PartialReflect,
+                            &registry,
+                        )
+                    });
                     if changed && mutable {
                         mutations.push((component_id, reflected));
                     }
                 } else {
-                    ui.disabled(true);
-                    ui.text(format!(
-                        "Unreflected {}",
-                        name.split("::").last().unwrap_or("?")
-                    ));
-                    ui.disabled(false);
+                    ui.colored_text(
+                        format!("Unreflected {}", name.split("::").last().unwrap_or("?")),
+                        UiContext::TEXT_DIM,
+                    );
                 }
             }
         } else {
-            ui.disabled(true);
-            ui.text("Nothing Selected");
-            ui.disabled(false);
+            ui.colored_text("Nothing Selected", UiContext::TEXT_DIM);
         };
     });
 

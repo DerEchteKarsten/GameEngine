@@ -91,58 +91,19 @@ impl DockingNode {
                     }
                     return None;
                 }
-                if *w != u32::MAX
-                    && from_pos_size(
-                        area.min,
-                        Vec2::new(area.width(), UiContext::WINDOW_HEADER_HEIGHT),
-                    )
-                    .contains(cursor_pos)
-                {
+                if header_strip(area).contains(cursor_pos) {
                     return Some(*w);
-                } else if area.contains(cursor_pos) {
-                    let thickness = 40.0;
-                    let top =
-                        Rect::from_corners(area.min, Vec2::new(area.max.x, area.min.y + thickness))
-                            .contains(cursor_pos);
-                    let bottom =
-                        Rect::from_corners(Vec2::new(area.min.x, area.max.y - thickness), area.max)
-                            .contains(cursor_pos);
-                    let left = Rect::from_corners(
-                        Vec2::new(area.min.x, area.min.y + thickness),
-                        Vec2::new(area.min.x + thickness, area.max.y - thickness),
-                    )
-                    .contains(cursor_pos);
-                    let right = Rect::from_corners(
-                        Vec2::new(area.max.x - thickness, area.min.y + thickness),
-                        Vec2::new(area.max.x, area.max.y - thickness),
-                    )
-                    .contains(cursor_pos);
-
-                    let split = if bottom || top {
-                        Split::Vertical
-                    } else {
-                        Split::Horizontal
+                }
+                if let Some((split, after)) = edge_split(area, cursor_pos) {
+                    let new = Box::new(DockingNode::Leaf { window });
+                    let old = Box::new(std::mem::take(self));
+                    let (left, right) = if after { (old, new) } else { (new, old) };
+                    *self = DockingNode::Node {
+                        split,
+                        extend: 0.5,
+                        left,
+                        right,
                     };
-
-                    if right || bottom {
-                        let right = Box::new(DockingNode::Leaf { window });
-                        let root = std::mem::take(self);
-                        *self = DockingNode::Node {
-                            split,
-                            extend: 0.5,
-                            left: Box::new(root),
-                            right,
-                        };
-                    } else if left || top {
-                        let left = Box::new(DockingNode::Leaf { window });
-                        let root = std::mem::take(self);
-                        *self = DockingNode::Node {
-                            split,
-                            extend: 0.5,
-                            left,
-                            right: Box::new(root),
-                        };
-                    }
                 }
                 None
             }
@@ -170,49 +131,12 @@ impl DockingNode {
                 if *window == u32::MAX {
                     return area.contains(cursor_pos).then_some(area);
                 }
-                if *window != u32::MAX
-                    && from_pos_size(
-                        area.min,
-                        Vec2::new(area.width(), UiContext::WINDOW_HEADER_HEIGHT),
-                    )
-                    .contains(cursor_pos)
-                {
-                    Some(area)
-                } else if area.contains(cursor_pos) {
-                    let thickness = 40.0;
-                    let top =
-                        Rect::from_corners(area.min, Vec2::new(area.max.x, area.min.y + thickness))
-                            .contains(cursor_pos);
-                    let bottom =
-                        Rect::from_corners(Vec2::new(area.min.x, area.max.y - thickness), area.max)
-                            .contains(cursor_pos);
-                    let left = Rect::from_corners(
-                        Vec2::new(area.min.x, area.min.y + thickness),
-                        Vec2::new(area.min.x + thickness, area.max.y - thickness),
-                    )
-                    .contains(cursor_pos);
-                    let right = Rect::from_corners(
-                        Vec2::new(area.max.x - thickness, area.min.y + thickness),
-                        Vec2::new(area.max.x, area.max.y - thickness),
-                    )
-                    .contains(cursor_pos);
-
-                    let split = if bottom || top {
-                        Split::Vertical
-                    } else {
-                        Split::Horizontal
-                    };
-
-                    if right || bottom {
-                        Some(Self::split_area(area, split, 0.5).1)
-                    } else if left || top {
-                        Some(Self::split_area(area, split, 0.5).0)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+                if header_strip(area).contains(cursor_pos) {
+                    return Some(area);
                 }
+                let (split, after) = edge_split(area, cursor_pos)?;
+                let (left, right) = Self::split_area(area, split, 0.5);
+                Some(if after { right } else { left })
             }
             DockingNode::Node {
                 split,
@@ -379,5 +303,31 @@ impl DockingNode {
 impl Default for DockingNode {
     fn default() -> Self {
         DockingNode::Leaf { window: u32::MAX }
+    }
+}
+
+/// The strip of `area` a window's header covers; dropping a window there adds it as a tab.
+fn header_strip(area: Rect) -> Rect {
+    from_pos_size(
+        area.min,
+        Vec2::new(area.width(), UiContext::WINDOW_HEADER_HEIGHT),
+    )
+}
+
+/// How a window dropped at `pos` near an edge of `area` splits it, and whether the window
+/// goes after (right of or below) the old content.
+fn edge_split(area: Rect, pos: Vec2) -> Option<(Split, bool)> {
+    const THICKNESS: f32 = 40.0;
+    if !area.contains(pos) {
+        return None;
+    }
+    let near = |d: f32| d <= THICKNESS;
+    let (top, bottom) = (near(pos.y - area.min.y), near(area.max.y - pos.y));
+    if top || bottom {
+        Some((Split::Vertical, bottom))
+    } else if near(pos.x - area.min.x) || near(area.max.x - pos.x) {
+        Some((Split::Horizontal, near(area.max.x - pos.x)))
+    } else {
+        None
     }
 }

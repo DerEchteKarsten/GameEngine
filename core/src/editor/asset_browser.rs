@@ -48,7 +48,8 @@ use crate::{
         builder::{UiBuilder, UiWindowBuilder},
         dragdrop::{AssetDrag, DragDrop},
         from_pos_size,
-        window::{BorderSettings, DrawSettings, Drawable},
+        widgets::{Ellipsis, fit_text},
+        window::{BorderSettings, DrawSettings},
     },
 };
 
@@ -317,19 +318,6 @@ impl BrowserState {
     }
 }
 
-/// The part of `name` to draw so that it takes at most `max_chars` characters, and whether
-/// it was cut. A cut name is followed by "..", which the kept part leaves room for.
-fn fit_name(name: &str, max_chars: usize) -> (&str, bool) {
-    if name.chars().count() <= max_chars {
-        return (name, false);
-    }
-    let end = name
-        .char_indices()
-        .nth(max_chars.saturating_sub(2))
-        .map_or(name.len(), |(index, _)| index);
-    (&name[..end], true)
-}
-
 /// The rows of a grid starting at `top` that reach into `clip_min..clip_max`. A row and the
 /// gap below it are `stride` high.
 fn visible_rows(top: f32, clip_min: f32, clip_max: f32, stride: f32, rows: usize) -> Range<usize> {
@@ -346,22 +334,16 @@ fn draw_tile(
     badge_text: &str,
     badge_color: Vec4,
     dim: bool,
-    hovered: bool,
     preview: Option<(BindlessHandle, Vec2, Vec2)>,
 ) {
-    let mut ds = DrawSettings::new(hovered, false);
-    if hovered {
+    let rect = from_pos_size(ui.cursor, TILE_SIZE);
+    let mut ds = DrawSettings::new(ui.hovered(rect), false);
+    if ui.hovered(rect) {
         ds = ds.border_color(UiContext::GRAB_HOT);
     }
     ui.rect(TILE_SIZE, ds);
-
-    let rect = ui.prev_element;
-    let clip = rect.intersect(ui.clip_rect);
-    let viewport_size = ui.ctx.viewport_size;
-    let char_width = UiContext::text_len(" ");
-    let centered = |chars: usize, y: f32| {
-        let width = chars as f32 * char_width;
-        Vec2::new(rect.center().x - width / 2.0, y).round()
+    let centered = |text: &str, y: f32| {
+        Vec2::new(rect.center().x - UiContext::text_len(text) / 2.0, y).round()
     };
 
     let badge = from_pos_size(
@@ -370,17 +352,9 @@ fn draw_tile(
     );
     if let Some((image, uv_min, uv_size)) = preview {
         let square = Rect::from_center_size(badge.center(), Vec2::splat(BADGE_HEIGHT));
-        ui.ctx.window.draw_rect(
-            square,
-            Some((uv_min, uv_size)),
-            Vec4::ONE,
-            viewport_size,
-            clip,
-            false,
-            image,
-        );
+        ui.paint_image(square, image, from_pos_size(uv_min, uv_size));
     } else {
-        ui.ctx.window.draw_box(
+        ui.paint_box(
             badge,
             DrawSettings {
                 color: badge_color.with_w(if dim { 0.4 } else { 1.0 }),
@@ -390,51 +364,18 @@ fn draw_tile(
                 )),
                 ..Default::default()
             },
-            viewport_size,
-            clip,
         );
-        ui.ctx.window.draw_text(
-            centered(
-                badge_text.chars().count(),
-                badge.center().y - UiContext::ATLAS_CELL_SIZE.y as f32 / 2.0,
-            ),
-            UiContext::BG_DARK,
-            badge_text,
-            viewport_size,
-            clip,
-            false,
-        );
+        let y = badge.center().y - UiContext::ATLAS_CELL_SIZE.y as f32 / 2.0;
+        ui.paint_text(centered(badge_text, y), badge_text, UiContext::BG_DARK, rect);
     }
 
-    let max_chars = ((TILE_SIZE.x - TILE_PAD) / char_width) as usize;
-    let (name, cut) = fit_name(name, max_chars);
-    let chars = name.chars().count() + if cut { 2 } else { 0 };
+    let name = fit_text(name, TILE_SIZE.x - TILE_PAD, Ellipsis::End);
     let color = if dim {
         UiContext::TEXT_DIM
     } else {
         UiContext::TEXT
     };
-    let end = ui.ctx.window.draw_text(
-        centered(chars, badge.max.y + TILE_PAD / 2.0),
-        color,
-        name,
-        viewport_size,
-        clip,
-        false,
-    );
-    if cut {
-        ui.ctx
-            .window
-            .draw_text(end, color, "..", viewport_size, clip, false);
-    }
-}
-
-/// Text on a row of buttons, lowered so both share a baseline.
-fn row_text(ui: &mut UiWindowBuilder, text: &str) {
-    let offset = UiWindowBuilder::child_offset().y;
-    ui.cursor.y += offset;
-    ui.text(text);
-    ui.cursor.y -= offset;
+    ui.paint_text(centered(&name, badge.max.y + TILE_PAD / 2.0), &name, color, rect);
 }
 
 pub(crate) fn asset_browser(
@@ -449,22 +390,20 @@ pub(crate) fn asset_browser(
 
     let mut nav = None;
     ui.build("Asset Browser", |ui| {
-        ui.horizontal();
-        ui.disabled(state.history.is_empty());
-        if ui.button("<") && !state.history.is_empty() {
-            nav = Some(Nav::Back);
-        }
-        ui.disabled(false);
-        if ui.button("assets") {
-            nav = Some(Nav::To(PathBuf::new()));
-        }
-        for (depth, segment) in state.location.iter().enumerate() {
-            row_text(ui, "/");
-            if ui.button(segment.to_string_lossy()) {
-                nav = Some(Nav::To(state.location.iter().take(depth + 1).collect()));
+        ui.row(|ui| {
+            if ui.disabled(state.history.is_empty(), |ui| ui.button("<")) {
+                nav = Some(Nav::Back);
             }
-        }
-        ui.vertical();
+            if ui.button("assets") {
+                nav = Some(Nav::To(PathBuf::new()));
+            }
+            for (depth, segment) in state.location.iter().enumerate() {
+                ui.label("/");
+                if ui.button(segment.to_string_lossy()) {
+                    nav = Some(Nav::To(state.location.iter().take(depth + 1).collect()));
+                }
+            }
+        });
 
         if count == 0 {
             ui.colored_text("Empty", UiContext::TEXT_DIM);
@@ -472,57 +411,60 @@ pub(crate) fn asset_browser(
         }
 
         let gap = UiContext::ELEMENT_GAP.as_vec2();
-        let columns = (((ui.remaining_width() + gap.x) / (TILE_SIZE.x + gap.x)) as usize).max(1);
+        let columns =
+            (((ui.available_size().x + gap.x) / (TILE_SIZE.x + gap.x)) as usize).max(1);
         let rows = count.div_ceil(columns);
         let stride = TILE_SIZE.y + gap.y;
-        let top = ui.cursor;
+        let width = columns.min(count) as f32 * (TILE_SIZE.x + gap.x) - gap.x;
         // Rows scrolled out of view only take up their space.
-        let visible = visible_rows(top.y, ui.clip_rect.min.y, ui.clip_rect.max.y, stride, rows);
-        ui.cursor.y += visible.start as f32 * stride;
-        for row in visible.clone() {
-            ui.horizontal();
-            for index in row * columns..((row + 1) * columns).min(count) {
-                let entry = &state.entries[index];
-                let kind = kind_of(&entry.name).filter(|_| !entry.is_dir);
-                let (badge, color) = match kind {
-                    _ if entry.is_dir => ("DIR", FOLDER_COLOR),
-                    Some(kind) => (kind.badge, kind.color),
-                    None => ("?", UiContext::GRAB),
-                };
-                // Relative to `ASSET_DIR`, and only put together when it is needed.
-                let path = || state.location.join(&entry.name);
-                let rect = from_pos_size(ui.cursor, TILE_SIZE);
-                let hovered = ui.hoverd(rect);
-                // Only tiles on screen ask for their preview, so the atlas fills as you scroll.
-                let preview = kind
-                    .filter(|kind| kind.extensions.contains(&TEXTURE_EXTENSION))
-                    .filter(|_| !rect.intersect(ui.clip_rect).is_empty())
-                    .and_then(|_| state.previews.preview(&path()));
-                let dim = kind.is_none() && !entry.is_dir;
-                let draw = |ui: &mut UiWindowBuilder| {
-                    draw_tile(ui, &entry.name, badge, color, dim, hovered, preview)
-                };
-                match kind {
-                    Some(kind) => ui.drag_source(
-                        index,
-                        || (kind.drag)(&asset_server, path().into()),
-                        draw,
-                        |ui| ui.text(&entry.name),
-                    ),
-                    None => draw(ui),
-                }
-                if entry.is_dir && hovered && ui.ctx.input.primary_pressed {
-                    nav = Some(Nav::To(path()));
-                }
-            }
-            ui.vertical();
-        }
-        ui.cursor.y += (rows - visible.end) as f32 * stride;
-        let size = Vec2::new(
-            columns.min(count) as f32 * (TILE_SIZE.x + gap.x) - gap.x,
-            rows as f32 * stride - gap.y,
+        let visible = visible_rows(
+            ui.cursor.y,
+            ui.clip_rect.min.y,
+            ui.clip_rect.max.y,
+            stride,
+            rows,
         );
-        ui.content_max = ui.content_max.max(top + size);
+        let skip = |ui: &mut UiWindowBuilder, rows: usize| {
+            if rows > 0 {
+                ui.space(Vec2::new(width, rows as f32 * stride - gap.y));
+            }
+        };
+        skip(ui, visible.start);
+        for row in visible.clone() {
+            ui.row(|ui| {
+                for index in row * columns..((row + 1) * columns).min(count) {
+                    let entry = &state.entries[index];
+                    let kind = kind_of(&entry.name).filter(|_| !entry.is_dir);
+                    let (badge, color) = match kind {
+                        _ if entry.is_dir => ("DIR", FOLDER_COLOR),
+                        Some(kind) => (kind.badge, kind.color),
+                        None => ("?", UiContext::GRAB),
+                    };
+                    // Relative to `ASSET_DIR`, and only put together when it is needed.
+                    let path = || state.location.join(&entry.name);
+                    // Only tiles on screen ask for their preview, so the atlas fills as you
+                    // scroll.
+                    let rect = from_pos_size(ui.cursor, TILE_SIZE);
+                    let preview = kind
+                        .filter(|kind| kind.extensions.contains(&TEXTURE_EXTENSION))
+                        .filter(|_| !rect.intersect(ui.clip_rect).is_empty())
+                        .and_then(|_| state.previews.preview(&path()));
+                    let dim = kind.is_none() && !entry.is_dir;
+                    draw_tile(ui, &entry.name, badge, color, dim, preview);
+                    if let Some(kind) = kind {
+                        ui.drag_source(
+                            index,
+                            || (kind.drag)(&asset_server, path().into()),
+                            |ui| ui.text(&entry.name),
+                        );
+                    }
+                    if entry.is_dir && ui.prev_clicked() {
+                        nav = Some(Nav::To(path()));
+                    }
+                }
+            });
+        }
+        skip(ui, rows - visible.end);
     });
 
     if let Some(nav) = nav {
@@ -603,14 +545,6 @@ pub(crate) fn drop_in_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn long_names_are_cut() {
-        assert_eq!(fit_name("box.glb", 12), ("box.glb", false));
-        // Ten characters, which leaves room for the "..".
-        assert_eq!(fit_name("stanford_bunny.glb", 12), ("stanford_b", true));
-        assert_eq!(fit_name("äöüäöü", 4), ("äö", true));
-    }
 
     #[test]
     fn kinds_match_on_extension() {

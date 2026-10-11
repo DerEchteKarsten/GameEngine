@@ -78,21 +78,13 @@ pub fn draw_windows(
         full_screen_rect: Rect::from_corners(Vec2::ZERO, viewport_size),
     };
     for (i, window) in windows.by_layer_mut() {
-        let mut cursor = window.rect.min;
+        let mut x = 0.0;
         let header_rect = window.header_rect();
         draw_window(window, &frame, dock.contains(i as u32));
 
         let tabs = std::mem::take(&mut window.tabs);
         for (j, tab) in tabs.iter().enumerate() {
-            let tab_rect = Rect::from_corners(
-                cursor - window.tab_scroll.scroll,
-                cursor - window.tab_scroll.scroll
-                    + Vec2::new(
-                        UiContext::text_len(&tab.label),
-                        UiContext::WINDOW_HEADER_HEIGHT,
-                    )
-                    + UiContext::TAB_PAD.as_vec2() * 2.0,
-            );
+            let tab_rect = window.tab_rect(x, &tab.label);
             let active = j == window.active_tab as usize;
 
             let hoverd = frame
@@ -125,16 +117,12 @@ pub fn draw_windows(
                 header_rect,
                 false,
             );
-            cursor.x += tab_rect.width() + UiContext::TAB_GAP.x as f32;
+            x += tab_rect.width() + UiContext::TAB_GAP.x as f32;
         }
         window.tabs = tabs;
         let mut focused = window.focused.take();
         let mut scroll = window.tab_scroll;
-        scroll.content_size = Rect::from_corners(
-            window.rect.min,
-            cursor + Vec2::new(0.0, UiContext::WINDOW_HEADER_HEIGHT),
-        )
-        .size();
+        scroll.content_size = Vec2::new(x, UiContext::WINDOW_HEADER_HEIGHT);
         scroll.update_and_draw(
             Draggable::TabScrollHandle,
             header_rect,
@@ -239,7 +227,7 @@ pub fn update_windows(
 
         let mut hovering_tab = false;
         let mut detatch_tab = None;
-        let mut cursor = window.rect.min;
+        let mut x = 0.0;
         for (j, tab) in window.tabs.iter().enumerate() {
             if let Ok(mut tab_state) = tab.state.lock() {
                 tab_state.verticies.clear();
@@ -247,15 +235,7 @@ pub fn update_windows(
                 tab_state.top_verticies.clear();
                 tab_state.top_indicies.clear();
             }
-            let tab_rect = Rect::from_corners(
-                cursor - window.tab_scroll.scroll,
-                cursor - window.tab_scroll.scroll
-                    + Vec2::new(
-                        UiContext::text_len(&tab.label),
-                        UiContext::WINDOW_HEADER_HEIGHT,
-                    )
-                    + UiContext::TAB_PAD.as_vec2(),
-            );
+            let tab_rect = window.tab_rect(x, &tab.label);
             let hovering = frame.input.hovered(tab_rect);
 
             if hovering {
@@ -285,7 +265,7 @@ pub fn update_windows(
                     detatch_tab = Some(j as u32);
                 }
             }
-            cursor.x += tab_rect.width() + UiContext::TAB_GAP.x as f32;
+            x += tab_rect.width() + UiContext::TAB_GAP.x as f32;
         }
 
         if let Some(tab) = detatch_tab

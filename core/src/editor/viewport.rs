@@ -9,11 +9,11 @@ use bevy::{
     math::Rect,
     window::Window,
 };
-use glam::{UVec2, Vec2, Vec4};
+use glam::{UVec2, Vec2};
 use lava::bindless::BindlessHandle;
 
 use crate::render::headless::HeadlessSize;
-use crate::ui::{UiWindows, builder::UiBuilder, window::Drawable};
+use crate::ui::{UiWindows, builder::UiBuilder};
 
 #[derive(Resource, Debug, Reflect)]
 #[reflect(Resource)]
@@ -51,15 +51,8 @@ pub(crate) fn viewport_ui(
             .is_some_and(|pos| rect.contains(pos) && windows.window_at(pos) == window);
         focused = ui.ctx.focused.is_some();
 
-        ui.ctx.window.draw_rect(
-            rect,
-            Some((Vec2::ZERO, rect.size() / vp.image_size.max(Vec2::ONE))),
-            Vec4::ONE,
-            ui.ctx.viewport_size,
-            rect,
-            false,
-            vp.image,
-        );
+        let uv = Rect::from_corners(Vec2::ZERO, rect.size() / vp.image_size.max(Vec2::ONE));
+        ui.paint_image(rect, vp.image, uv);
     });
 
     vp.focused = focused || (vp.hovered && mouse.pressed(MouseButton::Right));

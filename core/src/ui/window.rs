@@ -48,6 +48,17 @@ impl UiWindow {
             self.rect.max,
         )
     }
+    /// The rect in the header of a tab labelled `label` that starts `x` right of the window's
+    /// left edge.
+    pub fn tab_rect(&self, x: f32, label: &str) -> Rect {
+        let min = self.rect.min + Vec2::new(x, 0.0) - self.tab_scroll.scroll;
+        from_pos_size(
+            min,
+            Vec2::new(UiContext::text_len(label), UiContext::WINDOW_HEADER_HEIGHT)
+                + UiContext::TAB_PAD.as_vec2() * 2.0,
+        )
+    }
+
     pub fn active_tab(&self) -> &Tab {
         &self.tabs[self.active_tab as usize]
     }
@@ -256,12 +267,10 @@ impl TabState {
             ctx,
             clip_rect,
             focuse_next: false,
-            line_height: 0.0,
             content_max: cursor,
-            prev_cursor: cursor,
             cursor,
             prev_element: content_rect,
-            direction: false,
+            horizontal: false,
             hovered_consumed: false,
             scroll_consumed: false,
             disable_all_input: false,

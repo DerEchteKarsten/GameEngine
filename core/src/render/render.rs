@@ -397,36 +397,27 @@ pub(crate) fn settings_ui(
         }
 
         if !res.present_modes.is_empty() {
-            ui.text("Present Mode");
-            s.present_mode = ui.dropdown(id!(), s.present_mode, &res.present_modes);
+            s.present_mode = ui.property("Present Mode", |ui, _| {
+                ui.dropdown(id!(), s.present_mode, &res.present_modes)
+            });
         }
 
-        ui.horizontal();
-        ui.text("Draw Scene Blas Nodes");
-        s.draw_scene_blas_nodes = ui.checkbox(s.draw_scene_blas_nodes);
-        ui.vertical();
-
-        ui.horizontal();
-        ui.text("Draw Scene Leaf Nodes");
-        s.draw_scene_leaf_nodes = ui.checkbox(s.draw_scene_leaf_nodes);
-        ui.vertical();
-
-        ui.horizontal();
-        ui.text("Draw Scene Nodes");
-        s.draw_scene_nodes = ui.checkbox(s.draw_scene_nodes);
-        ui.vertical();
+        s.draw_scene_blas_nodes = ui.checkbox("Draw Scene Blas Nodes", s.draw_scene_blas_nodes);
+        s.draw_scene_leaf_nodes = ui.checkbox("Draw Scene Leaf Nodes", s.draw_scene_leaf_nodes);
+        s.draw_scene_nodes = ui.checkbox("Draw Scene Nodes", s.draw_scene_nodes);
 
         ui.text("Outline Color");
         s.outline_color = ui.color_picker(id!(), s.outline_color.extend(1.0)).xyz();
 
-        ui.text("Outline Thickness");
-        s.outline_radius = ui.slider(id!(), 0.0, 6.0, 300.0, s.outline_radius);
-
-        ui.text("LOD Bias");
-        s.pixel_error = ui.slider(id!(), 0.0, 5.0, 300.0, s.pixel_error);
-
-        ui.text("Exposure");
-        s.exposure = ui.slider(id!(), 0.0, 8.0, 300.0, s.exposure);
+        s.outline_radius = ui.property("Outline Thickness", |ui, width| {
+            ui.slider(id!(), 0.0, 6.0, width, s.outline_radius)
+        });
+        s.pixel_error = ui.property("LOD Bias", |ui, width| {
+            ui.slider(id!(), 0.0, 5.0, width, s.pixel_error)
+        });
+        s.exposure = ui.property("Exposure", |ui, width| {
+            ui.slider(id!(), 0.0, 8.0, width, s.exposure)
+        });
     });
 }
 

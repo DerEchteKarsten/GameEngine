@@ -131,7 +131,9 @@ pub fn frame() -> u32 {
 pub fn take_busy(frame: u32) -> u64 {
     let slot = frame as usize % BUSY_FRAMES;
     let threads = THREADS.lock().unwrap();
-    let busy = threads.iter().map(|ring| ring.busy[slot].swap(0, Ordering::Relaxed));
+    let busy = threads
+        .iter()
+        .map(|ring| ring.busy[slot].swap(0, Ordering::Relaxed));
     busy.max().unwrap_or(0)
 }
 

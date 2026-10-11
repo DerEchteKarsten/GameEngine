@@ -25,6 +25,7 @@ pub mod dock;
 pub mod dragdrop;
 pub mod scrollable;
 pub mod update_windows;
+pub mod widgets;
 pub mod window;
 
 // impl UiBuilder {
@@ -542,13 +543,13 @@ impl UiContext {
     pub fn text_size(str: &str) -> Vec2 {
         Vec2::new(
             (UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32)
-                * str.len() as f32,
+                * str.chars().count() as f32,
             UiContext::ATLAS_CELL_SIZE.y as f32,
         )
     }
 
     pub fn text_len(str: &str) -> f32 {
-        str.len() as f32
+        str.chars().count() as f32
             * (UiContext::ATLAS_CELL_SIZE.x as f32 + UiContext::CHARACTER_ADVANCE_WIDTH as f32)
     }
 }
