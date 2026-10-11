@@ -42,8 +42,9 @@ use lava::{
         },
         slice::{AsImage, ImageView},
         usage::{
-            ColorAttachmentSampled, ColorAttachmentSampledStorage, ColorAttachmentStorage,
-            DepthAttachmentSampled,
+            ColorAttachmentSampled, ColorAttachmentSampledStorageTransferDst,
+            ColorAttachmentStorageTransferDst, DepthAttachmentSampled, IsColorAttachment,
+            IsStorage,
         },
     },
     state::Ctx,
@@ -131,7 +132,7 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub fn image(&self) -> ImageView<'_, format::Swapchain, ColorAttachmentStorage> {
+    pub fn image(&self) -> ImageView<'_, format::Swapchain, ColorAttachmentStorageTransferDst> {
         self.swpachain.image(self.image_index)
     }
 }
@@ -289,11 +290,11 @@ pub struct RenderResources {
     /// Weighted blended OIT of the blended meshlets, composited over the lit G-buffer: the
     /// weighted sum of their premultiplied colours (rgb) and of their weights (a). Half floats,
     /// so the blended pass clamps the weighted colour.
-    accum: Image<R16G16B16A16Sfloat, ColorAttachmentStorage>,
+    accum: Image<R16G16B16A16Sfloat, ColorAttachmentStorageTransferDst>,
     /// The product of `1 - alpha` of the blended fragments: how much of the surface behind them
     /// shows through. The composite pass reads it through the sampler (a typed load of a storage image is several
     /// times slower on Intel) and resets it as storage.
-    revealage: Image<R8Unorm, ColorAttachmentSampledStorage>,
+    revealage: Image<R8Unorm, ColorAttachmentSampledStorageTransferDst>,
     meshlets: Buffer<InstancedMeshlet>,
     /// Visible meshlets of materials with a negative alpha cutoff, drawn after `meshlets`.
     blended_meshlets: Buffer<InstancedMeshlet>,
@@ -560,9 +561,12 @@ impl RenderResources {
     }
 }
 
-pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
+pub(super) fn record_scene<
+    F: Format<Texels = [f32; 4]> + ColorAspect,
+    U: IsColorAttachment + IsStorage,
+>(
     cmd: &mut CommandBuffer,
-    target_image: ImageView<'_, F, ColorAttachmentStorage>,
+    target_image: ImageView<'_, F, U>,
     target_size: UVec2,
     camera: &mut RenderCamera,
     sky: &RenderSkybox,
@@ -903,7 +907,8 @@ fn record_frame(
 
 #[derive(Resource, Default)]
 pub struct ViewPortTarget {
-    pub image: Option<Image<format::Swapchain, ColorAttachmentStorage>>,
+    /// The swapchain image's usage, since it stands in for it.
+    pub image: Option<Image<format::Swapchain, ColorAttachmentStorageTransferDst>>,
     pub rect: Rect,
     /// Copied from `ViewPort::paused`: skip the scene passes.
     pub paused: bool,

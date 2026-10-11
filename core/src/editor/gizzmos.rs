@@ -26,7 +26,7 @@ use lava::{
     image::{
         format::{ColorAspect, Format},
         slice::ImageView,
-        usage::ColorAttachmentStorage,
+        usage::{IsColorAttachment, IsStorage},
     },
 };
 
@@ -345,10 +345,10 @@ pub(crate) fn init_gizzmos(mut cmd: Commands) {
 }
 
 impl GizzmoResources {
-    pub(crate) fn draw<F: Format + ColorAspect>(
+    pub(crate) fn draw<F: Format + ColorAspect, U: IsColorAttachment + IsStorage>(
         &self,
         cmd: &mut CommandBuffer,
-        target: ImageView<'_, F, ColorAttachmentStorage>,
+        target: ImageView<'_, F, U>,
         target_size: UVec2,
         camera: &RenderCamera,
         frame_in_flight: usize,

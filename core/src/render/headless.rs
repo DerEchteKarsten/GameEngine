@@ -8,7 +8,7 @@ use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use glam::UVec2;
 use lava::{
     buffer::Buffer,
-    image::{Image, format::R8G8B8A8Unorm, slice::AsImage, usage::ColorAttachmentStorage},
+    image::{Image, format::R8G8B8A8Unorm, slice::AsImage, usage::ColorAttachmentStorageTransferSrc},
     vkobjects::queue::{FrameSlot, Gfx, PendingAccesses, Queue},
 };
 
@@ -52,7 +52,7 @@ pub struct HeadlessFrame {
 #[derive(Resource)]
 struct HeadlessRenderer {
     render_world: World,
-    image: Image<R8G8B8A8Unorm, ColorAttachmentStorage>,
+    image: Image<R8G8B8A8Unorm, ColorAttachmentStorageTransferSrc>,
     readback: Buffer<u8>,
     resources: Option<RenderResources>,
     slot: FrameSlot,
