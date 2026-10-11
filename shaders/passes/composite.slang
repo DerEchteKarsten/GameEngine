@@ -1,6 +1,6 @@
 // Lights the G-buffer, draws the sky where nothing was drawn, composites the blended layers over
 // both and tonemaps the result into the target.
-#define USE_CLOCKS
+// #define USE_CLOCKS
 #include "bindless.slang"
 #include "math.slang"
 #include "lighting.slang"

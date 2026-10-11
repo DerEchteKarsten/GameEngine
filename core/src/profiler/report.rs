@@ -1,10 +1,10 @@
-//! Profile reports: a plain-text summary of frame, CPU and GPU times, GPU scopes, hardware counters per pass, shader clock regions, top CPU spans and GPU memory, and a Chrome trace of every span.
+//! Profile reports: a plain-text summary of frame and GPU times, GPU scopes, pass queries (invocations and hardware counters), shader clock regions, top CPU spans and GPU memory, and a Chrome trace of every span.
 use std::{collections::HashMap, fmt::Write};
 
 use lava::profiling::{CounterUnit, MAX_COUNTERS, MemoryReport, PipelineStats};
 use serde_json::{Value, json};
 
-use crate::profiler::{FrameProfile, capture::SpanKind};
+use crate::profiler::{FrameProfile, spans::SpanKind};
 
 const TOP_CPU_SPANS: usize = 25;
 
@@ -24,25 +24,15 @@ fn distribution(mut values: Vec<f64>) -> [f64; 4] {
 }
 
 /// A GPU scope summed over each frame it appears in.
-#[derive(Default)]
 pub struct ScopeTotals {
     pub name: &'static str,
     pub depth: u16,
     /// Milliseconds per frame.
     pub ms: Vec<f64>,
-    pub stats: Option<PipelineStats>,
-    /// Per frame for amounts, averaged over the scope's time for rates (`CounterUnit::is_rate`),
-    /// in the order of the frames' `counters`.
-    pub counters: Option<[f64; MAX_COUNTERS]>,
-    /// The scope time the rates are weighted by while summing.
-    counted_ms: f64,
 }
 
 /// The GPU scopes of `frames` by depth and name, in tree order.
 pub fn gpu_scopes(frames: &[FrameProfile]) -> Vec<ScopeTotals> {
-    let units: Vec<CounterUnit> = frames
-        .first()
-        .map_or(Vec::new(), |f| f.counters.iter().map(|c| c.unit).collect());
     let mut scopes: Vec<ScopeTotals> = Vec::new();
     for frame in frames.iter().filter(|f| !f.gpu.is_empty()) {
         let mut in_frame: Vec<usize> = Vec::new();
@@ -60,7 +50,7 @@ pub fn gpu_scopes(frames: &[FrameProfile]) -> Vec<ScopeTotals> {
                         ScopeTotals {
                             name: scope.name,
                             depth: scope.depth,
-                            ..Default::default()
+                            ms: Vec::new(),
                         },
                     );
                     in_frame
@@ -71,39 +61,85 @@ pub fn gpu_scopes(frames: &[FrameProfile]) -> Vec<ScopeTotals> {
                 }
             };
             cursor = i + 1;
-            let totals = &mut scopes[i];
             let duration = ms(scope.end_ns - scope.start_ns);
             if in_frame.contains(&i) {
-                *totals.ms.last_mut().unwrap() += duration;
+                *scopes[i].ms.last_mut().unwrap() += duration;
             } else {
                 in_frame.push(i);
-                totals.ms.push(duration);
+                scopes[i].ms.push(duration);
             }
-            if let Some(stats) = scope.stats {
+        }
+    }
+    scopes
+}
+
+/// A pass's queries over the frames it ran in.
+pub struct PassTotals {
+    pub name: &'static str,
+    /// Invocations per frame.
+    pub stats: Option<PipelineStats>,
+    /// In the order of the frames' `counters`: amounts per frame, rates (`CounterUnit::is_rate`)
+    /// averaged over the pass's queries.
+    pub values: Option<[f64; MAX_COUNTERS]>,
+    frames: u32,
+    last_frame: Option<u32>,
+    queries: u32,
+}
+
+/// The pass queries of `frames` by pass name, in the order they first ran. `units` are those
+/// of the frames' `counters`.
+pub fn pass_counters(frames: &[FrameProfile], units: &[CounterUnit]) -> Vec<PassTotals> {
+    let mut totals: Vec<PassTotals> = Vec::new();
+    for frame in frames {
+        for pass in &frame.passes {
+            let i = match totals.iter().position(|t| t.name == pass.name) {
+                Some(i) => i,
+                None => {
+                    totals.push(PassTotals {
+                        name: pass.name,
+                        stats: None,
+                        values: None,
+                        frames: 0,
+                        last_frame: None,
+                        queries: 0,
+                    });
+                    totals.len() - 1
+                }
+            };
+            let totals = &mut totals[i];
+            if totals.last_frame != Some(frame.frame) {
+                totals.last_frame = Some(frame.frame);
+                totals.frames += 1;
+            }
+            if let Some(stats) = pass.stats {
                 let sum = totals.stats.get_or_insert_default();
                 sum.task += stats.task;
                 sum.mesh += stats.mesh;
                 sum.fragment += stats.fragment;
                 sum.compute += stats.compute;
             }
-            if let Some(values) = scope.counters {
-                let sums = totals.counters.get_or_insert([0.0; MAX_COUNTERS]);
-                for ((sum, value), unit) in sums.iter_mut().zip(values).zip(&units) {
-                    *sum += if unit.is_rate() { value * duration } else { value };
-                }
-                totals.counted_ms += duration;
+            if let Some(values) = pass.values {
+                let sums = totals.values.get_or_insert([0.0; MAX_COUNTERS]);
+                sums.iter_mut().zip(values).for_each(|(sum, value)| *sum += value);
+                totals.queries += 1;
             }
         }
     }
-    for scope in &mut scopes {
-        let (frames, counted_ms) = (scope.ms.len() as f64, scope.counted_ms);
-        if let Some(sums) = &mut scope.counters {
-            for (sum, unit) in sums.iter_mut().zip(&units) {
-                *sum /= if unit.is_rate() { counted_ms.max(f64::EPSILON) } else { frames };
+    for pass in &mut totals {
+        let n = pass.frames as u64;
+        if let Some(stats) = &mut pass.stats {
+            stats.task /= n;
+            stats.mesh /= n;
+            stats.fragment /= n;
+            stats.compute /= n;
+        }
+        if let Some(sums) = &mut pass.values {
+            for (sum, unit) in sums.iter_mut().zip(units) {
+                *sum /= if unit.is_rate() { pass.queries } else { pass.frames } as f64;
             }
         }
     }
-    scopes
+    totals
 }
 
 /// A counter value with its unit, e.g. `37.2%`, `12.3 MB`, `1650 MHz`, `4.1M`.
@@ -239,100 +275,69 @@ pub fn summary(frames: &[FrameProfile], memory: &MemoryReport) -> String {
     }
     .unwrap();
 
-    // CPU is the busiest thread's time without waits (see `ThreadSpans::busy_ns`), GPU the
-    // time the GPU executed the frame's commands.
     let frame = distribution(frames.iter().map(|f| ms(f.frame_ns())).collect());
-    let cpu = distribution(frames.iter().map(|f| ms(f.cpu_ns())).collect());
     let gpu = distribution(with_gpu.iter().filter_map(|f| f.gpu_ns()).map(ms).collect());
-    // Over every frame, so a thread that works only now and then doesn't look busy.
-    let mut threads: Vec<(&str, [f64; 4])> = Vec::new();
-    for thread in frames.iter().flat_map(|f| &f.threads).map(|t| t.thread) {
-        if threads.iter().all(|(t, _)| *t != thread) {
-            let busy = frames.iter().map(|f| {
-                let busy = f.threads.iter().find(|t| t.thread == thread);
-                busy.map_or(0.0, |t| ms(t.busy_ns))
-            });
-            threads.push((thread, distribution(busy.collect())));
-        }
-    }
-    threads.sort_by(|a, b| b.1[0].total_cmp(&a.1[0]));
-    let bound = match threads.first() {
-        Some((thread, _)) if cpu[0] > gpu[0] => format!("CPU-bound ({thread})"),
-        _ => "GPU-bound".to_string(),
-    };
     writeln!(
         out,
-        "\nFrame time                  mean      p50      p95      max   ({:.1} fps, {bound})",
+        "\nFrame time                  mean      p50      p95      max   ({:.1} fps)",
         1000.0 / frame[0].max(f64::EPSILON)
     )
     .unwrap();
-    let rows = [("Frame (wall)".to_string(), frame), ("CPU (busiest thread)".into(), cpu)]
-        .into_iter()
-        .chain(threads.iter().take(3).map(|(t, d)| (format!("  {t}"), *d)))
-        .chain([("GPU".into(), gpu)]);
-    for (label, [mean, p50, p95, max]) in rows {
+    for (label, [mean, p50, p95, max]) in [("Frame (wall)", frame), ("GPU", gpu)] {
         writeln!(
             out,
             "  {label:<22} {mean:>9.3} {p50:>8.3} {p95:>8.3} {max:>8.3}"
         )
         .unwrap();
     }
-    writeln!(
-        out,
-        "  (CPU: time in spans minus wait spans, per thread; GPU: from timestamps)"
-    )
-    .unwrap();
 
     let scopes = gpu_scopes(frames);
     let gpu_mean = gpu[0].max(f64::EPSILON);
     writeln!(
         out,
-        "\nGPU scopes per frame         mean      p95   % GPU   | invocations per frame: task mesh fragment compute"
+        "\nGPU scopes per frame         mean      p95   % GPU"
     )
     .unwrap();
     for scope in &scopes {
         let [mean, _, p95, _] = distribution(scope.ms.clone());
         let name = format!("{}{}", "  ".repeat(scope.depth as usize), scope.name);
-        write!(
+        writeln!(
             out,
             "  {name:<24} {mean:>8.3} {p95:>8.3} {:>6.1}%",
             mean / gpu_mean * 100.0
         )
         .unwrap();
-        if let Some(stats) = scope.stats {
-            let n = scope.ms.len() as u64;
-            write!(
-                out,
-                "  | {} {} {} {}",
-                stats.task / n,
-                stats.mesh / n,
-                stats.fragment / n,
-                stats.compute / n
-            )
-            .unwrap();
-        }
-        writeln!(out).unwrap();
     }
 
     let counters = frames.first().map(|f| f.counters.clone()).unwrap_or_default();
-    if scopes.iter().any(|scope| scope.counters.is_some()) {
+    let units: Vec<_> = counters.iter().map(|c| c.unit).collect();
+    let passes = pass_counters(frames, &units);
+    if !passes.is_empty() {
         writeln!(
             out,
-            "\nGPU counters per pass (amounts per frame, rates averaged over the pass's time)"
+            "\nPass queries per frame (invocations and amounts per frame, rates averaged over the pass's queries)"
         )
         .unwrap();
         for (i, counter) in counters.iter().enumerate() {
             writeln!(out, "  c{}: {} ({})", i + 1, counter.name, counter.category).unwrap();
         }
-        write!(out, "  {:<24}", "scope").unwrap();
+        write!(
+            out,
+            "  {:<24} {:>10} {:>10} {:>10} {:>10}",
+            "pass", "task", "mesh", "fragment", "compute"
+        )
+        .unwrap();
         for i in 0..counters.len() {
             write!(out, " {:>11}", format!("c{}", i + 1)).unwrap();
         }
         writeln!(out).unwrap();
-        for scope in scopes.iter().filter(|scope| scope.counters.is_some()) {
-            let name = format!("{}{}", "  ".repeat(scope.depth as usize), scope.name);
-            write!(out, "  {name:<24}").unwrap();
-            for (counter, value) in counters.iter().zip(scope.counters.unwrap()) {
+        for pass in &passes {
+            write!(out, "  {:<24}", pass.name).unwrap();
+            let stats = pass.stats.map(|s| [s.task, s.mesh, s.fragment, s.compute]);
+            for value in stats.unwrap_or_default() {
+                write!(out, " {value:>10}").unwrap();
+            }
+            for (counter, value) in counters.iter().zip(pass.values.unwrap_or_default()) {
                 write!(out, " {:>11}", format_counter(counter.unit, value)).unwrap();
             }
             writeln!(out).unwrap();
@@ -435,17 +440,11 @@ pub fn chrome_trace(frames: &[FrameProfile]) -> String {
             }
         }
         for scope in &frame.gpu {
-            let mut args = json!({ "frame": frame.frame });
-            if let Some(values) = scope.counters {
-                for (counter, value) in frame.counters.iter().zip(values) {
-                    args[&counter.name] = json!(value);
-                }
-            }
             events.push(json!({
                 "name": scope.name, "cat": "gpu", "ph": "X", "pid": 1, "tid": 0,
                 "ts": us(frame.gpu_submit_ns + scope.start_ns),
                 "dur": us(scope.end_ns - scope.start_ns),
-                "args": args,
+                "args": { "frame": frame.frame },
             }));
         }
     }
@@ -460,8 +459,8 @@ pub fn chrome_trace(frames: &[FrameProfile]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profiler::{ThreadSpans, capture::CpuSpan};
-    use lava::profiling::{GpuScope, RegionTime};
+    use crate::profiler::{ThreadSpans, spans::CpuSpan};
+    use lava::profiling::{GpuScope, PassResult, RegionTime};
 
     fn frame(frame: u32, frame_ms: u64, gpu: &[(&'static str, u16, u64, u64)]) -> FrameProfile {
         let start_ns = frame as u64 * 100_000_000;
@@ -472,7 +471,6 @@ mod tests {
             threads: vec![
                 ThreadSpans {
                     thread: "main",
-                    busy_ns: frame_ms * 500_000,
                     spans: vec![CpuSpan {
                         name: "update",
                         start_ns,
@@ -484,8 +482,14 @@ mod tests {
                 },
                 ThreadSpans {
                     thread: "render thread",
-                    busy_ns: 1_000_000,
-                    spans: Vec::new(),
+                    spans: vec![CpuSpan {
+                        name: "render",
+                        start_ns,
+                        end_ns: start_ns + 2_000_000,
+                        frame,
+                        depth: 0,
+                        kind: SpanKind::Other,
+                    }],
                 },
             ],
             complete: true,
@@ -496,13 +500,9 @@ mod tests {
                     depth,
                     start_ns: start * 1_000_000,
                     end_ns: end * 1_000_000,
-                    stats: (depth > 0).then_some(PipelineStats {
-                        fragment: 10,
-                        ..Default::default()
-                    }),
-                    counters: None,
                 })
                 .collect(),
+            passes: Vec::new(),
             gpu_submit_ns: start_ns,
             counters: Default::default(),
             regions: vec![
@@ -579,8 +579,32 @@ mod tests {
         assert_eq!(names, [("frame", 0), ("A", 1), ("B", 1), ("C", 1)]);
         assert_eq!(scopes[1].ms, [1.0, 2.0]);
         assert_eq!(scopes[2].ms, [1.0]);
-        assert_eq!(scopes[1].stats.unwrap().fragment, 30);
-        assert!(scopes[0].stats.is_none());
+    }
+
+    #[test]
+    fn pass_counters_sum_amounts_per_frame_and_average_rates() {
+        let pass = |name, fragment, values: [f64; 2]| PassResult {
+            name,
+            stats: Some(PipelineStats {
+                fragment,
+                ..Default::default()
+            }),
+            values: Some([values[0], values[1], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        };
+        // An amount and a rate.
+        let units = [CounterUnit::Bytes, CounterUnit::Percentage];
+        let mut frames = [frame(0, 10, &[]), frame(1, 10, &[])];
+        // A runs twice in frame 0 and once in frame 1; B only in frame 1.
+        frames[0].passes = vec![pass("A", 10, [100.0, 20.0]), pass("A", 20, [50.0, 40.0])];
+        frames[1].passes = vec![pass("A", 30, [150.0, 60.0]), pass("B", 5, [7.0, 10.0])];
+        let totals = pass_counters(&frames, &units);
+        let names: Vec<_> = totals.iter().map(|t| t.name).collect();
+        assert_eq!(names, ["A", "B"]);
+        assert_eq!(totals[0].stats.unwrap().fragment, 30);
+        let a = totals[0].values.unwrap();
+        assert_eq!((a[0], a[1]), (150.0, 40.0));
+        let b = totals[1].values.unwrap();
+        assert_eq!((b[0], b[1], totals[1].stats.unwrap().fragment), (7.0, 10.0, 5));
     }
 
     #[test]
@@ -596,12 +620,7 @@ mod tests {
             numbers.map(|n| n.parse().unwrap()).collect()
         };
         assert_eq!(numbers("Frame (wall)"), [11.5, 12.0, 13.0, 13.0]);
-        // Main is busy half of each frame, the render thread 1 ms.
-        assert_eq!(numbers("CPU (busiest thread)"), [5.75, 6.0, 6.5, 6.5]);
-        assert_eq!(numbers("main"), [5.75, 6.0, 6.5, 6.5]);
-        assert_eq!(numbers("render thread"), [1.0; 4]);
         assert_eq!(numbers("GPU "), [2.0; 4]);
-        assert!(text.contains("CPU-bound (main)"));
         let raster = text.lines().find(|l| l.contains("Raster")).unwrap();
         assert!(
             raster.contains("1.000") && raster.contains("50.0%"),
@@ -616,7 +635,7 @@ mod tests {
         let trace: Value = serde_json::from_str(&chrome_trace(&frames)).unwrap();
         let events = trace["traceEvents"].as_array().unwrap();
         let spans: Vec<_> = events.iter().filter(|e| e["ph"] == "X").collect();
-        assert_eq!(spans.len(), 3);
+        assert_eq!(spans.len(), 4);
         let raster = spans.iter().find(|e| e["name"] == "Raster").unwrap();
         assert_eq!(
             (raster["tid"].as_u64(), raster["dur"].as_f64()),

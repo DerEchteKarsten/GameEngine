@@ -54,7 +54,7 @@ use lava::{
 };
 
 #[cfg(feature = "profiling")]
-use crate::profiler::{GpuTimings, capture};
+use crate::profiler::{self, GpuTimings};
 use crate::{
     INITIAL_WINDOW_SIZE,
     assets::texture::{GpuTexture, texture_index},
@@ -451,22 +451,21 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
         };
         let slot = &mut slots.slots[frame_in_flight];
         #[cfg(feature = "profiling")]
-        slot.set_profiling(
-            world
-                .get_resource::<GpuTimings>()
-                .is_some_and(|t| t.enabled),
-        );
+        if let Some(timings) = world.get_resource::<GpuTimings>() {
+            slot.set_timestamps(timings.timestamps);
+            slot.set_counters(timings.counters.clone());
+        }
         let frame = slot.begin().unwrap();
         #[cfg(feature = "profiling")]
-        if let Some(last) = frame.last_timings() {
-            world.resource_mut::<GpuTimings>().slots[frame_in_flight].read_back(last);
+        if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
+            timings.slots[frame_in_flight].read_back(&frame);
         }
         world.run_schedule(RenderSystems::AquireSwapchainImage);
         world.run_schedule(RenderSystems::PreRender);
         record_frame(frame, frame_in_flight, params.get_mut(world).unwrap());
         #[cfg(feature = "profiling")]
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
-            timings.slots[frame_in_flight].submitted = (capture::frame(), capture::now_ns());
+            timings.slots[frame_in_flight].submitted = (profiler::frame(), profiler::now_ns());
         }
     });
 }
@@ -594,6 +593,11 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
         .range(MAX_INSTANCES * frame_in_flight..);
     let eye = camera.transform.translation.extend(1.0);
     let (view, proj) = (camera.camera.view, camera.camera.proj);
+    // `mesh_threads` in `scene_raster.slang`: what the driver prefers, but no more than a meshlet
+    // has vertices or triangles (128, see `build_meshlets`).
+    let mesh_threads = Ctx::mesh_shader_properties()
+        .max_preferred_mesh_work_group_invocations
+        .min(128);
     cmd.begin_scope("cull");
     // Only once: bvh_cull leaves every queue slot and batch counter it consumes as filled here,
     // and the composite pass resets every pixel of `accum` and `revealage` the blended pass drew to.
@@ -691,7 +695,8 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
                 resources.meshlets.range(..),
                 opaque_draw,
                 materials,
-            ),
+            )
+            .constant_bindings(mesh_threads),
             opaque_draw.cast(),
             RasterState::default().blends([Blend::Replace, Blend::Skip, Blend::Skip]),
         )
@@ -704,7 +709,8 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
                 resources.blended_meshlets.range(..),
                 blended_draw,
                 materials,
-            ),
+            )
+            .constant_bindings(mesh_threads),
             blended_draw.cast(),
             RasterState::default()
                 .blends([Blend::Skip, Blend::Add, Blend::Attenuate])
@@ -742,7 +748,8 @@ pub(super) fn record_scene<F: Format<Texels = [f32; 4]> + ColorAspect>(
                     resources.outlined_meshlets.range(..),
                     outlined_draw,
                     materials,
-                ),
+                )
+                .constant_bindings(mesh_threads),
                 outlined_draw.cast(),
                 RasterState::default(),
             )

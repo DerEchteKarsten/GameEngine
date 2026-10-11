@@ -14,7 +14,7 @@ use bevy::{
     transform::{TransformPlugin, components::Transform},
 };
 #[cfg(feature = "profiling")]
-use core::profiler::{Profiler, ProfilerPlugin, capture::ProfileLayer};
+use core::profiler::{Profiler, ProfilerPlugin, spans::ProfileLayer};
 use core::{
     ASSET_DIR, asset_plugin,
     assets::{MeshAssets, texture::GpuTexture},
@@ -44,7 +44,8 @@ and writes the image to OUTPUT.png.
                  DIR/profile.json (Chrome trace for Perfetto or chrome://tracing);
                  needs the `profiling` feature
   --counters NAMES  comma-separated hardware counters to profile per pass instead of the
-                 default set (`core::profiler::DEFAULT_COUNTERS`), or `none`";
+                 default set (`core::profiler::DEFAULT_COUNTERS`), or `none` for no pass
+                 queries (also no pipeline statistics)";
 
 struct Args {
     scene: PathBuf,
@@ -164,7 +165,7 @@ fn run(args: &Args) -> Result<(), String> {
     if args.profile.is_some() {
         let mut plugin = ProfilerPlugin::default();
         if let Some(counters) = &args.counters {
-            plugin.counters = counters.clone();
+            plugin.counters = (!counters.is_empty()).then(|| counters.clone());
         }
         app.add_plugins(plugin);
     }

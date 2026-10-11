@@ -1,13 +1,12 @@
-//! CPU span capture: a tracing layer writing every span entered while recording into a fixed ring on its own thread, plus per-thread busy-time counters; the rings are read only while recording is off, and `busy_signs` tells which spans make up a thread's busy time.
+//! CPU spans: a tracing layer writing every span entered while recording into a fixed ring on its own thread; the rings are read only while recording is off.
 use std::{
     cell::RefCell,
     collections::HashSet,
     fmt::Write,
     sync::{
         LazyLock, Mutex,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Instant,
 };
 
 use tracing::{
@@ -16,6 +15,8 @@ use tracing::{
     span,
 };
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
+
+use crate::profiler::{frame, now_ns};
 
 /// A span's time on one thread, in ns since the process started.
 #[derive(Clone, Copy, Debug)]
@@ -30,13 +31,11 @@ pub struct CpuSpan {
     pub kind: SpanKind,
 }
 
-/// Bevy's spans of systems (and run conditions) and of schedules, spans with a `wait = true`
-/// field, in which the thread blocks on the GPU or another thread, and all the others.
+/// Bevy's spans of systems (and run conditions) and of schedules, and all the others.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SpanKind {
     System,
     Schedule,
-    Wait,
     Other,
 }
 
@@ -45,7 +44,6 @@ impl SpanKind {
         match self {
             SpanKind::System => "system",
             SpanKind::Schedule => "schedule",
-            SpanKind::Wait => "wait",
             SpanKind::Other => "other",
         }
     }
@@ -56,12 +54,8 @@ pub const SPANS_PER_THREAD: usize = 1 << 16;
 /// Deeper spans aren't recorded. Once recording is off, a thread can still finish this many
 /// open spans, so readers leave that many slots alone.
 const MAX_DEPTH: usize = 64;
-/// Frames the busy-time counters hold at once.
-const BUSY_FRAMES: usize = 4;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static FRAME: AtomicU32 = AtomicU32::new(0);
-static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 static NAMES: LazyLock<Mutex<HashSet<&'static str>>> = LazyLock::new(Default::default);
 /// The ring of every thread that recorded a span. Locked only to add a thread or read them.
 static THREADS: Mutex<Vec<&'static Ring>> = Mutex::new(Vec::new());
@@ -72,9 +66,6 @@ struct Ring {
     /// Spans written so far; slot `i % SPANS_PER_THREAD` holds span `i`.
     head: AtomicUsize,
     spans: *mut CpuSpan,
-    /// Busy ns per frame (modulo `BUSY_FRAMES`): the time of the spans that started in it,
-    /// without their children's and without waits.
-    busy: [AtomicU64; BUSY_FRAMES],
 }
 
 unsafe impl Send for Ring {}
@@ -107,66 +98,9 @@ impl Ring {
     }
 }
 
-/// The clock of all profiler times.
-pub fn now_ns() -> u64 {
-    EPOCH.elapsed().as_nanos() as u64
-}
-
 /// Starts or stops recording; spans entered while it is off are not recorded.
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
-}
-
-/// The frame spans entered from now on belong to.
-pub fn set_frame(frame: u32) {
-    FRAME.store(frame, Ordering::Relaxed);
-}
-
-pub fn frame() -> u32 {
-    FRAME.load(Ordering::Relaxed)
-}
-
-/// The busiest thread's time in `frame` by the counters, which then start over for the frame
-/// `BUSY_FRAMES` later. Each span's own time counts towards the frame it started in.
-pub fn take_busy(frame: u32) -> u64 {
-    let slot = frame as usize % BUSY_FRAMES;
-    let threads = THREADS.lock().unwrap();
-    let busy = threads
-        .iter()
-        .map(|ring| ring.busy[slot].swap(0, Ordering::Relaxed));
-    busy.max().unwrap_or(0)
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Counted {
-    Yes,
-    InWait,
-}
-
-/// Calls `f` with every span of one thread (newest first) and its share of the thread's busy
-/// time: 1 for a span that isn't a wait and has no counted parent, -1 for a wait whose
-/// parent counts, else 0. The thread was busy for the signed sum of the durations. A parent
-/// that was never recorded (an ancestor that never ends, like bevy's `bevy_app`) doesn't count.
-pub fn busy_signs<'a>(spans: [&'a [CpuSpan]; 2], mut f: impl FnMut(&'a CpuSpan, i64)) {
-    // The newest span seen at each depth; walking backwards, a parent comes before its children.
-    let mut parents: [Option<(u64, u64, Counted)>; MAX_DEPTH] = [None; MAX_DEPTH];
-    for span in spans.into_iter().rev().flat_map(|spans| spans.iter().rev()) {
-        let depth = span.depth as usize;
-        let parent = depth.checked_sub(1).and_then(|d| parents[d]);
-        let parent = parent
-            .filter(|(start, end, _)| *start <= span.start_ns && span.end_ns <= *end)
-            .map(|(.., counted)| counted);
-        let wait = span.kind == SpanKind::Wait;
-        let (sign, counted) = match (parent, wait) {
-            (Some(Counted::InWait), _) => (0, Counted::InWait),
-            (Some(Counted::Yes), true) => (-1, Counted::InWait),
-            (Some(Counted::Yes), false) => (0, Counted::Yes),
-            (None, true) => (0, Counted::InWait),
-            (None, false) => (1, Counted::Yes),
-        };
-        parents[depth] = Some((span.start_ns, span.end_ns, counted));
-        f(span, sign);
-    }
 }
 
 /// Calls `f` with every thread's name, the end of its oldest span if older ones were
@@ -198,8 +132,6 @@ struct Open {
     name: SpanName,
     start_ns: u64,
     frame: u32,
-    /// Time of its children that ended so far.
-    children_ns: u64,
 }
 
 struct ThreadState {
@@ -220,7 +152,6 @@ thread_local! {
             thread,
             head: AtomicUsize::new(0),
             spans: spans.as_mut_ptr().cast(),
-            busy: Default::default(),
         }));
         THREADS.lock().unwrap().push(ring);
         ThreadState {
@@ -256,11 +187,6 @@ impl NameVisitor<'_> {
 }
 
 impl Visit for NameVisitor<'_> {
-    fn record_bool(&mut self, field: &Field, value: bool) {
-        if field.name() == "wait" && value {
-            self.kind = SpanKind::Wait;
-        }
-    }
     fn record_str(&mut self, field: &Field, value: &str) {
         if self.names(field) {
             self.name.push_str(value);
@@ -291,9 +217,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfileLayer {
             let buffer = &mut *buffer.borrow_mut();
             buffer.clear();
             buffer.push_str(name);
-            let mut visitor = NameVisitor { name: buffer, kind };
-            attrs.record(&mut visitor);
-            let kind = visitor.kind;
+            attrs.record(&mut NameVisitor { name: buffer, kind });
             span.extensions_mut().insert(SpanName(intern(buffer), kind));
         });
     }
@@ -312,8 +236,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfileLayer {
             id: id.into_u64(),
             name,
             start_ns: now_ns(),
-            frame: FRAME.load(Ordering::Relaxed),
-            children_ns: 0,
+            frame: frame(),
         };
         // `try_with`: threads still enter and exit spans while their locals are destroyed.
         let _ = THREAD.try_with(|thread| {
@@ -336,16 +259,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfileLayer {
             };
             let open = thread.open.remove(depth);
             let SpanName(name, kind) = open.name;
-            let duration = end_ns - open.start_ns;
-            let ancestors = &mut thread.open[..depth];
-            if kind != SpanKind::Wait && ancestors.iter().all(|a| a.name.1 != SpanKind::Wait) {
-                let own = duration.saturating_sub(open.children_ns);
-                let slot = open.frame as usize % BUSY_FRAMES;
-                thread.ring.busy[slot].fetch_add(own, Ordering::Relaxed);
-            }
-            if let Some(parent) = ancestors.last_mut() {
-                parent.children_ns += duration;
-            }
             thread.ring.push(CpuSpan {
                 name,
                 start_ns: open.start_ns,
@@ -367,11 +280,6 @@ mod tests {
     /// that thread recorded. Reads the thread's own ring, so recording stays on for other
     /// tests.
     fn capture(f: impl FnOnce() + Send + 'static) -> Vec<CpuSpan> {
-        capture_with_busy(f).0
-    }
-
-    /// Also returns the sum of the thread's busy counters.
-    fn capture_with_busy(f: impl FnOnce() + Send + 'static) -> (Vec<CpuSpan>, u64) {
         std::thread::Builder::new()
             .name("capture test".into())
             .spawn(move || {
@@ -381,8 +289,7 @@ mod tests {
                 let ring = THREAD.with_borrow(|t| t.ring);
                 assert_eq!(ring.thread, "capture test");
                 let (_, spans) = ring.read();
-                let busy = ring.busy.iter().map(|b| b.load(Ordering::Relaxed)).sum();
-                (spans.concat(), busy)
+                spans.concat()
             })
             .unwrap()
             .join()
@@ -423,7 +330,7 @@ mod tests {
             // Entering the same span again records it again.
             system.in_scope(|| {});
             let _commands = tracing::info_span!("system_commands", name = "game::update").entered();
-            let _wait = tracing::info_span!("wait for frame slot", wait = true).entered();
+            let _wait = tracing::info_span!("wait for frame slot").entered();
         });
         let names: Vec<_> = spans.iter().map(|s| (s.name, s.kind, s.depth)).collect();
         assert_eq!(
@@ -432,47 +339,11 @@ mod tests {
                 ("compute BvhCull", Other, 2),
                 ("game::update", System, 1),
                 ("game::update", System, 1),
-                ("wait for frame slot", Wait, 2),
+                ("wait for frame slot", Other, 2),
                 ("system_commands game::update", Other, 1),
                 ("Update", Schedule, 0),
             ]
         );
-    }
-
-    #[test]
-    fn busy_time_is_roots_minus_their_outermost_waits() {
-        let (spans, counted) = capture_with_busy(|| {
-            // Never ends, like bevy's `bevy_app`, so its children are the roots.
-            std::mem::forget(tracing::info_span!("forever").entered());
-            {
-                let _root = tracing::info_span!("root").entered();
-                let _work = tracing::info_span!("work").entered();
-                drop(_work);
-                let _wait = tracing::info_span!("wait", wait = true).entered();
-                let _inner = tracing::info_span!("inner wait", wait = true).entered();
-            }
-            let _idle = tracing::info_span!("idle", wait = true).entered();
-            let _work = tracing::info_span!("work in idle").entered();
-        });
-        let mut signs = Vec::new();
-        busy_signs([&spans, &[]], |span, sign| signs.push((span.name, sign)));
-        signs.reverse();
-        assert_eq!(
-            signs,
-            [
-                ("work", 0),
-                ("inner wait", 0),
-                ("wait", -1),
-                ("root", 1),
-                ("work in idle", 0),
-                ("idle", 0)
-            ]
-        );
-        let ns = |name| {
-            let span = spans.iter().find(|s| s.name == name).unwrap();
-            span.end_ns - span.start_ns
-        };
-        assert_eq!(counted, ns("root") - ns("wait"));
     }
 
     #[test]

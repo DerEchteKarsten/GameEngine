@@ -315,7 +315,7 @@ pub fn register_tracing() {
             })
             .with(fmt);
         #[cfg(feature = "profiling")]
-        let subscriber = subscriber.with(crate::profiler::capture::ProfileLayer);
+        let subscriber = subscriber.with(crate::profiler::spans::ProfileLayer);
         if tracing::subscriber::set_global_default(subscriber).is_err() {
             eprintln!("WARNING: global tracing subscriber already set — the console stays empty");
         }

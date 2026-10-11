@@ -229,7 +229,7 @@ impl Plugin for PipelinedRenderingPlugin {
 fn renderer_extract(app_world: &mut World, _world: &mut World) {
     app_world.resource_scope(|world, main_thread_executor: Mut<MainThreadExecutor>| {
         world.resource_scope(|world, mut render_channels: Mut<RenderAppChannels>| {
-            let wait = info_span!("wait for render thread", wait = true).entered();
+            let wait = info_span!("wait for render thread").entered();
             let render_app = ComputeTaskPool::get()
                 .scope_with_executor(true, Some(&*main_thread_executor.0), |s| {
                     s.spawn(async { render_channels.recv().await });

@@ -1,4 +1,4 @@
-//! The editor's Profiler tab: on/off switch, live frame/CPU/GPU time graphs, the hardware counter picker, and for the frame clicked in them a zoomable timeline of its CPU spans and GPU scopes plus its GPU scope, counter, shader clock region and CPU span tables (spans filterable by kind); GPU memory.
+//! The editor's Profiler tab: the four systems' switches, live frame and GPU time graphs, the hardware counter picker, and for the frame clicked in them a zoomable timeline of its CPU spans and GPU scopes plus its GPU scope, pass query, shader clock region and CPU span tables (spans filterable by kind); GPU memory.
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     path::PathBuf,
@@ -18,9 +18,9 @@ use lava::profiling::{MAX_COUNTERS, MemoryReport, counters};
 use crate::{
     id,
     profiler::{
-        FrameProfile, FrameTimes, Profiler, ThreadSpans,
-        capture::SpanKind,
-        report::{cpu_spans, format_counter, gpu_scopes, region_times},
+        FrameProfile, Profiler, ThreadSpans,
+        report::{cpu_spans, format_counter, gpu_scopes, pass_counters, region_times},
+        spans::SpanKind,
     },
     ui::{
         UiContext,
@@ -56,29 +56,18 @@ struct SpanRow {
 
 struct Tables {
     header: String,
-    scopes: Vec<[String; 6]>,
-    counter_legend: Vec<String>,
-    counters: Vec<Vec<String>>,
+    scopes: Vec<[String; 3]>,
+    pass_header: Vec<String>,
+    passes: Vec<Vec<String>>,
     regions: Vec<[String; 5]>,
     spans: Vec<SpanRow>,
 }
 
 fn tables(frame: &FrameProfile) -> Tables {
-    let mut busy: Vec<_> = frame
-        .threads
-        .iter()
-        .map(|t| (t.thread, t.busy_ns))
-        .collect();
-    busy.sort_by_key(|(_, ns)| std::cmp::Reverse(*ns));
-    let busy = busy
-        .iter()
-        .take(3)
-        .map(|(t, ns)| format!("{t} {:.3}", ms(*ns)));
     let header = format!(
-        "Frame #{}: {:.3} ms, CPU {} ms, GPU {}{}",
+        "Frame #{}: {:.3} ms, GPU {}{}",
         frame.frame,
         ms(frame.frame_ns()),
-        busy.collect::<Vec<_>>().join(" / "),
         frame
             .gpu_ns()
             .map_or("-".into(), |ns| format!("{:.3} ms", ms(ns))),
@@ -90,26 +79,26 @@ fn tables(frame: &FrameProfile) -> Tables {
     );
     let frames = std::slice::from_ref(frame);
     let gpu = frame.gpu_ns().map_or(0.0, ms);
-    let totals = gpu_scopes(frames);
-    let counter_legend = frame.counters.iter().map(|c| c.name.clone());
-    let counters = totals.iter().filter_map(|scope| {
-        let values = scope.counters?;
-        let name = format!("{}{}", "  ".repeat(scope.depth as usize), scope.name);
-        let values = frame.counters.iter().zip(values);
-        let values = values.map(|(counter, value)| format_counter(counter.unit, value));
-        Some(std::iter::once(name).chain(values).collect())
-    });
-    let scopes = totals.iter().map(|scope| {
+    let scopes = gpu_scopes(frames).into_iter().map(|scope| {
         let scope_ms: f64 = scope.ms.iter().sum();
-        let stats = scope.stats;
         [
             format!("{}{}", "  ".repeat(scope.depth as usize), scope.name),
             format!("{scope_ms:.3}"),
             format!("{:.1}", scope_ms / gpu.max(f64::EPSILON) * 100.0),
-            stats.map_or(String::new(), |s| s.fragment.to_string()),
-            stats.map_or(String::new(), |s| s.compute.to_string()),
-            stats.map_or(String::new(), |s| s.mesh.to_string()),
         ]
+    });
+    let pass_header = ["pass", "fragments", "compute", "mesh"].map(String::from);
+    let counter_names = frame.counters.iter().map(|c| c.name.clone());
+    let units: Vec<_> = frame.counters.iter().map(|c| c.unit).collect();
+    let passes = pass_counters(frames, &units).into_iter().map(|pass| {
+        let stats = pass.stats.map(|s| [s.fragment, s.compute, s.mesh]);
+        let stats = stats.into_iter().flatten().map(|n| n.to_string());
+        let values = frame.counters.iter().zip(pass.values.into_iter().flatten());
+        let values = values.map(|(counter, value)| format_counter(counter.unit, value));
+        std::iter::once(pass.name.to_string())
+            .chain(stats)
+            .chain(values)
+            .collect()
     });
     let spans = cpu_spans(frames).into_iter().map(|span| SpanRow {
         kind: span.kind,
@@ -134,8 +123,8 @@ fn tables(frame: &FrameProfile) -> Tables {
     Tables {
         header,
         scopes: scopes.collect(),
-        counter_legend: counter_legend.collect(),
-        counters: counters.collect(),
+        pass_header: pass_header.into_iter().chain(counter_names).collect(),
+        passes: passes.collect(),
         regions: regions.collect(),
         spans: spans.collect(),
     }
@@ -160,7 +149,6 @@ fn name_color(name: &str) -> Vec4 {
 
 struct Bar {
     name: &'static str,
-    wait: bool,
     depth: u16,
     start_ns: u64,
     end_ns: u64,
@@ -169,7 +157,6 @@ struct Bar {
 fn cpu_bars(thread: &ThreadSpans) -> impl Iterator<Item = Bar> {
     thread.spans.iter().map(|span| Bar {
         name: span.name,
-        wait: span.kind == SpanKind::Wait,
         depth: span.depth,
         start_ns: span.start_ns,
         end_ns: span.end_ns,
@@ -179,7 +166,6 @@ fn cpu_bars(thread: &ThreadSpans) -> impl Iterator<Item = Bar> {
 fn gpu_bars(frame: &FrameProfile) -> impl Iterator<Item = Bar> {
     frame.gpu.iter().map(|scope| Bar {
         name: scope.name,
-        wait: false,
         depth: scope.depth,
         start_ns: frame.gpu_submit_ns + scope.start_ns,
         end_ns: frame.gpu_submit_ns + scope.end_ns,
@@ -227,16 +213,10 @@ impl Lanes {
             }
             let top = self.y + bar.depth as f32 * ROW_HEIGHT;
             let rect = Rect::new(x0, top, x1, top + ROW_HEIGHT - 2.0);
-            // Waits are idle time, so they stay in the background.
-            let (fill, text) = if bar.wait {
-                (UiContext::S2, UiContext::TEXT_DIM)
-            } else {
-                (name_color(bar.name), UiContext::BG_DARK)
-            };
-            ui.paint_rect(rect, fill);
+            ui.paint_rect(rect, name_color(bar.name));
             if rect.width() > 3.0 * CHAR_WIDTH {
                 let pos = Vec2::new(rect.min.x + 2.0, rect.min.y + 1.0);
-                ui.paint_text(pos, bar.name, text, rect);
+                ui.paint_text(pos, bar.name, UiContext::BG_DARK, rect);
             }
             if self.cursor.is_some_and(|pos| rect.contains(pos)) {
                 self.hovered = Some(format!(
@@ -325,27 +305,21 @@ pub(crate) fn profiler_ui(
             .range(..closed)
             .skip(closed.saturating_sub(RECENT_FRAMES));
         let frame_time = mean(recent.clone().map(|t| ms(t.frame_ns())));
-        let cpu = mean(
-            recent
-                .clone()
-                .filter(|t| t.cpu_ns > 0)
-                .map(|t| ms(t.cpu_ns)),
-        );
         let gpu = mean(recent.filter_map(|t| t.gpu_ns).map(ms));
         let fps = 1000.0 / frame_time.max(f64::EPSILON);
         let width = ui.available_size().x;
         let max = (frame_time * 2.0).max(1.0) as f32;
 
+        ui.row(|ui| {
+            profiler.spans = ui.checkbox("CPU spans", profiler.spans);
+            profiler.timestamps = ui.checkbox("GPU timestamps", profiler.timestamps);
+            profiler.counters = ui.checkbox("Pass queries", profiler.counters);
+            profiler.clocks = ui.checkbox("Shader clocks", profiler.clocks);
+        });
         // Set when a button changed the profiler, which then has nothing to show this frame.
         let mut changed = false;
         ui.row(|ui| {
-            let enabled = ui.checkbox("Profile", profiler.enabled);
-            if enabled != profiler.enabled {
-                profiler.set_enabled(enabled);
-                changed = true;
-            } else if !profiler.enabled {
-                ui.label(format!("Frame {frame_time:.2} ms ({fps:.0} fps)"));
-            } else if ui.button(if profiler.paused { "Resume" } else { "Pause" }) {
+            if ui.button(if profiler.paused { "Resume" } else { "Pause" }) {
                 profiler.set_paused(!profiler.paused);
                 changed = true;
             } else if ui.button("Save capture") {
@@ -364,42 +338,32 @@ pub(crate) fn profiler_ui(
                     view.range = None;
                 }
                 ui.label(format!(
-                    "Frame {frame_time:.2} ms ({fps:.0} fps), CPU {cpu:.2} ms, GPU {gpu:.2} ms"
+                    "Frame {frame_time:.2} ms ({fps:.0} fps), GPU {gpu:.2} ms"
                 ));
             }
         });
         if changed {
             return;
         }
-        let times = profiler.times.range(..closed);
-        if !profiler.enabled {
-            let frame_ms = times.map(|t| ms(t.frame_ns()) as f32);
-            ui.histogram(width, 48.0, max, 0.0, frame_ms, closed.max(1));
-            return;
-        }
 
+        let times = profiler.times.range(..closed);
         let mut clicked = None;
-        let graphs: [(&str, fn(&FrameTimes) -> f32); 3] = [
-            ("Frame time (click a frame to inspect it)", |t| {
-                ms(t.frame_ns()) as f32
-            }),
-            (
-                "CPU: busiest thread, without waits (exact while paused)",
-                |t| ms(t.cpu_ns) as f32,
-            ),
-            ("GPU", |t| t.gpu_ns.map_or(0.0, ms) as f32),
-        ];
-        for (label, value) in graphs {
-            ui.text(label);
-            let values = times.clone().map(value);
-            clicked = clicked.or(ui.histogram(width, 48.0, max, 0.0, values, closed.max(1)));
+        ui.text("Frame time (click a frame to inspect it)");
+        let frame_ms = times.clone().map(|t| ms(t.frame_ns()) as f32);
+        clicked = clicked.or(ui.histogram(width, 48.0, max, 0.0, frame_ms, closed.max(1)));
+        if profiler.timestamps {
+            ui.text("GPU");
+            let gpu_ms = times.map(|t| t.gpu_ns.map_or(0.0, ms) as f32);
+            clicked = clicked.or(ui.histogram(width, 48.0, max, 0.0, gpu_ms, closed.max(1)));
         }
         if let Some(i) = clicked {
             profiler.select(i);
             view.range = None;
         }
 
-        counter_picker(ui, profiler);
+        if profiler.counters {
+            counter_picker(ui, profiler);
+        }
 
         let Some(frame) = &profiler.selected else {
             ui.text("Click a frame in the graphs to inspect it.");
@@ -413,22 +377,21 @@ pub(crate) fn profiler_ui(
         timeline(ui, frame, view);
         let Tables {
             scopes,
-            counter_legend,
-            counters,
+            pass_header,
+            passes,
             regions,
             spans,
             ..
         } = &view.tables.as_ref().unwrap().1;
-        ui.collapsable(true, id!(), "GPU scopes", |ui| {
-            let header_labels = ["scope", "ms", "% GPU", "fragments", "compute", "mesh"];
-            ui.table(header_labels.iter(), scopes.iter().map(|i| i.iter()));
-        });
-        if !counters.is_empty() {
-            ui.collapsable(true, id!(), "GPU counters", |ui| {
-                ui.table(
-                    std::iter::once("Name").chain(counter_legend.iter().map(|s| s.as_str())),
-                    counters.iter().map(|i| i.iter()),
-                );
+        if !scopes.is_empty() {
+            ui.collapsable(true, id!(), "GPU scopes", |ui| {
+                let header_labels = ["scope", "ms", "% GPU"];
+                ui.table(header_labels.iter(), scopes.iter().map(|i| i.iter()));
+            });
+        }
+        if !passes.is_empty() {
+            ui.collapsable(true, id!(), "Pass queries", |ui| {
+                ui.table(pass_header.iter(), passes.iter().map(|i| i.iter()));
             });
         }
         if !regions.is_empty() {
@@ -469,7 +432,7 @@ fn counter_picker(ui: &mut UiWindowBuilder, profiler: &mut Profiler) {
     if all.is_empty() {
         return;
     }
-    let selected = profiler.counters.clone();
+    let selected = profiler.selection.clone();
     let label = format!(
         "Performance counters ({} / {MAX_COUNTERS} selected)",
         selected.len()

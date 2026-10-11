@@ -29,9 +29,10 @@ struct RasterBindings {
 // leave the mesh shader less output to reserve, which made it faster.
 #define MAX_MESHLET_VERTICES 128
 #define MAX_MESHLET_TRIANGLES 128
-// Invocations per mesh workgroup, what the driver prefers (`maxPreferredMeshWorkGroupInvocations`
-// on Intel); a thread per triangle was slower.
-#define MESH_THREADS 16
+// Invocations per mesh workgroup: what the driver prefers (`maxPreferredMeshWorkGroupInvocations`,
+// 16 on Intel), at most a meshlet's vertices or triangles, set by `record_scene`; a thread per
+// triangle was slower.
+[SpecializationConstant] const uint mesh_threads = 16;
 
 VSOutput scene_vertex(InstancedMeshlet instanced_meshlet, Meshlet meshlet, uint index)
 {
@@ -53,7 +54,7 @@ VSOutput scene_vertex(InstancedMeshlet instanced_meshlet, Meshlet meshlet, uint 
 // `MeshletDraw`).
 [shader("mesh")]
 [outputtopology("triangle")]
-[numthreads(MESH_THREADS, 1, 1)]
+[numthreads(mesh_threads, 1, 1)]
 void scene_mesh(
     uint thread: SV_GroupThreadID,
     uint2 group: SV_GroupID,
@@ -69,11 +70,11 @@ void scene_mesh(
     let instanced_meshlet = b.meshlets.val[index];
     let meshlet = *instanced_meshlet.meshlet;
     SetMeshOutputCounts(meshlet.vertex_count, meshlet.triangle_count);
-    for (uint i = thread; i < meshlet.triangle_count; i += MESH_THREADS) {
+    for (uint i = thread; i < meshlet.triangle_count; i += mesh_threads) {
         let corners = meshlet.triangle_index + i * 3;
         triangles[i] = uint3(corners[0], corners[1], corners[2]);
     }
-    for (uint i = thread; i < meshlet.vertex_count; i += MESH_THREADS) {
+    for (uint i = thread; i < meshlet.vertex_count; i += mesh_threads) {
         vertices[i] = scene_vertex(instanced_meshlet, meshlet, i);
     }
 }
