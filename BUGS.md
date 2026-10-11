@@ -2,17 +2,6 @@
 
 Found in a read-only review on 2026-10-11. **Verified** means the code was read and the bug confirmed; **plausible** means it follows from the code but wasn't reproduced. Line numbers are from that date. Delete an entry when it's fixed.
 
-## lava: synchronisation and barriers
-- **Lost readers in the barrier tracker (verified).** `PendingAccesses::record` (`command_buffer.rs`, around 2160) drops every earlier read of the same image, or of a buffer range the new read covers, whatever its stage. Fragment read of X, then compute read of X, then compute write of X: the write waits only on COMPUTE, while the fragment read may still run. Merge the stages and accesses of reads that had no barrier in between instead of replacing them.
-- **Layouts are tracked when an access is built, not when it's recorded (verified).** `ImageView::access` (`image/slice.rs:65-82`) swaps the image's atomic layout as soon as `push_bindings` or `color_attachment` runs. Bindings built in another order than they're recorded, a builder dropped unrecorded, or command buffers recorded in parallel give wrong `old_layout`s.
-- **Signal semaphore stage mask is the union of pending stages** (`vkobjects/queue.rs:585-587`). Untracked work (acceleration structure builds, queries, `flush_all`, replaced reads) isn't covered, and an empty list gives `NONE`. Use `ALL_COMMANDS`.
-- **Readback has no device-to-host barrier.** `copy_image_to_buffer` into a mapped buffer relies on the fence alone; only `clock::host_barrier` (`profiling/clock.rs:78`) makes writes host-visible.
-- **Host image copies don't wait for the GPU** (plausible race). `copy_from`/`copy_region_from` and their host layout transition (`image/mod.rs`) run while frames in flight may sample the image, e.g. the asset browser's preview atlas.
-- `Event::wait` calls `set_event` instead of resetting (`vkobjects/queue.rs:57-67`).
-- `Queue` is `Sync`, but `execute_command(&self)` doesn't give Vulkan's required external sync; core works around it with a `Mutex`.
-- Plausible: a reloaded pipeline is retired into the slot being begun while older slots may still use it (`vkobjects/queue.rs:381`).
-- Plausible: a shader module can be used after it's destroyed between the read and write locks in `compute()` (`command_buffer.rs:232-233`).
-
 ## lava: resources and device setup
 - **Sub-range image views leak and bind the wrong mip.** `create_new_view` (`image/slice.rs:144-172`) never destroys the view (`ImageView` is `Copy`, no `Drop`), and the view keeps the parent's bindless `handle`, so a pass bound to mip N reads or writes mip 0.
 - **Barriers and layout transitions always cover every mip and layer** (`command_buffer.rs:2073-2079`), so one mip can't be rendered while another is sampled.

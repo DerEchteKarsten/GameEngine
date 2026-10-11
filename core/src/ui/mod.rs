@@ -12,7 +12,6 @@ use crate::{
     render::{
         ExtractSchedule, RenderApp,
         RenderSystems::{self},
-        render::Queues,
     },
     ui::{
         dragdrop::{DragDrop, end_drag},
@@ -496,7 +495,7 @@ impl UiContext {
         ))
     }
 
-    pub(crate) fn build_ui_resources(&mut self, queues: &Queues) -> Result<UiResources> {
+    pub(crate) fn build_ui_resources(&mut self) -> Result<UiResources> {
         let font = self.font.take().unwrap();
         let pixels = (Self::FONT_SCALE * 4) as f32;
         let font_metrics = font.horizontal_line_metrics(pixels).unwrap();
@@ -581,14 +580,13 @@ pub fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>)
 pub fn create_ui_resources(
     mut cmd: Commands,
     res: Option<Res<UiResources>>,
-    queues: Res<Queues>,
     mut world: ResMut<MainWorld>,
 ) {
     if res.is_some() {
         return;
     }
     let mut ctx = world.get_resource_mut::<UiContext>().unwrap();
-    cmd.insert_resource(ctx.build_ui_resources(&queues).unwrap());
+    cmd.insert_resource(ctx.build_ui_resources().unwrap());
 }
 
 pub fn extract_ui(mut res: If<ResMut<UiResources>>, windows: Extract<Res<UiWindows>>) {

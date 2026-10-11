@@ -36,9 +36,11 @@ exr = {workspace = true}
 half = {workspace = true}
 
 [features]
-default = ["profiling"]
+default = ["profiling", "hot-reload"]
 # The profiler (CPU spans, GPU timings, shader clocks, its editor tab).
 profiling = ["lava/profiling"]
+# Shader hot reload.
+hot-reload = ["lava/hot-reload"]
 dynamic_linking = ["bevy/dynamic_linking"]
 
 [build-dependencies]

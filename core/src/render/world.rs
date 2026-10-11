@@ -23,7 +23,6 @@ use lava::buffer::slice::BufferSlice;
 use lava::image::slice::{AsImage, ImageSlice};
 use lava::image::usage::ImageUsage;
 use lava::state::{Ctx, Functions, raw_vulkan};
-use lava::vkobjects::queue::{CommandBufferMemory, CommandPool, Fence, Gfx, Queue, Transfer};
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
 
 use crate::INITIAL_WINDOW_SIZE;
@@ -35,7 +34,7 @@ use crate::editor::viewport::ViewPort;
 use crate::render::MainWorld;
 use crate::render::extract_param::Extract;
 use crate::render::render::{
-    FrameCount, QueueStrategie, Queues, Swapchain, ViewPortTarget, extract_camera, extract_skybox,
+    FrameCount, Swapchain, ViewPortTarget, extract_camera, extract_skybox,
 };
 use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, RenderStartup, RenderSystems};
 use crate::scene::Instance;

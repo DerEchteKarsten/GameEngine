@@ -5,10 +5,7 @@ use smallvec::SmallVec;
 use std::{
     collections::HashMap,
     mem::offset_of,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -50,7 +47,7 @@ use lava::{
     state::Ctx,
     vkobjects::{
         self,
-        queue::{Binary, Frame, FrameSlot, Gfx, PendingAccesses, Present, Queue, Semaphore},
+        queue::{Binary, Frame, FrameSlot, Gfx, PendingAccesses, Queue, Semaphore},
     },
 };
 
@@ -80,8 +77,10 @@ use lava::bindings::{
 /// `MESHLET_STRIDE` in `datatypes.slang`: `groups_y` of every `MeshletDraw`.
 const MESHLET_STRIDE: u32 = 64;
 
+/// The frame slots and the queue lease they are submitted through.
 #[derive(Resource)]
 pub struct FrameSlots {
+    pub queue: Queue<Gfx>,
     pub slots: [FrameSlot; FRAMES_IN_FLIGHT],
 }
 
@@ -89,29 +88,6 @@ pub struct FrameSlots {
 pub struct SynchronizationResources {
     pub image_available: [Semaphore<Binary>; FRAMES_IN_FLIGHT],
     pub render_finished: Vec<Semaphore<Binary>>,
-}
-
-pub enum QueueStrategie {
-    Single(Arc<Mutex<Queue<Gfx>>>),
-    Multiple(Queue<Gfx>),
-}
-
-impl QueueStrategie {
-    pub fn with<R, F: FnOnce(&Queue<Gfx>) -> R>(&self, f: F) -> R {
-        match &self {
-            QueueStrategie::Single(queue) => {
-                let q = queue.lock().unwrap();
-                f(&q)
-            }
-            QueueStrategie::Multiple(queue) => f(queue),
-        }
-    }
-}
-
-#[derive(Resource)]
-pub struct Queues {
-    pub graphics: QueueStrategie,
-    pub present: Option<Queue<Present>>,
 }
 
 #[derive(Resource, Default)]
@@ -227,25 +203,6 @@ pub fn extract_skybox(
     }));
 }
 
-/// The graphics queue with its frame slots.
-pub(super) fn init_queues(cmd: &mut Commands, present: Option<Queue<Present>>) {
-    let queues = Queues {
-        graphics: if Ctx::num_gfx_queues() == 1 {
-            QueueStrategie::Single(Arc::new(Mutex::new(Queue::new().unwrap())))
-        } else {
-            QueueStrategie::Multiple(Queue::new().unwrap())
-        },
-        present,
-    };
-    let slots =
-        std::array::from_fn(|_| queues.graphics.with(|queue| FrameSlot::new(queue).unwrap()));
-    cmd.insert_resource(queues);
-    cmd.insert_resource(FrameSlots { slots });
-    cmd.insert_resource(ResourceStates {
-        pending: Some(PendingAccesses::default()),
-    });
-}
-
 pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
     let surface = surface
         .0
@@ -267,10 +224,13 @@ pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
         surface,
     };
     let num_images = swapchain.num_images();
-    let present =
-        (Ctx::gfx_queue_index() != Ctx::present_queue_index()).then(|| Queue::new().unwrap());
     cmd.insert_resource(swapchain);
-    init_queues(&mut cmd, present);
+    let queue = Queue::new();
+    let slots = std::array::from_fn(|_| FrameSlot::new(&queue).unwrap());
+    cmd.insert_resource(FrameSlots { queue, slots });
+    cmd.insert_resource(ResourceStates {
+        pending: Some(PendingAccesses::default()),
+    });
     cmd.insert_resource(SynchronizationResources {
         image_available: Default::default(),
         render_finished: (0..num_images).map(|_| Semaphore::new().unwrap()).collect(),
@@ -430,7 +390,6 @@ pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<R
 type RenderParams<'w, 's> = (
     ResMut<'w, RenderCamera>,
     Res<'w, InstanceManager>,
-    Res<'w, Queues>,
     Option<Res<'w, GizzmoResources>>,
     Local<'s, Option<RenderResources>>,
     ResMut<'w, ResourceStates>,
@@ -445,12 +404,13 @@ type RenderParams<'w, 's> = (
 
 pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'static, 'static>>) {
     world.resource_scope(|world, mut slots: Mut<FrameSlots>| {
+        let FrameSlots { queue, slots } = &mut *slots;
         let frame_in_flight = {
             let mut frame = world.resource_mut::<FrameCount>();
             frame.0 += 1;
             frame.frame_in_flight()
         };
-        let slot = &mut slots.slots[frame_in_flight];
+        let slot = &mut slots[frame_in_flight];
         #[cfg(feature = "profiling")]
         if let Some(timings) = world.get_resource::<GpuTimings>() {
             slot.set_timestamps(timings.timestamps);
@@ -463,7 +423,7 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
         }
         world.run_schedule(RenderSystems::AquireSwapchainImage);
         world.run_schedule(RenderSystems::PreRender);
-        record_frame(frame, frame_in_flight, params.get_mut(world).unwrap());
+        record_frame(frame, queue, frame_in_flight, params.get_mut(world).unwrap());
         #[cfg(feature = "profiling")]
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
             timings.slots[frame_in_flight].submitted = (profiler::frame(), profiler::now_ns());
@@ -778,11 +738,11 @@ pub(super) fn record_scene<
 
 fn record_frame(
     mut frame: Frame,
+    queue: &Queue<Gfx>,
     frame_in_flight: usize,
     (
         mut camera,
         instances,
-        queues,
         gizzmos,
         mut resources,
         mut resource_states,
@@ -831,78 +791,58 @@ fn record_frame(
             .extend(swapchain.present_modes.iter().map(|(_, name)| *name));
     }
 
-    let states = queues.graphics.with(|queue| {
-        frame
-            .execute(
-                queue,
-                resource_states.pending.take().unwrap(),
-                &[sync.image_available[frame_in_flight].info()],
-                &[sync.render_finished[swapchain.image_index as usize].info()],
-                |cmd| {
-                    if !target.paused {
-                        record_scene(
-                            cmd,
-                            target_image,
-                            target_size,
-                            &mut camera,
-                            &sky,
-                            &instances,
-                            resources,
-                            &setting,
-                            gizzmos.as_deref(),
-                            frame_in_flight,
-                        );
-                    }
+    let states = frame
+        .execute(
+            queue,
+            resource_states.pending.take().unwrap(),
+            &[sync.image_available[frame_in_flight].info()],
+            &[sync.render_finished[swapchain.image_index as usize].info()],
+            |cmd| {
+                if !target.paused {
+                    record_scene(
+                        cmd,
+                        target_image,
+                        target_size,
+                        &mut camera,
+                        &sky,
+                        &instances,
+                        resources,
+                        &setting,
+                        gizzmos.as_deref(),
+                        frame_in_flight,
+                    );
+                }
 
-                    if let Some(ui_resources) = ui_resources.as_ref() {
-                        let ui = RasterUi::push_bindings(
-                            ui_resources.verticies[frame_in_flight].range(..),
+                if let Some(ui_resources) = ui_resources.as_ref() {
+                    let ui =
+                        RasterUi::push_bindings(ui_resources.verticies[frame_in_flight].range(..))
+                            .constant_bindings(ui_resources.font_atlas.whole_view());
+                    // The viewport tab reads the scene through a handle in its vertices.
+                    let ui = match &target.image {
+                        Some(image) => ui.storage_read(image.whole_view()),
+                        None => ui,
+                    };
+                    cmd.raster(swapchain.size.into())
+                        .color_attachment(swapchain.image(), None)
+                        .draw_indexed(
+                            ui,
+                            ui_resources.indicies[frame_in_flight]
+                                .range(..ui_resources.num_indicies),
+                            1,
+                            RasterState::default()
+                                .blends([Blend::Alpha])
+                                .backface_culling(false),
                         )
-                        .constant_bindings(ui_resources.font_atlas.whole_view());
-                        // The viewport tab reads the scene through a handle in its vertices.
-                        let ui = match &target.image {
-                            Some(image) => ui.storage_read(image.whole_view()),
-                            None => ui,
-                        };
-                        cmd.raster(swapchain.size.into())
-                            .color_attachment(swapchain.image(), None)
-                            .draw_indexed(
-                                ui,
-                                ui_resources.indicies[frame_in_flight]
-                                    .range(..ui_resources.num_indicies),
-                                1,
-                                RasterState::default()
-                                    .blends([Blend::Alpha])
-                                    .backface_culling(false),
-                            )
-                            .record("UI");
-                    }
-                    cmd.present(swapchain.image());
-                },
-            )
-            .unwrap()
-    });
+                        .record("UI");
+                }
+                cmd.present(swapchain.image());
+            },
+        )
+        .unwrap();
 
     resource_states.pending = Some(states);
-    if let Some(present) = &queues.present {
-        present
-            .present(
-                &swapchain,
-                swapchain.image_index,
-                &[&sync.render_finished[swapchain.image_index as usize]],
-            )
-            .unwrap();
-    } else {
-        queues.graphics.with(|queue| {
-            queue
-                .present(
-                    &swapchain,
-                    swapchain.image_index,
-                    &[&sync.render_finished[swapchain.image_index as usize]],
-                )
-                .unwrap()
-        });
-    }
+    let wait = [&sync.render_finished[swapchain.image_index as usize]];
+    queue.present(&swapchain, swapchain.image_index, &wait).unwrap();
 }
 
 #[derive(Resource, Default)]

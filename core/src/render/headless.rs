@@ -79,7 +79,7 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
             let mut render_world = World::new();
             render_world.run_system_once(init_world).unwrap();
             let slot = bindless::storage_slots(1).unwrap();
-            let queue = Queue::<Gfx>::new().unwrap();
+            let queue = Queue::<Gfx>::new();
             HeadlessRenderer {
                 render_world,
                 image: Image::new_storage(size.x, size.y, 1, slot).unwrap(),
