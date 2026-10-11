@@ -22,7 +22,7 @@ use lava::{
             BC5UnormBlock, BC6HUfloatBlock, BC7SrgbBlock, BC7UnormBlock, Format, R8G8B8A8Unorm,
         },
         slice::AsImage,
-        usage::Sampled,
+        usage::SampledHostCopy,
     },
 };
 
@@ -63,10 +63,10 @@ impl TextureKind {
 
 #[derive(Asset, TypePath)]
 pub enum GpuTexture {
-    Color(Image<BC7SrgbBlock, Sampled>),
-    Data(Image<BC7UnormBlock, Sampled>),
-    Normal(Image<BC5UnormBlock, Sampled>),
-    Hdr(Image<BC6HUfloatBlock, Sampled>),
+    Color(Image<BC7SrgbBlock, SampledHostCopy>),
+    Data(Image<BC7UnormBlock, SampledHostCopy>),
+    Normal(Image<BC5UnormBlock, SampledHostCopy>),
+    Hdr(Image<BC6HUfloatBlock, SampledHostCopy>),
 }
 
 /// The sampled slot of a texture asset, known as soon as its handle exists.
@@ -98,7 +98,7 @@ pub fn texture_index(id: AssetId<GpuTexture>) -> u32 {
 pub(crate) fn write_texture_slots(
     mut events: MessageReader<AssetEvent<GpuTexture>>,
     textures: Res<Assets<GpuTexture>>,
-    mut placeholder: Local<Option<Image<R8G8B8A8Unorm, Sampled>>>,
+    mut placeholder: Local<Option<Image<R8G8B8A8Unorm, SampledHostCopy>>>,
 ) {
     let mut writes = BindlessWrites::default();
     let placeholder = placeholder.get_or_insert_with(|| {
@@ -137,7 +137,7 @@ pub(crate) fn write_texture_slots(
 pub async fn read_image<F: Format>(
     header: &TextureHeader,
     reader: &mut dyn Reader,
-) -> Result<Image<F, Sampled>> {
+) -> Result<Image<F, SampledHostCopy>> {
     let mut image = Image::with_mip_levels(header.width, header.height, header.mip_levels)?;
     for level in 0..header.mip_levels {
         image.copy_from(&read_compressed(reader).await?, level)?;

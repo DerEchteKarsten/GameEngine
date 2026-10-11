@@ -26,7 +26,7 @@ use bytemuck::Zeroable;
 use glam::{UVec2, Vec2, Vec4};
 use lava::{
     bindless::BindlessHandle,
-    image::{Image, format::R8G8B8A8Srgb, usage::Sampled},
+    image::{Image, format::R8G8B8A8Srgb, usage::SampledHostCopy},
 };
 use notify::{EventKind, RecursiveMode, Watcher};
 use tracing::warn;
@@ -133,7 +133,7 @@ enum Nav {
 /// kept in one atlas. The least recently shown make room for new ones.
 struct Previews {
     /// Created with the first preview.
-    atlas: Option<Image<R8G8B8A8Srgb, Sampled>>,
+    atlas: Option<Image<R8G8B8A8Srgb, SampledHostCopy>>,
     /// The atlas cell of a texture file, by its path relative to `ASSET_DIR`.
     cells: HashMap<PathBuf, usize>,
     /// The tick each cell was last shown at, 0 for a free one.

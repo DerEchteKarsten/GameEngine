@@ -377,7 +377,7 @@ impl UiWindows {
 
 #[derive(Resource)]
 pub struct UiResources {
-    pub font_atlas: Image<format::R8Unorm, usage::Sampled>,
+    pub font_atlas: Image<format::R8Unorm, usage::SampledHostCopy>,
     pub verticies: [Buffer<UIVertex>; FRAMES_IN_FLIGHT],
     pub indicies: [Buffer<u32, StorageIndex>; FRAMES_IN_FLIGHT],
     pub num_verticies: usize,
