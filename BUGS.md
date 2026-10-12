@@ -21,14 +21,14 @@ Found in a read-only review on 2026-10-11. **Verified** means the code was read 
 - `Swapchain::drop` calls `device_wait_idle` on every recreation (`swapchain.rs:204`).
 
 ## lava: ray tracing (none of it is used yet)
-- **Entry names are rotated (verified).** `create_raytracing_pipeline(module, raygen, hit, miss, …)` (`command_buffer.rs:412`) is called as `(module, ray_any, ray_closest, ray_gen, …)` at `:280`, `:337`, `:355`, so pipeline creation fails and `.unwrap()` panics.
+- **Entry names are rotated (verified).** `create_dispatch_pipeline` (`pipeline.rs`) makes the raygen stage from `ray_any`, the closest-hit stage from `ray_closest` and the miss stage from `ray_gen`, so pipeline creation fails and `.unwrap()` panics.
 - **Shader binding table order mismatch (verified).** Groups are created raygen, hit, miss (`command_buffer.rs:430-441`), handles copied into regions laid out raygen, miss, hit (`rt_pipeline.rs:179-214`), and `cmd_trace_rays` gets the hit region as miss and vice versa (`command_buffer.rs:1809-1818`). The swaps cancel only with exactly one hit and one miss group.
 - **Acceleration structure size is the whole buffer (verified).** `.size(buffer.size())` with a nonzero offset (`acceleration_structure.rs:47-51`); should be `size_info.acceleration_structure_size`. No `Drop` (leaks), scratch ignores `minAccelerationStructureScratchOffsetAlignment`.
 - `build.rs:488` only accepts `["closest_hit","raygen"]` and `["any_hit","closest_hit","raygen"]`, so a pass with a miss shader panics; `stage_name` panics on intersection and callable stages (`build.rs:918-930`). Any-hit is parsed but never added to a hit group.
 
 ## lava: shader build and hot reload
-- A shader the driver rejects on hot reload panics the render thread: `create_module` and pipeline creation `.unwrap()` (`command_buffer.rs:403-406`, `:558-566`, `:766`). Slang errors are handled.
-- The hot-reload watcher `.unwrap()`s a compile-time absolute `SHADER_DIR` (`command_buffer.rs:447-473`) and SPIR-V is read from `OUT_DIR` at runtime (`:383`), so a binary moved off the build machine panics.
+- A shader the driver rejects on hot reload panics the watcher thread while it holds the `PipelineManager` locks (`create_module` and pipeline creation `.unwrap()` in `pipeline.rs`), which poisons them, so the render thread panics at its next pipeline lookup. Slang errors are handled.
+- With `hot-reload`, the watcher `.unwrap()`s a compile-time absolute `SHADER_DIR` (`hot_reload.rs`) and the SPIR-V is read from `OUT_DIR` at start (`PassEntry::spirv`), so a binary moved off the build machine panics. Without the feature the SPIR-V is built into the binary.
 - Plausible: a changed push-constant layout hot-reloads silently against the old Rust struct.
 - `build.rs` writes a timestamp into `bindings.rs` every run and writes it unconditionally (`build.rs:769-771`, `:915`), so any shader edit rebuilds lava, core and game.
 
