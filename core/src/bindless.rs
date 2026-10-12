@@ -5,7 +5,10 @@ use std::sync::{
 };
 
 use anyhow::{Result, anyhow};
-use lava::bindless::{BindlessHandle, NULL_HANDLE, max_storage_images};
+use lava::{
+    bindless::{NULL_HANDLE, max_storage_images},
+    image::DynamicImage,
+};
 
 /// `GpuTexture` assets: `TEXTURE_SLOTS_BASE + asset index`, up to `max_sampled_images()`.
 pub const TEXTURE_SLOTS_BASE: u32 = 1024;
@@ -67,7 +70,8 @@ pub fn init() {
     lava::image::on_drop(release).unwrap();
 }
 
-fn release(handle: BindlessHandle) {
+fn release(image: &DynamicImage) {
+    let handle = image.handle;
     // Textures are written at their slots without a handle, but never hand those out here.
     if handle.descriptor_index_set0 < TEXTURE_SLOTS_BASE {
         SAMPLED.release(handle.descriptor_index_set0);

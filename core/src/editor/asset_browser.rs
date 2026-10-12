@@ -193,7 +193,7 @@ impl Previews {
                 let pixels = read_preview(file).ok()?;
                 if self.atlas.is_none() {
                     let slot = bindless::sampled_slot().ok()?;
-                    self.atlas = Some(Image::new_sampled(ATLAS_SIZE, ATLAS_SIZE, 1, slot).ok()?);
+                    self.atlas = Some(Image::new(ATLAS_SIZE, ATLAS_SIZE).ok()?.bind_sampled(slot));
                 }
                 let cell = self.take_cell(path);
                 let size = UVec2::splat(PREVIEW_SIZE);

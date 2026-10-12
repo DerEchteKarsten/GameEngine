@@ -8,7 +8,7 @@ use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
 use glam::UVec2;
 use lava::{
     buffer::Buffer,
-    image::{Image, format::R8G8B8A8Unorm, slice::AsImage, usage::ColorAttachmentStorageTransferSrc},
+    image::{Image, format::R8G8B8A8Unorm, usage::ColorAttachmentStorageTransferSrc},
     vkobjects::queue::{FrameSlot, Gfx, PendingAccesses, Queue},
 };
 
@@ -82,7 +82,7 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
             let queue = Queue::<Gfx>::new();
             HeadlessRenderer {
                 render_world,
-                image: Image::new_storage(size.x, size.y, 1, slot).unwrap(),
+                image: Image::new(size.x, size.y).unwrap().bind_storage(slot),
                 readback: Buffer::new((size.x * size.y * 4) as usize, true).unwrap(),
                 resources: None,
                 slot: FrameSlot::new(&queue).unwrap(),

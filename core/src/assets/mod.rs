@@ -15,9 +15,7 @@ use crate::{
     assets::{
         material::{GpuMaterial, MaterialLoader},
         mesh::{GpuMesh, MeshHeader, aabb_ptr_offset, aabb_ptr_set_offset, bvh_node_child_counts},
-        texture::{
-            GpuTexture, PREVIEW_BYTES, TextureHeader, TextureKind, read_image, write_texture_slots,
-        },
+        texture::{GpuTexture, PREVIEW_BYTES, TextureHeader, read_texture, write_texture_slots},
         util::read_compressed,
     },
     scene::file::{Scene, SceneLoader},
@@ -125,12 +123,7 @@ impl AssetLoader for TextureLoader {
         reader.read_exact(bytes_of_mut(&mut header)).await?;
         // The preview is for the asset browser.
         reader.read_exact(&mut vec![0u8; PREVIEW_BYTES]).await?;
-        Ok(match TextureKind::from_raw(header.kind)? {
-            TextureKind::Color => GpuTexture::Color(read_image(&header, reader).await?),
-            TextureKind::Data => GpuTexture::Data(read_image(&header, reader).await?),
-            TextureKind::Normal => GpuTexture::Normal(read_image(&header, reader).await?),
-            TextureKind::Hdr => GpuTexture::Hdr(read_image(&header, reader).await?),
-        })
+        read_texture(&header, reader).await
     }
 
     fn extensions(&self) -> &[&str] {

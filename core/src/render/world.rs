@@ -20,7 +20,7 @@ use bytemuck::Pod;
 use glam::{Mat4, UVec2, Vec2, Vec3};
 use lava::buffer::Buffer;
 use lava::buffer::slice::BufferSlice;
-use lava::image::slice::{AsImage, ImageSlice};
+use lava::image::slice::ImageSlice;
 use lava::image::usage::ImageUsage;
 use lava::state::{Ctx, Functions, raw_vulkan};
 use lava::{AccessFlags2, ImageLayout, PipelineStageFlags2};
@@ -189,9 +189,9 @@ pub(super) fn extract_view_port(
             .size()
             .as_uvec2()
             .max(INITIAL_WINDOW_SIZE.as_uvec2());
-        let image = target.image.get_or_insert_with(|| {
-            Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap()
-        });
+        let image = target
+            .image
+            .get_or_insert_with(|| ViewPortTarget::new_image(size, swapchain.format));
         view_port.image = image.handle;
         view_port.image_size = image.extent.as_vec2();
         target.rect = view_port.rect;

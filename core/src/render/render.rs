@@ -26,7 +26,7 @@ use bevy::{
 };
 use glam::{Mat4, UVec2, Vec2, Vec3, Vec4, Vec4Swizzles};
 use lava::{
-    bindless::{BindlessHandle, BindlessWrites, NULL_HANDLE},
+    bindless::{BindlessHandle, NULL_HANDLE},
     buffer::{
         Buffer,
         usage::{Index, Indirect, StorageIndirect},
@@ -35,9 +35,9 @@ use lava::{
     image::{
         Image,
         format::{
-            self, ColorAspect, D32Sfloat, Format, R8Unorm, R16G16B16A16Sfloat, R32G32B32A32Uint,
+            self, ColorAspect, D32Sfloat, HasTexels, R8Unorm, R16G16B16A16Sfloat, R32G32B32A32Uint,
         },
-        slice::{AsImage, ImageView},
+        slice::ImageView,
         usage::{
             ColorAttachmentSampled, ColorAttachmentSampledStorageTransferDst,
             ColorAttachmentStorageTransferDst, DepthAttachmentSampled, IsColorAttachment,
@@ -108,7 +108,7 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub fn image(&self) -> ImageView<'_, format::Swapchain, ColorAttachmentStorageTransferDst> {
+    pub fn image(&self) -> ImageView<'_, format::Dynamic, ColorAttachmentStorageTransferDst> {
         self.swpachain.image(self.image_index)
     }
 }
@@ -167,9 +167,7 @@ pub fn resize_swapchain(
             }
             bindless::storage_slots(num_images as u32).unwrap()
         };
-        let mut writes = BindlessWrites::default();
-        swapchain.swpachain.bind_storage(first, &mut writes);
-        writes.submit();
+        swapchain.swpachain.bind_storage(first);
     }
 }
 
@@ -215,9 +213,7 @@ pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
     )
     .unwrap();
     let first = bindless::storage_slots(swpachain.num_images() as u32).unwrap();
-    let mut writes = BindlessWrites::default();
-    swpachain.bind_storage(first, &mut writes);
-    writes.submit();
+    swpachain.bind_storage(first);
     let swapchain = Swapchain {
         image_index: 0,
         swpachain,
@@ -441,35 +437,19 @@ impl RenderResources {
         let resources = resources.get_or_insert_with(|| {
             let depth_size = target_size.max(INITIAL_WINDOW_SIZE.as_uvec2());
             RenderResources {
-                depth_attachment: Image::new_sampled(
-                    depth_size.x,
-                    depth_size.y,
-                    1,
-                    bindless::sampled_slot().unwrap(),
-                )
-                .unwrap(),
-                gbuffer: Image::new_sampled(
-                    depth_size.x,
-                    depth_size.y,
-                    1,
-                    bindless::sampled_slot().unwrap(),
-                )
-                .unwrap(),
-                accum: Image::new_storage(
-                    depth_size.x,
-                    depth_size.y,
-                    1,
-                    bindless::storage_slots(1).unwrap(),
-                )
-                .unwrap(),
-                revealage: Image::new_unified(
-                    depth_size.x,
-                    depth_size.y,
-                    1,
-                    bindless::storage_slots(1).unwrap(),
-                    bindless::sampled_slot().unwrap(),
-                )
-                .unwrap(),
+                depth_attachment: Image::new(depth_size.x, depth_size.y)
+                    .unwrap()
+                    .bind_sampled(bindless::sampled_slot().unwrap()),
+                gbuffer: Image::new(depth_size.x, depth_size.y)
+                    .unwrap()
+                    .bind_sampled(bindless::sampled_slot().unwrap()),
+                accum: Image::new(depth_size.x, depth_size.y)
+                    .unwrap()
+                    .bind_storage(bindless::storage_slots(1).unwrap()),
+                revealage: Image::new(depth_size.x, depth_size.y)
+                    .unwrap()
+                    .bind_sampled(bindless::sampled_slot().unwrap())
+                    .bind_storage(bindless::storage_slots(1).unwrap()),
                 meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
                 blended_meshlets: Buffer::new(256 * 1024, false).unwrap(),
                 outlined_meshlets: Buffer::new(256 * 1024, false).unwrap(),
@@ -486,29 +466,31 @@ impl RenderResources {
             let size = depth_extent.max(target_size).max(min_size);
             let old = std::mem::replace(
                 &mut resources.depth_attachment,
-                Image::new_sampled(size.x, size.y, 1, bindless::sampled_slot().unwrap()).unwrap(),
+                Image::new(size.x, size.y)
+                    .unwrap()
+                    .bind_sampled(bindless::sampled_slot().unwrap()),
             );
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.gbuffer,
-                Image::new_sampled(size.x, size.y, 1, bindless::sampled_slot().unwrap()).unwrap(),
+                Image::new(size.x, size.y)
+                    .unwrap()
+                    .bind_sampled(bindless::sampled_slot().unwrap()),
             );
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.accum,
-                Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap(),
+                Image::new(size.x, size.y)
+                    .unwrap()
+                    .bind_storage(bindless::storage_slots(1).unwrap()),
             );
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.revealage,
-                Image::new_unified(
-                    size.x,
-                    size.y,
-                    1,
-                    bindless::storage_slots(1).unwrap(),
-                    bindless::sampled_slot().unwrap(),
-                )
-                .unwrap(),
+                Image::new(size.x, size.y)
+                    .unwrap()
+                    .bind_sampled(bindless::sampled_slot().unwrap())
+                    .bind_storage(bindless::storage_slots(1).unwrap()),
             );
             frame.retire(old);
             resources.fresh = true;
@@ -522,7 +504,7 @@ impl RenderResources {
 }
 
 pub(super) fn record_scene<
-    F: Format<Texels = [f32; 4]> + ColorAspect,
+    F: HasTexels<[f32; 4]> + ColorAspect,
     U: IsColorAttachment + IsStorage,
 >(
     cmd: &mut CommandBuffer,
@@ -769,8 +751,7 @@ fn record_frame(
         && extent.cmplt(target_size).any()
     {
         let size = extent.max(target_size).max(UVec2::from(swapchain.size));
-        let new =
-            Image::new_storage(size.x, size.y, 1, bindless::storage_slots(1).unwrap()).unwrap();
+        let new = ViewPortTarget::new_image(size, swapchain.format);
         if let Some(old) = target.image.replace(new) {
             frame.retire(old);
         }
@@ -848,10 +829,23 @@ fn record_frame(
 #[derive(Resource, Default)]
 pub struct ViewPortTarget {
     /// The swapchain image's usage, since it stands in for it.
-    pub image: Option<Image<format::Swapchain, ColorAttachmentStorageTransferDst>>,
+    pub image: Option<Image<format::Dynamic, ColorAttachmentStorageTransferDst>>,
     pub rect: Rect,
     /// Copied from `ViewPort::paused`: skip the scene passes.
     pub paused: bool,
+}
+
+impl ViewPortTarget {
+    /// An image of `size` in the swapchain's `format`, bound in the storage set.
+    pub(super) fn new_image(
+        size: UVec2,
+        format: format::Dynamic,
+    ) -> Image<format::Dynamic, ColorAttachmentStorageTransferDst> {
+        let usage = ColorAttachmentStorageTransferDst;
+        Image::with_params(format, usage, size.x, size.y, 1)
+            .unwrap()
+            .bind_storage(bindless::storage_slots(1).unwrap())
+    }
 }
 
 #[allow(non_snake_case)]

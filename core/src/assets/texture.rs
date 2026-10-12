@@ -1,5 +1,5 @@
 //! GPU texture asset: the baked `.tex` file (BC7/BC5/BC6H mips plus a browser preview), its loader, its bindless slot, and mip baking and block compression of glTF images and OpenEXR files.
-use std::{io::Write, path::Path};
+use std::{io::Write, iter, path::Path};
 
 use anyhow::{Result, bail};
 use bevy::{
@@ -15,15 +15,9 @@ use bytemuck::{Pod, Zeroable, bytes_of, bytes_of_mut};
 use futures::AsyncReadExt;
 use half::f16;
 use lava::{
-    bindless::{BindlessWrites, NULL_HANDLE, max_sampled_images},
-    image::{
-        Image,
-        format::{
-            BC5UnormBlock, BC6HUfloatBlock, BC7SrgbBlock, BC7UnormBlock, Format, R8G8B8A8Unorm,
-        },
-        slice::AsImage,
-        usage::SampledHostCopy,
-    },
+    VkFormat,
+    bindless::{self, BindlessHandle, NULL_HANDLE, max_sampled_images},
+    image::{Image, format::Dynamic, usage::SampledHostCopy},
 };
 
 use crate::{
@@ -59,15 +53,21 @@ impl TextureKind {
     fn srgb(self) -> bool {
         self == Self::Color
     }
+
+    /// The block-compressed format the bake stores this kind in.
+    fn format(self) -> VkFormat {
+        match self {
+            Self::Color => VkFormat::BC7_SRGB_BLOCK,
+            Self::Data => VkFormat::BC7_UNORM_BLOCK,
+            Self::Normal => VkFormat::BC5_UNORM_BLOCK,
+            Self::Hdr => VkFormat::BC6H_UFLOAT_BLOCK,
+        }
+    }
 }
 
+/// A texture in the format its `TextureKind` picks.
 #[derive(Asset, TypePath)]
-pub enum GpuTexture {
-    Color(Image<BC7SrgbBlock, SampledHostCopy>),
-    Data(Image<BC7UnormBlock, SampledHostCopy>),
-    Normal(Image<BC5UnormBlock, SampledHostCopy>),
-    Hdr(Image<BC6HUfloatBlock, SampledHostCopy>),
-}
+pub struct GpuTexture(pub Image<Dynamic, SampledHostCopy>);
 
 /// The sampled slot of a texture asset, known as soon as its handle exists.
 fn texture_slot(id: AssetId<GpuTexture>) -> Option<u32> {
@@ -98,51 +98,57 @@ pub fn texture_index(id: AssetId<GpuTexture>) -> u32 {
 pub(crate) fn write_texture_slots(
     mut events: MessageReader<AssetEvent<GpuTexture>>,
     textures: Res<Assets<GpuTexture>>,
-    mut placeholder: Local<Option<Image<R8G8B8A8Unorm, SampledHostCopy>>>,
+    // In the textures' format type, so both go into one `bind`.
+    mut placeholder: Local<Option<Image<Dynamic, SampledHostCopy>>>,
 ) {
-    let mut writes = BindlessWrites::default();
     let placeholder = placeholder.get_or_insert_with(|| {
-        let mut image = Image::new(1, 1).unwrap();
+        let format = Dynamic(VkFormat::R8G8B8A8_UNORM);
+        let mut image = Image::with_params(format, SampledHostCopy, 1, 1, 1).unwrap();
         image.copy_from(&[u8::MAX; 4], 0).unwrap();
-        for slot in TEXTURE_SLOTS_BASE..max_sampled_images() {
-            writes.sampled(image.whole_view(), slot);
-        }
+        let slots = TEXTURE_SLOTS_BASE..max_sampled_images();
+        bindless::bind(
+            iter::repeat(image.whole_view()),
+            slots.map(BindlessHandle::sampled),
+        );
         image
     });
-    for event in events.read() {
-        match event {
+    let writes: Vec<_> = events
+        .read()
+        .filter_map(|event| match event {
             AssetEvent::Added { id } | AssetEvent::Modified { id } => {
                 let index = texture_index(*id);
-                match textures.get(*id) {
-                    Some(_) if index == NULL_HANDLE => {}
-                    Some(GpuTexture::Color(image)) => writes.sampled(image.whole_view(), index),
-                    Some(GpuTexture::Data(image)) => writes.sampled(image.whole_view(), index),
-                    Some(GpuTexture::Normal(image)) => writes.sampled(image.whole_view(), index),
-                    Some(GpuTexture::Hdr(image)) => writes.sampled(image.whole_view(), index),
-                    None => {}
-                }
+                let texture = textures.get(*id).filter(|_| index != NULL_HANDLE)?;
+                Some((texture.0.whole_view(), index))
             }
-            AssetEvent::Removed { id } => {
-                if let Some(slot) = texture_slot(*id).filter(|slot| *slot < max_sampled_images()) {
-                    writes.sampled(placeholder.whole_view(), slot);
-                }
-            }
-            _ => {}
-        }
-    }
-    writes.submit();
+            AssetEvent::Removed { id } => texture_slot(*id)
+                .filter(|slot| *slot < max_sampled_images())
+                .map(|slot| (placeholder.whole_view(), slot)),
+            _ => None,
+        })
+        .collect();
+    bindless::bind(
+        writes.iter().map(|(image, _)| *image),
+        writes
+            .iter()
+            .map(|(_, slot)| BindlessHandle::sampled(*slot)),
+    );
 }
 
-/// Each compressed mip is uploaded before the next is read.
-pub async fn read_image<F: Format>(
-    header: &TextureHeader,
-    reader: &mut dyn Reader,
-) -> Result<Image<F, SampledHostCopy>> {
-    let mut image = Image::with_mip_levels(header.width, header.height, header.mip_levels)?;
+/// Reads the mips that follow the preview of a `.tex` file. Each compressed mip is uploaded
+/// before the next is read.
+pub async fn read_texture(header: &TextureHeader, reader: &mut dyn Reader) -> Result<GpuTexture> {
+    let format = TextureKind::from_raw(header.kind)?.format();
+    let mut image = Image::with_params(
+        Dynamic(format),
+        SampledHostCopy,
+        header.width,
+        header.height,
+        header.mip_levels,
+    )?;
     for level in 0..header.mip_levels {
         image.copy_from(&read_compressed(reader).await?, level)?;
     }
-    Ok(image)
+    Ok(GpuTexture(image))
 }
 
 #[repr(C)]

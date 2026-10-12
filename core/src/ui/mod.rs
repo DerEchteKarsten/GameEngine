@@ -81,7 +81,7 @@ use lava::{
         Buffer,
         usage::{StorageIndex, StorageIndirect},
     },
-    image::{Image, format, slice::AsImage, usage},
+    image::{Image, format, usage},
 };
 use ron::ser::PrettyConfig;
 use serde::{Deserialize, Serialize};
@@ -520,12 +520,8 @@ impl UiContext {
             }
         }
         atlas_data[0] = 255;
-        let mut font_atlas = Image::new_sampled(
-            Self::ATLAS_SIZE.x,
-            Self::ATLAS_SIZE.y,
-            1,
-            bindless::sampled_slot()?,
-        )?;
+        let mut font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y)?
+            .bind_sampled(bindless::sampled_slot()?);
         font_atlas.copy_from(&atlas_data, 0)?;
 
         Ok(UiResources {
