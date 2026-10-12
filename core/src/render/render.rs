@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     mem::offset_of,
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bevy::{
@@ -105,6 +105,50 @@ pub struct Swapchain {
     pub swpachain: lava::vkobjects::swapchain::Swapchain,
     pub surface: vkobjects::surface::Surface,
     pub image_index: u32,
+    /// Swapchains `recreate_swapchain` replaced, with the `render_finished` semaphores their
+    /// last presents wait on, until `render` retires them with its frame.
+    retired: Vec<(lava::vkobjects::swapchain::Swapchain, Vec<Semaphore<Binary>>)>,
+    /// The window has no extent to present to: `render` skips its frames.
+    pub minimized: bool,
+}
+
+impl Drop for Swapchain {
+    fn drop(&mut self) {
+        // The last frames may still use the swapchain: only a retired one can go without.
+        if let Err(err) = lava::wait_idle() {
+            error!("failed to wait for the device before dropping the swapchain: {err}");
+        }
+    }
+}
+
+/// The least time between two frames of the render world, slept before each: the frame
+/// limit the `RenderPlugin` was given for an open and for a minimised window.
+#[derive(Resource)]
+pub struct FrameLimit {
+    pub open: Option<Duration>,
+    pub minimized: Option<Duration>,
+    last: Instant,
+}
+
+impl FrameLimit {
+    pub fn new(open: Option<Duration>, minimized: Option<Duration>) -> Self {
+        Self {
+            open,
+            minimized,
+            last: Instant::now(),
+        }
+    }
+
+    /// Sleeps until the frame may start.
+    fn wait(&mut self, minimized: bool) {
+        let limit = if minimized { self.minimized } else { self.open };
+        if let Some(limit) = limit
+            && let Some(left) = limit.checked_sub(self.last.elapsed())
+        {
+            std::thread::sleep(left);
+        }
+        self.last = Instant::now();
+    }
 }
 
 impl Swapchain {
@@ -129,10 +173,13 @@ pub fn aquire_swapchain_image(
     swapchain.image_index = match swapchain.aquire_image(&sync.image_available[frame], None) {
         Ok(index) => index,
         // The surface changed under the swapchain (a resize the window hasn't reported yet):
-        // a swapchain of the surface's current extent can be acquired from.
+        // a swapchain of the surface's current extent can be acquired from, unless the
+        // window was minimised since the extract, which skips this frame.
         Err(lava::Error::Vulkan(lava::VkResult::ERROR_OUT_OF_DATE_KHR)) => {
             let size = swapchain.swpachain.size;
-            recreate_swapchain(&mut swapchain, &mut sync, size).unwrap();
+            if !recreate_swapchain(&mut swapchain, &mut sync, size) {
+                return;
+            }
             swapchain
                 .aquire_image(&sync.image_available[frame], None)
                 .unwrap()
@@ -142,31 +189,48 @@ pub fn aquire_swapchain_image(
 }
 
 /// Recreates the swapchain at `size`, binds its images (at the old slots unless their count
-/// changed) and gives every image a `render_finished` semaphore.
+/// changed), gives every image a new `render_finished` semaphore and keeps the old swapchain
+/// with its semaphores for `render` to retire: a present of the old one may still wait on
+/// them. Sets `minimized` instead, and returns false, when the window has no extent to
+/// create one for.
 fn recreate_swapchain(
     swapchain: &mut Swapchain,
     sync: &mut SynchronizationResources,
-    size: [u32; 2],
-) -> lava::Result<()> {
+    size: UVec2,
+) -> bool {
     let old_images = swapchain.num_images() as u32;
     let old_first = swapchain.swpachain.image(0).handle.descriptor_index_set1;
     let Swapchain {
-        swpachain, surface, ..
+        swpachain,
+        surface,
+        retired,
+        minimized,
+        ..
     } = swapchain;
-    swpachain.recreate(surface, size)?;
+    match swpachain.recreate(surface, size) {
+        Ok(old) => {
+            let num_images = swpachain.num_images();
+            let semaphores = (0..num_images).map(|_| Semaphore::new().unwrap());
+            let old_semaphores = std::mem::replace(&mut sync.render_finished, semaphores.collect());
+            retired.push((old, old_semaphores));
+        }
+        Err(_) if surface.is_minimised() => {
+            *minimized = true;
+            return false;
+        }
+        Err(err) => panic!("failed to recreate the swapchain: {err}"),
+    }
+    *minimized = false;
     // The new images are unbound, and their count can change with the present mode.
     let num_images = swpachain.num_images();
     let first = if num_images as u32 == old_images {
         old_first
     } else {
         bindless::release_storage_slots(old_first, old_images);
-        while sync.render_finished.len() < num_images {
-            sync.render_finished.push(Semaphore::new().unwrap());
-        }
         bindless::storage_slots(num_images as u32).unwrap()
     };
     swpachain.bind_storage(first);
-    Ok(())
+    true
 }
 
 pub fn resize_swapchain(
@@ -184,12 +248,17 @@ pub fn resize_swapchain(
         recreate = true;
     }
     let size = window.physical_size();
-    if size.to_array() != swapchain.swpachain.size {
+    if size.x == 0 || size.y == 0 {
+        swapchain.minimized = true;
+        return;
+    }
+    // A swapchain the window was minimised with has to be made again when it comes back.
+    if size != swapchain.swpachain.size || swapchain.minimized {
         info!("Resized Swapchain");
         recreate = true;
     }
     if recreate {
-        recreate_swapchain(swapchain, &mut sync, size.to_array()).unwrap();
+        recreate_swapchain(swapchain, &mut sync, size);
     }
 }
 
@@ -231,7 +300,7 @@ pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
     let mut swpachain = vkobjects::swapchain::Swapchain::new(
         &mut surface,
         None,
-        Some(INITIAL_WINDOW_SIZE.as_uvec2().to_array()),
+        Some(INITIAL_WINDOW_SIZE.as_uvec2()),
     )
     .unwrap();
     let first = bindless::storage_slots(swpachain.num_images() as u32).unwrap();
@@ -240,6 +309,8 @@ pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
         image_index: 0,
         swpachain,
         surface,
+        retired: Vec::new(),
+        minimized: false,
     };
     let num_images = swapchain.num_images();
     cmd.insert_resource(swapchain);
@@ -421,6 +492,11 @@ type RenderParams<'w, 's> = (
 );
 
 pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'static, 'static>>) {
+    let minimized = world.resource::<Swapchain>().minimized;
+    world.resource_mut::<FrameLimit>().wait(minimized);
+    if minimized {
+        return;
+    }
     world.resource_scope(|world, mut slots: Mut<FrameSlots>| {
         let FrameSlots { queue, slots } = &mut *slots;
         let frame_in_flight = {
@@ -434,12 +510,20 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
             slot.set_timestamps(timings.timestamps);
             slot.set_counters(timings.counters.clone());
         }
-        let frame = slot.begin().unwrap();
+        let mut frame = slot.begin().unwrap();
         #[cfg(feature = "profiling")]
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
             timings.slots[frame_in_flight].read_back(&frame);
         }
         world.run_schedule(RenderSystems::AquireSwapchainImage);
+        let mut swapchain = world.resource_mut::<Swapchain>();
+        if swapchain.minimized {
+            // Minimised since the extract: the frame is dropped unrecorded.
+            return;
+        }
+        for old in swapchain.retired.drain(..) {
+            frame.retire(old);
+        }
         world.run_schedule(RenderSystems::PreRender);
         record_frame(
             frame,

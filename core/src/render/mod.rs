@@ -1,6 +1,6 @@
 //! Windowed render sub-app (pipelined): schedules, main-world extraction and Vulkan initialization.
 use crate::render::{
-    render::{RenderPassesPlugin, resize_swapchain},
+    render::{FrameLimit, RenderPassesPlugin, resize_swapchain},
     world::WorldPlugin,
 };
 use async_std::channel::{Receiver, Sender};
@@ -22,7 +22,10 @@ use bevy::{
     utils::default,
     window::{PrimaryWindow, RawHandleWrapperHolder},
 };
-use std::ops::{Deref, DerefMut};
+use std::{
+    ops::{Deref, DerefMut},
+    time::Duration,
+};
 
 pub mod extract_param;
 pub mod headless;
@@ -278,8 +281,22 @@ fn init(
     )));
 }
 
-#[derive(Default, Debug)]
-pub struct RenderPlugin;
+#[derive(Debug)]
+pub struct RenderPlugin {
+    /// The least time between two frames while the window is open; `None` is unlimited.
+    pub min_frame_time: Option<Duration>,
+    /// The same while the window is minimised, when nothing is rendered.
+    pub min_frame_time_minimized: Option<Duration>,
+}
+
+impl Default for RenderPlugin {
+    fn default() -> Self {
+        Self {
+            min_frame_time: None,
+            min_frame_time_minimized: Some(Duration::from_millis(50)),
+        }
+    }
+}
 
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
@@ -287,6 +304,10 @@ impl Plugin for RenderPlugin {
         app.init_resource::<ScratchMainWorld>();
 
         let mut render_app = SubApp::new();
+        render_app.insert_resource(FrameLimit::new(
+            self.min_frame_time,
+            self.min_frame_time_minimized,
+        ));
         render_app.update_schedule = Some(Render.intern());
         let mut extract_schedule = Schedule::new(ExtractSchedule);
         extract_schedule.set_build_settings(ScheduleBuildSettings {
