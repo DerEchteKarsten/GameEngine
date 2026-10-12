@@ -3,8 +3,6 @@
 Found in a read-only review on 2026-10-11. **Verified** means the code was read and the bug confirmed; **plausible** means it follows from the code but wasn't reproduced. Line numbers are from that date. Delete an entry when it's fixed.
 
 ## lava: resources and device setup
-- **Sub-range image views leak and bind the wrong mip.** `create_new_view` (`image/slice.rs:144-172`) never destroys the view (`ImageView` is `Copy`, no `Drop`), and the view keeps the parent's bindless `handle`, so a pass bound to mip N reads or writes mip 0.
-- **Barriers and layout transitions always cover every mip and layer** (`command_buffer.rs:2073-2079`), so one mip can't be rendered while another is sampled.
 - **Host image copy is enabled without a support check (verified).** The feature struct is always chained (`state.rs:476-484`), the extension only with rebar (`state.rs:380`), and support is never queried (`physical_device.rs:97-154`).
 - `extended_dynamic_state3` is required and its features requested without a support query (`state.rs:377`, `:467-473`); the EDS2 logic-op feature is requested without its extension (`:474`). None of these states is used.
 - Devices without mesh shaders aren't rejected; `Functions::mesh().unwrap()` panics later (`command_buffer.rs:1461`).

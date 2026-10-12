@@ -103,7 +103,7 @@ pub(crate) fn write_texture_slots(
 ) {
     let placeholder = placeholder.get_or_insert_with(|| {
         let format = Dynamic(VkFormat::R8G8B8A8_UNORM);
-        let mut image = Image::with_params(format, SampledHostCopy, 1, 1, 1).unwrap();
+        let mut image = Image::with_params(format, SampledHostCopy, glam::UVec2::ONE, 1).unwrap();
         image.copy_from(&[u8::MAX; 4], 0).unwrap();
         let slots = TEXTURE_SLOTS_BASE..max_sampled_images();
         bindless::bind(
@@ -141,8 +141,7 @@ pub async fn read_texture(header: &TextureHeader, reader: &mut dyn Reader) -> Re
     let mut image = Image::with_params(
         Dynamic(format),
         SampledHostCopy,
-        header.width,
-        header.height,
+        glam::UVec2::new(header.width, header.height),
         header.mip_levels,
     )?;
     for level in 0..header.mip_levels {
@@ -395,7 +394,7 @@ fn mip_chain<T: Copy>(
 }
 
 fn mip_size(width: u32, height: u32, level: usize) -> glam::UVec2 {
-    lava::image::mip_extent(glam::UVec2::new(width, height), level as u32)
+    <lava::image::D2 as lava::image::Dim>::mip_extent(glam::UVec2::new(width, height), level as u32)
 }
 
 /// Fits the texture to a `PREVIEW_SIZE` square with the nearest texels of the smallest mip

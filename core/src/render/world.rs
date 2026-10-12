@@ -192,8 +192,8 @@ pub(super) fn extract_view_port(
         let image = target
             .image
             .get_or_insert_with(|| ViewPortTarget::new_image(size, swapchain.format));
-        view_port.image = image.handle;
-        view_port.image_size = image.extent.as_vec2();
+        view_port.image = image.handle();
+        view_port.image_size = image.extent().as_vec2();
         target.rect = view_port.rect;
         target.paused = view_port.paused;
     } else {

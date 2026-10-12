@@ -193,7 +193,11 @@ impl Previews {
                 let pixels = read_preview(file).ok()?;
                 if self.atlas.is_none() {
                     let slot = bindless::sampled_slot().ok()?;
-                    self.atlas = Some(Image::new(ATLAS_SIZE, ATLAS_SIZE).ok()?.bind_sampled(slot));
+                    self.atlas = Some(
+                        Image::new(glam::UVec2::splat(ATLAS_SIZE))
+                            .ok()?
+                            .bind_sampled(slot),
+                    );
                 }
                 let cell = self.take_cell(path);
                 let size = UVec2::splat(PREVIEW_SIZE);
@@ -209,7 +213,7 @@ impl Previews {
         };
         // Half a texel in from the cell border, so filtering doesn't reach the neighbours.
         Some((
-            self.atlas.as_ref()?.handle,
+            self.atlas.as_ref()?.handle(),
             (origin(cell).as_vec2() + 0.5) / ATLAS_SIZE as f32,
             Vec2::splat((PREVIEW_SIZE - 1) as f32 / ATLAS_SIZE as f32),
         ))

@@ -520,8 +520,7 @@ impl UiContext {
             }
         }
         atlas_data[0] = 255;
-        let mut font_atlas = Image::new(Self::ATLAS_SIZE.x, Self::ATLAS_SIZE.y)?
-            .bind_sampled(bindless::sampled_slot()?);
+        let mut font_atlas = Image::new(Self::ATLAS_SIZE)?.bind_sampled(bindless::sampled_slot()?);
         font_atlas.copy_from(&atlas_data, 0)?;
 
         Ok(UiResources {

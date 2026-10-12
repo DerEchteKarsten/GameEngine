@@ -437,16 +437,16 @@ impl RenderResources {
         let resources = resources.get_or_insert_with(|| {
             let depth_size = target_size.max(INITIAL_WINDOW_SIZE.as_uvec2());
             RenderResources {
-                depth_attachment: Image::new(depth_size.x, depth_size.y)
+                depth_attachment: Image::new(depth_size)
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap()),
-                gbuffer: Image::new(depth_size.x, depth_size.y)
+                gbuffer: Image::new(depth_size)
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap()),
-                accum: Image::new(depth_size.x, depth_size.y)
+                accum: Image::new(depth_size)
                     .unwrap()
                     .bind_storage(bindless::storage_slots(1).unwrap()),
-                revealage: Image::new(depth_size.x, depth_size.y)
+                revealage: Image::new(depth_size)
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap())
                     .bind_storage(bindless::storage_slots(1).unwrap()),
@@ -461,33 +461,33 @@ impl RenderResources {
             }
         });
 
-        let depth_extent = resources.depth_attachment.extent;
+        let depth_extent = resources.depth_attachment.extent();
         if depth_extent.cmplt(target_size).any() {
             let size = depth_extent.max(target_size).max(min_size);
             let old = std::mem::replace(
                 &mut resources.depth_attachment,
-                Image::new(size.x, size.y)
+                Image::new(size)
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap()),
             );
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.gbuffer,
-                Image::new(size.x, size.y)
+                Image::new(size)
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap()),
             );
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.accum,
-                Image::new(size.x, size.y)
+                Image::new(size)
                     .unwrap()
                     .bind_storage(bindless::storage_slots(1).unwrap()),
             );
             frame.retire(old);
             let old = std::mem::replace(
                 &mut resources.revealage,
-                Image::new(size.x, size.y)
+                Image::new(size)
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap())
                     .bind_storage(bindless::storage_slots(1).unwrap()),
@@ -747,7 +747,7 @@ fn record_frame(
     let Some(resources) = resources.as_mut() else {
         return;
     };
-    if let Some(extent) = target.image.as_ref().map(|image| image.extent)
+    if let Some(extent) = target.image.as_ref().map(|image| image.extent())
         && extent.cmplt(target_size).any()
     {
         let size = extent.max(target_size).max(UVec2::from(swapchain.size));
@@ -842,7 +842,7 @@ impl ViewPortTarget {
         format: format::Dynamic,
     ) -> Image<format::Dynamic, ColorAttachmentStorageTransferDst> {
         let usage = ColorAttachmentStorageTransferDst;
-        Image::with_params(format, usage, size.x, size.y, 1)
+        Image::with_params(format, usage, size, 1)
             .unwrap()
             .bind_storage(bindless::storage_slots(1).unwrap())
     }
