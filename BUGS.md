@@ -3,35 +3,16 @@
 Found in a read-only review on 2026-10-11. **Verified** means the code was read and the bug confirmed; **plausible** means it follows from the code but wasn't reproduced. Line numbers are from that date. Delete an entry when it's fixed.
 
 ## lava: resources and device setup
-- **Host image copy is enabled without a support check (verified).** The feature struct is always chained (`state.rs:476-484`), the extension only with rebar (`state.rs:380`), and support is never queried (`physical_device.rs:97-154`).
-- `extended_dynamic_state3` is required and its features requested without a support query (`state.rs:377`, `:467-473`); the EDS2 logic-op feature is requested without its extension (`:474`). None of these states is used.
-- Devices without mesh shaders aren't rejected; `Functions::mesh().unwrap()` panics later (`command_buffer.rs:1461`).
-- `Buffer::raw` replaces the driver's alignment with the requested one instead of taking the max (`buffer/mod.rs:91-93`), which can lower it.
 - Unsound safe API: `BufferSlice` is `Copy` but has `IndexMut`/`copy_from`/`as_slice` over mapped memory (`buffer/mod.rs:51-62`, `buffer/slice.rs:177-190`), so aliased `&mut` is possible; `cast` on images and views can retag usage (`image/slice.rs:61`).
-- Plausible: `requiresDedicatedAllocation` is never queried (`image/mod.rs`).
-- Plausible: bindless layout counts use limits that aren't the update-after-bind ones (`bindless.rs:188`, `:211`).
-- Samplers 0 and 1 leave `max_lod` at 0, so they can't sample mips (`bindless.rs:135-163`).
 
 ## lava: swapchain
-- **Acquire panics on `ERROR_OUT_OF_DATE` (verified).** `aquire_image(...).unwrap()` in core (`render/render.rs:151-153`); present handles it (`queue.rs:620`).
-- Swapchain capabilities are stale and the extent isn't clamped: core never calls `refresh_capabilities` (`swapchain.rs:73-75`, `render/render.rs:156-197`), so a minimised (0x0) window panics.
-- The global swapchain `FORMAT` is set only once (`swapchain.rs:23`, `:68`); swapchain images always get STORAGE usage without checking the surface's supported usages.
-- `Swapchain::drop` calls `device_wait_idle` on every recreation (`swapchain.rs:204`).
+- A minimised window (an extent of 0 in the surface capabilities) makes `Swapchain::new` fail, which core `unwrap`s in `resize_swapchain` and after an out-of-date acquire (`render/render.rs`); core should skip the frame instead.
+- `Swapchain::drop` calls `device_wait_idle` on every recreation (`swapchain.rs`); retiring the old swapchain with its last frame would avoid the stall.
 
-## lava: ray tracing (none of it is used yet)
-- **Entry names are rotated (verified).** `create_dispatch_pipeline` (`pipeline.rs`) makes the raygen stage from `ray_any`, the closest-hit stage from `ray_closest` and the miss stage from `ray_gen`, so pipeline creation fails and `.unwrap()` panics.
-- **Shader binding table order mismatch (verified).** Groups are created raygen, hit, miss (`command_buffer.rs:430-441`), handles copied into regions laid out raygen, miss, hit (`rt_pipeline.rs:179-214`), and `cmd_trace_rays` gets the hit region as miss and vice versa (`command_buffer.rs:1809-1818`). The swaps cancel only with exactly one hit and one miss group.
-- **Acceleration structure size is the whole buffer (verified).** `.size(buffer.size())` with a nonzero offset (`acceleration_structure.rs:47-51`); should be `size_info.acceleration_structure_size`. No `Drop` (leaks), scratch ignores `minAccelerationStructureScratchOffsetAlignment`.
-- `build.rs:488` only accepts `["closest_hit","raygen"]` and `["any_hit","closest_hit","raygen"]`, so a pass with a miss shader panics; `stage_name` panics on intersection and callable stages (`build.rs:918-930`). Any-hit is parsed but never added to a hit group.
+## lava: ray tracing (none of it is used yet, and nothing tests it)
+- The bindless layout has no acceleration structure binding and no shader reaches one, so a ray tracing pass can't trace anything yet; `stage_name` panics on intersection and callable stages (`build.rs`).
 
 ## lava: shader build and hot reload
-- A shader the driver rejects on hot reload panics the watcher thread while it holds the `PipelineManager` locks (`create_module` and pipeline creation `.unwrap()` in `pipeline.rs`), which poisons them, so the render thread panics at its next pipeline lookup. Slang errors are handled.
-- With `hot-reload`, the watcher `.unwrap()`s a compile-time absolute `SHADER_DIR` (`hot_reload.rs`) and the SPIR-V is read from `OUT_DIR` at start (`PassEntry::spirv`), so a binary moved off the build machine panics. Without the feature the SPIR-V is built into the binary.
-- Plausible: a changed push-constant layout hot-reloads silently against the old Rust struct.
-- `build.rs` writes a timestamp into `bindings.rs` every run and writes it unconditionally (`build.rs:769-771`, `:915`), so any shader edit rebuilds lava, core and game.
-
-## lava: tests
-- `pass_queries_count_passes_and_renderings` (`tests/gpu_headless.rs:441`) fails: pipeline statistics report 0 compute invocations where 4096 are expected. It fails without any local change too.
 
 ## core: renderer
 - **GPU use-after-free on unload and hot reload (verified).** `GpuMesh.buffer` (`assets/mesh.rs:56-59`) and texture images are freed on drop, without `Frame::retire`, while frames in flight read them; `GpuMaterial::drop` returns its slot at once (`assets/material.rs:211-216`), so a pending frame can read another material. Rebaking with the editor open triggers it.

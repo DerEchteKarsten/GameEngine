@@ -121,13 +121,52 @@ impl std::ops::Deref for Swapchain {
 }
 
 pub fn aquire_swapchain_image(
-    sync: Res<SynchronizationResources>,
+    mut sync: ResMut<SynchronizationResources>,
     frame: Res<FrameCount>,
     mut swapchain: ResMut<Swapchain>,
 ) {
-    swapchain.image_index = swapchain
-        .aquire_image(&sync.image_available[frame.frame_in_flight()], None)
-        .unwrap();
+    let frame = frame.frame_in_flight();
+    swapchain.image_index = match swapchain.aquire_image(&sync.image_available[frame], None) {
+        Ok(index) => index,
+        // The surface changed under the swapchain (a resize the window hasn't reported yet):
+        // a swapchain of the surface's current extent can be acquired from.
+        Err(lava::Error::Vulkan(lava::VkResult::ERROR_OUT_OF_DATE_KHR)) => {
+            let size = swapchain.swpachain.size;
+            recreate_swapchain(&mut swapchain, &mut sync, size).unwrap();
+            swapchain
+                .aquire_image(&sync.image_available[frame], None)
+                .unwrap()
+        }
+        Err(err) => panic!("failed to acquire a swapchain image: {err}"),
+    };
+}
+
+/// Recreates the swapchain at `size`, binds its images (at the old slots unless their count
+/// changed) and gives every image a `render_finished` semaphore.
+fn recreate_swapchain(
+    swapchain: &mut Swapchain,
+    sync: &mut SynchronizationResources,
+    size: [u32; 2],
+) -> lava::Result<()> {
+    let old_images = swapchain.num_images() as u32;
+    let old_first = swapchain.swpachain.image(0).handle.descriptor_index_set1;
+    let Swapchain {
+        swpachain, surface, ..
+    } = swapchain;
+    swpachain.recreate(surface, size)?;
+    // The new images are unbound, and their count can change with the present mode.
+    let num_images = swpachain.num_images();
+    let first = if num_images as u32 == old_images {
+        old_first
+    } else {
+        bindless::release_storage_slots(old_first, old_images);
+        while sync.render_finished.len() < num_images {
+            sync.render_finished.push(Semaphore::new().unwrap());
+        }
+        bindless::storage_slots(num_images as u32).unwrap()
+    };
+    swpachain.bind_storage(first);
+    Ok(())
 }
 
 pub fn resize_swapchain(
@@ -150,24 +189,7 @@ pub fn resize_swapchain(
         recreate = true;
     }
     if recreate {
-        let old_images = swapchain.num_images() as u32;
-        let old_first = swapchain.swpachain.image(0).handle.descriptor_index_set1;
-        swapchain
-            .swpachain
-            .recreate(&swapchain.surface, size.to_array())
-            .unwrap();
-        // The new images are unbound, and their count can change with the present mode.
-        let num_images = swapchain.num_images();
-        let first = if num_images as u32 == old_images {
-            old_first
-        } else {
-            bindless::release_storage_slots(old_first, old_images);
-            while sync.render_finished.len() < num_images {
-                sync.render_finished.push(Semaphore::new().unwrap());
-            }
-            bindless::storage_slots(num_images as u32).unwrap()
-        };
-        swapchain.swpachain.bind_storage(first);
+        recreate_swapchain(swapchain, &mut sync, size.to_array()).unwrap();
     }
 }
 
@@ -202,12 +224,12 @@ pub fn extract_skybox(
 }
 
 pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
-    let surface = surface
+    let mut surface = surface
         .0
         .take()
         .expect("the primary surface is created at startup");
     let mut swpachain = vkobjects::swapchain::Swapchain::new(
-        &surface,
+        &mut surface,
         None,
         Some(INITIAL_WINDOW_SIZE.as_uvec2().to_array()),
     )
@@ -419,7 +441,12 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
         }
         world.run_schedule(RenderSystems::AquireSwapchainImage);
         world.run_schedule(RenderSystems::PreRender);
-        record_frame(frame, queue, frame_in_flight, params.get_mut(world).unwrap());
+        record_frame(
+            frame,
+            queue,
+            frame_in_flight,
+            params.get_mut(world).unwrap(),
+        );
         #[cfg(feature = "profiling")]
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
             timings.slots[frame_in_flight].submitted = (profiler::frame(), profiler::now_ns());
@@ -823,7 +850,9 @@ fn record_frame(
 
     resource_states.pending = Some(states);
     let wait = [&sync.render_finished[swapchain.image_index as usize]];
-    queue.present(&swapchain, swapchain.image_index, &wait).unwrap();
+    queue
+        .present(&swapchain, swapchain.image_index, &wait)
+        .unwrap();
 }
 
 #[derive(Resource, Default)]
