@@ -120,7 +120,10 @@ impl MaterialState {
             .get_or_init(|| Buffer::new(MAX_MATERIALS as usize, true).unwrap());
         let gpu_material = GpuMaterial {
             gpu: buffer.address + slot as u64 * size_of::<Material>() as u64,
-            cpu: unsafe { buffer.range(..).ptr().add(slot as usize) },
+            // SAFETY: `slot` was just taken from the free list, so this `GpuMaterial` owns it
+            // until it is dropped, and nothing borrows the material buffer's mapping: the
+            // buffer is only reached through these pointers.
+            cpu: unsafe { buffer.host_ptr().add(slot as usize) },
             textures,
             state: self.clone(),
         };

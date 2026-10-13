@@ -107,7 +107,10 @@ pub struct Swapchain {
     pub image_index: u32,
     /// Swapchains `recreate_swapchain` replaced, with the `render_finished` semaphores their
     /// last presents wait on, until `render` retires them with its frame.
-    retired: Vec<(lava::vkobjects::swapchain::Swapchain, Vec<Semaphore<Binary>>)>,
+    retired: Vec<(
+        lava::vkobjects::swapchain::Swapchain,
+        Vec<Semaphore<Binary>>,
+    )>,
     /// The window has no extent to present to: `render` skips its frames.
     pub minimized: bool,
 }
@@ -967,7 +970,7 @@ pub fn RenderPassesPlugin(app: &mut App) {
         .add_systems(RenderSystems::AquireSwapchainImage, aquire_swapchain_image)
         .insert_resource(RenderSettings::default())
         .init_resource::<ViewPortTarget>()
-        .add_systems(ExtractSchedule, extract_view_port)
+        .add_systems(ExtractSchedule, extract_view_port.after(resize_swapchain))
         .add_systems(RenderStartup, init_render);
 }
 

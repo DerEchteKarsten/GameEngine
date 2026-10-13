@@ -63,7 +63,7 @@ impl AssetLoader for GpuMeshLoader {
         reader.read_exact(bytes_of_mut(&mut header)).await?;
         let mut data = read_compressed(reader).await?;
 
-        let buffer = Buffer::new(data.len(), true)?;
+        let mut buffer = Buffer::new(data.len(), true)?;
         let address = buffer.address;
 
         let bvh_node_count = header.meshlet_offset as usize / size_of::<BvhNode>();
@@ -93,7 +93,7 @@ impl AssetLoader for GpuMeshLoader {
                 + address;
             bytes.copy_from_slice(bytes_of(&meshlet));
         }
-        buffer.range(..).copy_from(&data);
+        buffer.host_mut().copy_from_slice(&data);
 
         Ok(GpuMesh {
             header,

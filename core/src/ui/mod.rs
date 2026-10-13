@@ -558,12 +558,17 @@ pub fn write_ui_data(mut resources: ResMut<UiResources>, frame: Res<FrameCount>)
             Buffer::new(resources.pending_verticies.len().next_power_of_two(), true).unwrap();
     }
 
-    resources.verticies[frame.frame_in_flight()]
-        .range(..)
-        .copy_from(&resources.pending_verticies);
-    resources.indicies[frame.frame_in_flight()]
-        .range(..)
-        .copy_from(&resources.pending_indicies);
+    let UiResources {
+        verticies,
+        indicies,
+        pending_verticies,
+        pending_indicies,
+        ..
+    } = &mut *resources;
+    verticies[frame.frame_in_flight()].host_mut()[..pending_verticies.len()]
+        .copy_from_slice(pending_verticies);
+    indicies[frame.frame_in_flight()].host_mut()[..pending_indicies.len()]
+        .copy_from_slice(pending_indicies);
 
     resources.num_indicies = resources.pending_indicies.len();
     resources.num_verticies = resources.pending_verticies.len();

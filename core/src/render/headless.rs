@@ -65,7 +65,7 @@ struct HeadlessRenderer {
 /// buffer is slow (about 10 ms for 1280x720), so it isn't part of every frame.
 pub fn read_pixels(main_world: &World) -> Vec<u8> {
     let renderer = main_world.resource::<HeadlessRenderer>();
-    renderer.readback.range(..).as_slice().to_vec()
+    renderer.readback.host().to_vec()
 }
 
 /// Extracts the main world into the render world, draws it once and waits for the result.

@@ -1,6 +1,7 @@
 //! Scene entities: mesh instances and how scene files save them, the selected instance's editable material settings, spawning scenes, and the skybox.
 use anyhow::Result;
 use bevy::ecs::reflect::ReflectResource;
+use bevy::transform::TransformSystems;
 use bevy::{
     app::{App, PostUpdate, Update},
     asset::{Assets, Handle},
@@ -232,7 +233,7 @@ fn add_material_settings(
 
 #[allow(non_snake_case)]
 pub fn ScenePlugin(app: &mut App) {
-    app.add_systems(PostUpdate, update_camera)
+    app.add_systems(PostUpdate, update_camera.after(TransformSystems::Propagate))
         .add_systems(Update, spawn_scenes)
         .add_systems(
             Update,

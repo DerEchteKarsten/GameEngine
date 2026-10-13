@@ -339,7 +339,6 @@ impl Plugin for RenderPlugin {
                 extract(main_world, render_world);
             })
             .add_plugins(WorldPlugin)
-            .add_systems(ExtractSchedule, resize_swapchain)
             .add_plugins(RenderPassesPlugin);
 
         app.insert_sub_app(RenderApp, render_app);
