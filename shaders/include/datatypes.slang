@@ -70,6 +70,12 @@ struct MeshletDraw {
     uint meshlet_count;
 }
 
+// Bits of `TraversalVariables.overflow`: what `bvh_cull` dropped because a buffer was full
+// (mirrored by `OVERFLOW_*` in `render/render.rs`, which reports them).
+#define OVERFLOW_NODES 1
+#define OVERFLOW_CANDIDATES 2
+#define OVERFLOW_DRAW(draw) (4 << (draw))
+
 struct TraversalVariables {
     uint node_batch_read_offset;
     uint total_meshlets;
@@ -79,6 +85,8 @@ struct TraversalVariables {
     MeshletDraw draws[3];
     uint candidate_meshlet_write_offset;
     uint meshlet_batch_read_offset;
+    // `OVERFLOW_*` bits, 0 at the start of the frame.
+    uint overflow;
 }
 
 struct InstanceMeshletIndex {

@@ -103,7 +103,8 @@ pub(super) fn update_camera(
     mut cameras: Query<(&mut Camera, &GlobalTransform)>,
     view_port: ViewPortProxy,
 ) {
-    let size = view_port.size();
+    // A collapsed viewport tab has no size; 1 by 1 keeps the matrices finite.
+    let size = view_port.size().max(UVec2::ONE);
     let ar = size.x as f32 / size.y as f32;
     for (mut camera, transform) in &mut cameras {
         // Near and far are swapped for a reversed depth buffer.

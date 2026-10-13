@@ -9,12 +9,11 @@ float4 NormalizePlane(float4 p)
     return p / len;
 }
 
-float2 direction_to_equirect_uv(float3 normalizedDirection)
+// The equirectangular texel of a world direction (the sky's layout): Z is up and u grows
+// towards +Y (to the right of +X); v = 0 is the top row of the texture.
+float2 direction_to_equirect_uv(float3 dir)
 {
-    float u = (0.5 + atan2(normalizedDirection.z, normalizedDirection.x)/(2*float.getPi()));
-    float v = (0.5 - asin(normalizedDirection.y)/float.getPi());
-
-    return float2(u, v);
+    return float2(atan2(dir.y, dir.x) * 0.5 * FRAC_1_PI + 0.5, acos(clamp(dir.z, -1.0, 1.0)) * FRAC_1_PI);
 }
 
 float max3(float x, float y, float z) {
@@ -123,9 +122,10 @@ uint ZCurveToLinearIndex(uint2 xy)
 }
 
 
+// Of linear Rec. 709 colour.
 float luminance(float3 color)
 {
-    return dot(color.xyz, float3(0.299f, 0.587f, 0.114f));
+    return dot(color.xyz, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
 void sort<T: IComparable>(uint i, uint array_length, inout T array[]) {

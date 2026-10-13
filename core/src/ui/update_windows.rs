@@ -351,6 +351,14 @@ pub fn update_windows(
 
             dragging = focused.draging.is_some();
         }
+
+        if !docked {
+            // Stays within the OS window, which may have shrunk since the rect was saved.
+            let screen = frame.full_screen_rect;
+            let size = window.rect.size().min(screen.size());
+            let min = window.rect.min.clamp(Vec2::ZERO, (screen.max - size).max(Vec2::ZERO));
+            window.rect = Rect::from_corners(min, min + size);
+        }
     }
 
     if let Some((i, preview)) = preview_rect {

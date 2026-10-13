@@ -87,12 +87,15 @@ fn tables(frame: &FrameProfile) -> Tables {
             format!("{:.1}", scope_ms / gpu.max(f64::EPSILON) * 100.0),
         ]
     });
-    let pass_header = ["pass", "fragments", "compute", "mesh"].map(String::from);
+    let pass_header = ["pass", "task", "mesh", "fragment", "compute"].map(String::from);
     let counter_names = frame.counters.iter().map(|c| c.name.clone());
     let units: Vec<_> = frame.counters.iter().map(|c| c.unit).collect();
     let passes = pass_counters(frames, &units).into_iter().map(|pass| {
-        let stats = pass.stats.map(|s| [s.fragment, s.compute, s.mesh]);
-        let stats = stats.into_iter().flatten().map(|n| n.to_string());
+        // Without pipeline statistics the columns stay, so the counters keep theirs.
+        let stats = match pass.stats {
+            Some(s) => [s.task, s.mesh, s.fragment, s.compute].map(|n| n.to_string()),
+            None => ["-".to_string(), "-".to_string(), "-".to_string(), "-".to_string()],
+        };
         let values = frame.counters.iter().zip(pass.values.into_iter().flatten());
         let values = values.map(|(counter, value)| format_counter(counter.unit, value));
         std::iter::once(pass.name.to_string())
@@ -167,8 +170,8 @@ fn gpu_bars(frame: &FrameProfile) -> impl Iterator<Item = Bar> {
     frame.gpu.iter().map(|scope| Bar {
         name: scope.name,
         depth: scope.depth,
-        start_ns: frame.gpu_submit_ns + scope.start_ns,
-        end_ns: frame.gpu_submit_ns + scope.end_ns,
+        start_ns: frame.gpu_start_ns + scope.start_ns,
+        end_ns: frame.gpu_start_ns + scope.end_ns,
     })
 }
 

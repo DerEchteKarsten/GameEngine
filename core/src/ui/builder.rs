@@ -95,15 +95,14 @@ impl<'a, 'w, 's> UiWindowConfig<'a, 'w, 's> {
             size,
         } = self;
         let input = MultiInput::new(&ui.window, &ui.mouse, &ui.touch);
-        let mut hovered = input.cursor_pos.is_some();
-        let mut window: Option<&UiWindow> = None;
+        let mut window: Option<(usize, &UiWindow)> = None;
         let mut tab: Option<&Tab> = None;
-        for w in ui.windows.windows.iter() {
+        for (slot, w) in ui.windows.windows.iter().enumerate() {
             let Some(w) = w else { continue };
             for (i, t) in w.tabs.iter().enumerate() {
                 if t.label.as_str() == label {
                     t.built.store(true, Ordering::Relaxed);
-                    window = Some(w);
+                    window = Some((slot, w));
                     tab = Some(t);
 
                     if i != w.active_tab as usize {
@@ -112,10 +111,11 @@ impl<'a, 'w, 's> UiWindowConfig<'a, 'w, 's> {
                     break;
                 }
             }
-            if w.rect.contains(input.cursor_pos.unwrap_or_default()) && window.is_none() {
-                hovered = false;
-            }
         }
+        // Hovered only when no window lies above this one under the cursor.
+        let hovered = input
+            .cursor_pos
+            .is_some_and(|pos| ui.windows.window_at(pos) == window.map(|(slot, _)| slot));
 
         let Some(tab) = tab else {
             if let Ok(mut requests) = ui.windows.requests.lock() {
@@ -127,7 +127,7 @@ impl<'a, 'w, 's> UiWindowConfig<'a, 'w, 's> {
             }
             return;
         };
-        let window = window.unwrap();
+        let (_, window) = window.unwrap();
 
         let scroll = Res::clone(&ui.scroll);
         let shift = ui.keyspressed.pressed(KeyCode::ShiftLeft)

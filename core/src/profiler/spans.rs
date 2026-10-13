@@ -1,10 +1,11 @@
 //! CPU spans: a tracing layer writing every span entered while recording into a fixed ring on its own thread; the rings are read only while recording is off.
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::Write,
+    mem::MaybeUninit,
     sync::{
-        LazyLock, Mutex,
+        Arc, LazyLock, Mutex, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -57,19 +58,29 @@ const MAX_DEPTH: usize = 64;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static NAMES: LazyLock<Mutex<HashSet<&'static str>>> = LazyLock::new(Default::default);
-/// The ring of every thread that recorded a span. Locked only to add a thread or read them.
-static THREADS: Mutex<Vec<&'static Ring>> = Mutex::new(Vec::new());
+/// The ring of every thread that recorded a span, which dies with its thread. Locked only to
+/// add a thread or read them.
+static THREADS: Mutex<Vec<Weak<Ring>>> = Mutex::new(Vec::new());
 
 /// One thread's spans. Only that thread writes them.
 struct Ring {
     thread: &'static str,
     /// Spans written so far; slot `i % SPANS_PER_THREAD` holds span `i`.
     head: AtomicUsize,
+    /// `SPANS_PER_THREAD` slots, uninitialised so pages the thread never writes stay
+    /// uncommitted; `spans` is a `Box` of them.
     spans: *mut CpuSpan,
 }
 
 unsafe impl Send for Ring {}
 unsafe impl Sync for Ring {}
+
+impl Drop for Ring {
+    fn drop(&mut self) {
+        let slots = std::ptr::slice_from_raw_parts_mut(self.spans.cast::<MaybeUninit<CpuSpan>>(), SPANS_PER_THREAD);
+        drop(unsafe { Box::from_raw(slots) });
+    }
+}
 
 impl Ring {
     fn push(&self, span: CpuSpan) {
@@ -110,7 +121,10 @@ pub fn for_each_thread(mut f: impl FnMut(&'static str, u64, [&[CpuSpan]; 2])) {
         !ENABLED.load(Ordering::Relaxed),
         "spans are only read while recording is off"
     );
-    for ring in THREADS.lock().unwrap().iter() {
+    let mut threads = THREADS.lock().unwrap();
+    // Rings of threads that ended are gone.
+    threads.retain(|ring| ring.strong_count() > 0);
+    for ring in threads.iter().filter_map(Weak::upgrade) {
         let (complete_from, spans) = ring.read();
         f(ring.thread, complete_from, spans);
     }
@@ -127,6 +141,18 @@ pub(super) fn intern(name: &str) -> &'static str {
     name
 }
 
+/// `intern` through a cache on this thread, so a name seen before costs no lock.
+fn intern_cached(name: &str) -> &'static str {
+    INTERNED.with_borrow_mut(|cache| match cache.get(name) {
+        Some(interned) => interned,
+        None => {
+            let interned = intern(name);
+            cache.insert(interned.to_string(), interned);
+            interned
+        }
+    })
+}
+
 struct Open {
     id: u64,
     name: SpanName,
@@ -135,7 +161,7 @@ struct Open {
 }
 
 struct ThreadState {
-    ring: &'static Ring,
+    ring: Arc<Ring>,
     open: Vec<Open>,
 }
 
@@ -146,14 +172,13 @@ thread_local! {
             Some(name) => intern(name),
             None => intern(&format!("{:?}", current.id())),
         };
-        // Uninitialised, so pages the thread never writes stay uncommitted.
-        let spans = Box::leak(Box::<[CpuSpan]>::new_uninit_slice(SPANS_PER_THREAD));
-        let ring: &'static Ring = Box::leak(Box::new(Ring {
+        let spans = Box::<[CpuSpan]>::new_uninit_slice(SPANS_PER_THREAD);
+        let ring = Arc::new(Ring {
             thread,
             head: AtomicUsize::new(0),
-            spans: spans.as_mut_ptr().cast(),
-        }));
-        THREADS.lock().unwrap().push(ring);
+            spans: Box::into_raw(spans).cast(),
+        });
+        THREADS.lock().unwrap().push(Arc::downgrade(&ring));
         ThreadState {
             ring,
             open: Vec::with_capacity(MAX_DEPTH),
@@ -161,6 +186,8 @@ thread_local! {
     });
     /// Where a new span's name is put together.
     static NAME: RefCell<String> = const { RefCell::new(String::new()) };
+    /// This thread's cache in front of `NAMES`.
+    static INTERNED: RefCell<HashMap<String, &'static str>> = RefCell::new(HashMap::new());
 }
 
 /// The profiler's name of a span. Bevy's "system" and "schedule" spans are named by their
@@ -206,19 +233,25 @@ pub struct ProfileLayer;
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfileLayer {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
-        let name = attrs.metadata().name();
+        let metadata = attrs.metadata();
+        let name = metadata.name();
         let kind = match name {
             "system" => SpanKind::System,
             "schedule" => SpanKind::Schedule,
             _ => SpanKind::Other,
         };
+        // Most spans have no field that is part of the name: their static name does.
+        if !metadata.fields().iter().any(|f| matches!(f.name(), "name" | "pass")) {
+            span.extensions_mut().insert(SpanName(name, kind));
+            return;
+        }
         // Without a name (threads tearing down), the span keeps its plain name.
         let _ = NAME.try_with(|buffer| {
             let buffer = &mut *buffer.borrow_mut();
             buffer.clear();
             buffer.push_str(name);
             attrs.record(&mut NameVisitor { name: buffer, kind });
-            span.extensions_mut().insert(SpanName(intern(buffer), kind));
+            span.extensions_mut().insert(SpanName(intern_cached(buffer), kind));
         });
     }
 
@@ -286,7 +319,7 @@ mod tests {
                 let subscriber = tracing_subscriber::registry().with(ProfileLayer);
                 set_enabled(true);
                 tracing::subscriber::with_default(subscriber, f);
-                let ring = THREAD.with_borrow(|t| t.ring);
+                let ring = THREAD.with_borrow(|t| t.ring.clone());
                 assert_eq!(ring.thread, "capture test");
                 let (_, spans) = ring.read();
                 spans.concat()

@@ -34,6 +34,13 @@ struct RasterBindings {
 // triangle was slower.
 [SpecializationConstant] const uint mesh_threads = 16;
 
+// The cofactor matrix of the transform's linear part: its determinant times the inverse
+// transpose, which normals need under non-uniform scale (its sign is the determinant's).
+float3x3 cofactor(float4x4 transform) {
+    let m = (float3x3)transform;
+    return float3x3(cross(m[1], m[2]), cross(m[2], m[0]), cross(m[0], m[1]));
+}
+
 VSOutput scene_vertex(InstancedMeshlet instanced_meshlet, Meshlet meshlet, uint index)
 {
     let vertex = meshlet.vertex_index[index];
@@ -43,7 +50,8 @@ VSOutput scene_vertex(InstancedMeshlet instanced_meshlet, Meshlet meshlet, uint 
     VSOutput output;
     output.position = mul(b.proj, mul(b.view, world_space));
     output.world_position = world_space.xyz;
-    output.normal = normalize(mul((float3x3)transform, vertex.normal_and_uv2.xyz));
+    let mirrored = determinant((float3x3)transform) < 0.0;
+    output.normal = normalize(mul(cofactor(transform), vertex.normal_and_uv2.xyz)) * (mirrored ? -1.0 : 1.0);
     output.uv = float2(vertex.position_and_uv1.w, vertex.normal_and_uv2.w);
     output.instance = uint(instanced_meshlet.instance);
     output.meshlet = uint(uint64_t(instanced_meshlet.meshlet));
@@ -70,9 +78,13 @@ void scene_mesh(
     let instanced_meshlet = b.meshlets.val[index];
     let meshlet = *instanced_meshlet.meshlet;
     SetMeshOutputCounts(meshlet.vertex_count, meshlet.triangle_count);
+    // A mirrored instance (a negative determinant) turns its triangles inside out on screen:
+    // their winding is swapped back, so the front face stays `CLOCKWISE`.
+    let transform = b.instance_transforms.val[instanced_meshlet.instance];
+    let mirrored = determinant((float3x3)transform) < 0.0;
     for (uint i = thread; i < meshlet.triangle_count; i += mesh_threads) {
         let corners = meshlet.triangle_index + i * 3;
-        triangles[i] = uint3(corners[0], corners[1], corners[2]);
+        triangles[i] = mirrored ? uint3(corners[0], corners[2], corners[1]) : uint3(corners[0], corners[1], corners[2]);
     }
     for (uint i = thread; i < meshlet.vertex_count; i += mesh_threads) {
         vertices[i] = scene_vertex(instanced_meshlet, meshlet, i);

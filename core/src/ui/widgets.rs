@@ -225,10 +225,17 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             Float(f64),
             Int(i64),
         }
+        // A number shows rounded; editing it starts from all of its digits, and only an edit
+        // writes back, so showing a value never changes it.
         let (mut value, need_format_string, input_mode) = match input_mode {
             InputMode::String(s) => (s, false, InputType::String),
             InputMode::Float(f) => (&mut format!("{:.2}", f), true, InputType::Float(f)),
             InputMode::Int(i) => (&mut format!("{}", i), true, InputType::Int(i)),
+        };
+        let edit_string = || match input_mode {
+            InputType::Float(f) => number_string(f),
+            InputType::Int(i) => i.to_string(),
+            InputType::String => String::new(),
         };
         let text_clip = from_pos_size(text_cursor, inner_size);
 
@@ -238,13 +245,13 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
                 focused.focused_element = Some(id);
                 self.focuse_next = false;
                 if need_format_string {
-                    focused.format_string = value.clone();
+                    focused.format_string = edit_string();
                 }
                 focused.cursor = TextCursor {
-                    byte_pos: value.len(),
+                    byte_pos: focused.format_string.len(),
                 };
                 focused.offset = 0.0;
-                focused.selected = (0..value.len()).into();
+                focused.selected = (0..focused.format_string.len()).into();
                 just_focused = true;
             }
             if focused.focused_element == Some(id) {
@@ -438,6 +445,7 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
             }
         }
         let focused = focused.map(|(e1, e2, e3, _)| (*e1, *e2, *e3));
+        let editing = focused.is_some();
 
         // `value` may borrow the focused state, so this draws through the window directly.
         let window = &mut *self.ctx.window;
@@ -483,8 +491,10 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         }
 
         let ret = match input_mode {
-            InputType::Float(f) => InputModeOutput::Float(value.parse().unwrap_or(f)),
-            InputType::Int(i) => InputModeOutput::Int(value.parse().unwrap_or(i)),
+            InputType::Float(f) if editing => InputModeOutput::Float(value.parse().unwrap_or(f)),
+            InputType::Float(f) => InputModeOutput::Float(f),
+            InputType::Int(i) if editing => InputModeOutput::Int(value.parse().unwrap_or(i)),
+            InputType::Int(i) => InputModeOutput::Int(i),
             InputType::String => InputModeOutput::ChangDetection(changed),
         };
 
@@ -1135,6 +1145,15 @@ impl<'a, 'w, 's> UiWindowBuilder<'a, 'w, 's> {
         if self.prev_hovered() {
             self.tooltip_label(label);
         }
+    }
+}
+
+/// Every digit of a number, as short as possible: an `f32` passed as `f64` prints like one.
+fn number_string(f: f64) -> String {
+    if f as f32 as f64 == f {
+        format!("{}", f as f32)
+    } else {
+        format!("{f}")
     }
 }
 

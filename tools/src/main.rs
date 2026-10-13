@@ -42,6 +42,10 @@ re!(
 );
 re!(MACRO_RE, r"^\s*macro_rules!\s+(\w+)");
 re!(IMPL_RE, r"^\s*(?:unsafe\s+)?impl\b");
+// A trait's methods have no `pub`.
+re!(TRAIT_FN_RE, r"^\s*(?:unsafe\s+)?(?:async\s+)?fn\s+(\w+)");
+// An enum variant: a name, maybe with fields, maybe with a trailing comma.
+re!(VARIANT_RE, r"^\s*([A-Z]\w*)(.*?),?\s*$");
 re!(INLINE_MOD_RE, r"^\s*pub\s+mod\s+\w+\s*\{");
 re!(FIELD_RE, r"^\s*pub\s+(\w+)\s*:\s*(.+?),?\s*$");
 re!(STR_RE, r#""(?:\\.|[^"\\])*""#);
@@ -262,10 +266,22 @@ fn shader_table(root: &Path) -> (Vec<String>, String) {
     for f in slang_files(root, Some("passes")) {
         let text = read(&f);
         let include_dir = f.parent().unwrap().with_file_name("include");
-        let includes: Vec<String> = INCLUDE_RE
+        // Every include, followed through the includes' own includes, each once.
+        let mut included: Vec<String> = Vec::new();
+        let mut includes: Vec<String> = Vec::new();
+        let mut pending: Vec<String> = INCLUDE_RE
             .captures_iter(&text)
-            .map(|m| read(&include_dir.join(&m[1])))
+            .map(|m| m[1].to_string())
             .collect();
+        while let Some(name) = pending.pop() {
+            if included.contains(&name) {
+                continue;
+            }
+            let source = read(&include_dir.join(&name));
+            pending.extend(INCLUDE_RE.captures_iter(&source).map(|m| m[1].to_string()));
+            included.push(name);
+            includes.push(source);
+        }
         // Passes sharing push constants or entry points declare them in an include, whose entry
         // points then belong to every pass that includes it.
         let (mut entries, mut pc, mut consts) = (Vec::new(), None, Vec::new());
@@ -349,32 +365,61 @@ fn api_for_file(path: &Path) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut out: Vec<String> = Vec::new();
     let mut depth: i64 = 0;
-    let mut impl_stack: Vec<i64> = Vec::new(); // depth at which each open impl started
+    let mut impl_stack: Vec<i64> = Vec::new(); // depth at which each open impl or trait started
     let mut struct_open: Option<i64> = None; // depth of an open pub struct body
+    let mut enum_open: Option<i64> = None; // depth of an open pub enum body
     let mut mod_stack: Vec<i64> = Vec::new(); // depth at which each open inline pub mod started
     let mut i = 0;
     while i < lines.len() {
         let code = strip_code(lines[i]);
         let stripped = code.trim();
+        // A trait body lists its methods, which have no `pub`.
+        let in_trait = impl_stack.last().is_some_and(|&d| depth == d + 1)
+            && out.iter().rev().find(|l| l.starts_with('\n')).is_some_and(|l| l.contains("trait "));
 
         if INLINE_MOD_RE.is_match(&code) {
             mod_stack.push(depth);
             out.push(format!("\n{stripped}"));
-        } else if IMPL_RE.is_match(&code) && code.contains('{') {
+        } else if IMPL_RE.is_match(&code) {
+            // The header may continue on the next lines (`impl<..> X\nfor Y\n{`).
+            let mut header = stripped.to_string();
+            let mut j = i;
+            while !header.contains('{') && j + 1 < lines.len() && j - i < 15 {
+                j += 1;
+                header += " ";
+                header += strip_code(lines[j]).trim();
+            }
             impl_stack.push(depth);
-            out.push(format!("\n{}", stripped.trim_end_matches('{').trim()));
+            let header = header.trim_end_matches('{').trim();
+            out.push(format!("\n{}", WS_RE.replace_all(header, " ")));
+            for line in &lines[i..=j] {
+                depth += braces(&strip_code(line));
+            }
+            i = j + 1;
+            continue;
         } else if TYPE_RE.is_match(&code) {
             let sig = stripped.trim_end_matches('{').trim();
             out.push(format!("\n{sig}"));
             if stripped.ends_with('{') && sig.contains("struct") {
                 struct_open = Some(depth);
             }
+            if stripped.ends_with('{') && sig.contains("enum") {
+                enum_open = Some(depth);
+            }
+            if stripped.ends_with('{') && sig.contains("trait") {
+                impl_stack.push(depth);
+            }
         } else if let Some(c) = struct_open
             .filter(|&d| depth == d + 1)
             .and_then(|_| FIELD_RE.captures(&code))
         {
             out.push(format!("    {}: {}", &c[1], &c[2]));
-        } else if FN_RE.is_match(&code) {
+        } else if let Some(c) = enum_open
+            .filter(|&d| depth == d + 1)
+            .and_then(|_| VARIANT_RE.captures(&code))
+        {
+            out.push(format!("    {}{}", &c[1], c[2].trim_end_matches('{').trim_end()));
+        } else if FN_RE.is_match(&code) || (in_trait && TRAIT_FN_RE.is_match(&code)) {
             let mut sig = stripped.to_string();
             let mut j = i;
             while !SIG_END_RE.is_match(&sig) && j + 1 < lines.len() && j - i < 15 {
@@ -398,6 +443,9 @@ fn api_for_file(path: &Path) -> String {
         if struct_open.is_some_and(|d| depth <= d) {
             struct_open = None;
         }
+        if enum_open.is_some_and(|d| depth <= d) {
+            enum_open = None;
+        }
         while mod_stack.last().is_some_and(|&d| depth <= d) {
             mod_stack.pop();
             // An empty module (e.g. one that only `include!`s) is left out.
@@ -413,7 +461,7 @@ fn api_for_file(path: &Path) -> String {
         i += 1;
     }
 
-    // drop impl headers with no pub fns under them
+    // drop impl headers with no fns under them (a trait's header stays: it is a type)
     let cleaned: Vec<&str> = out
         .iter()
         .enumerate()

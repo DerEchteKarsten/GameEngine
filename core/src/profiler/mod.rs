@@ -61,6 +61,11 @@ pub fn now_ns() -> u64 {
     EPOCH.elapsed().as_nanos() as u64
 }
 
+/// An `Instant` on that clock.
+pub fn instant_ns(instant: Instant) -> u64 {
+    instant.saturating_duration_since(*EPOCH).as_nanos() as u64
+}
+
 /// The running frame, which spans and submissions are tagged with.
 pub fn frame() -> u32 {
     FRAME.load(Ordering::Relaxed)
@@ -99,9 +104,10 @@ pub struct FrameProfile {
     pub end_ns: u64,
     /// Main, render thread, then the others by name.
     pub threads: Vec<ThreadSpans>,
-    /// The GPU work submitted in this frame, relative to `gpu_submit_ns`.
+    /// The GPU work submitted in this frame, relative to `gpu_start_ns`.
     pub gpu: Vec<GpuScope>,
-    pub gpu_submit_ns: u64,
+    /// When its root scope started: from calibrated timestamps, else when it was submitted.
+    pub gpu_start_ns: u64,
     /// The pass queries of the work submitted in this frame.
     pub passes: Vec<PassResult>,
     /// The counters the passes' values belong to.
@@ -158,7 +164,7 @@ pub struct Profiler {
     pub compatible: Vec<bool>,
     /// Counter names to select once lava is initialised.
     pending_counters: Option<Vec<String>>,
-    /// Every GPU scope of the last frames with its frame and submit time.
+    /// Every GPU scope of the last frames with its frame and the root scope's start time.
     gpu: VecDeque<(u32, u64, GpuScope)>,
     passes: VecDeque<(u32, PassResult)>,
     regions: VecDeque<(u32, RegionTime)>,
@@ -238,13 +244,14 @@ impl Profiler {
         self.set_counters(&selection);
     }
 
-    /// Hands the GPU scopes of the work submitted in `frame` (at `submit_ns`) to it.
-    pub fn add_timestamps(&mut self, frame: u32, submit_ns: u64, scopes: &[GpuScope]) {
+    /// Hands the GPU scopes of the work submitted in `frame` to it, whose root scope started
+    /// at `start_ns` (see `GpuSlot::read_back`).
+    pub fn add_timestamps(&mut self, frame: u32, start_ns: u64, scopes: &[GpuScope]) {
         let Some(i) = self.index(frame) else { return };
         self.times[i].gpu_ns = Some(root_ns(scopes));
         let capacity = self.capacity * GPU_ENTRIES_PER_FRAME;
         for scope in scopes {
-            push(&mut self.gpu, capacity, (frame, submit_ns, scope.clone()));
+            push(&mut self.gpu, capacity, (frame, start_ns, scope.clone()));
         }
     }
 
@@ -341,8 +348,8 @@ impl Profiler {
             frame
                 .threads
                 .sort_by_key(|t| (t.thread != "main", t.thread != "render thread", t.thread));
-            for (_, submit_ns, scope) in self.gpu.iter().filter(|(f, ..)| *f == frame.frame) {
-                frame.gpu_submit_ns = *submit_ns;
+            for (_, start_ns, scope) in self.gpu.iter().filter(|(f, ..)| *f == frame.frame) {
+                frame.gpu_start_ns = *start_ns;
                 frame.gpu.push(scope.clone());
             }
             let passes = self.passes.iter().filter(|(f, _)| *f == frame.frame);
@@ -370,7 +377,8 @@ pub struct GpuTimings {
 #[derive(Default)]
 pub struct GpuSlot {
     pub submitted: (u32, u64),
-    /// The frame and submit time of `scopes` and `passes`.
+    /// The frame of `scopes` and `passes`, and when their root scope started: from calibrated
+    /// timestamps, else the submit time.
     pub read: (u32, u64),
     pub scopes: Vec<GpuScope>,
     pub passes: PassCounters,
@@ -380,7 +388,8 @@ pub struct GpuSlot {
 impl GpuSlot {
     /// Keeps the results of the slot's last submission, reusing their buffers.
     pub fn read_back(&mut self, frame: &Frame) {
-        self.read = self.submitted;
+        let start = frame.last_timestamps_start().map_or(self.submitted.1, instant_ns);
+        self.read = (self.submitted.0, start);
         self.scopes.clear();
         self.scopes
             .extend_from_slice(frame.last_timestamps().unwrap_or_default());
@@ -444,10 +453,11 @@ fn end_frame(mut profiler: ResMut<Profiler>) {
     }
     profiler.start_frame(now);
 
+    // At or after the frame whose GPU results are in, in case a pause skipped it.
     if profiler
         .capture
         .as_ref()
-        .is_some_and(|(frames, _)| frame as usize == frames + GPU_LATENCY)
+        .is_some_and(|(frames, _)| frame as usize >= frames + GPU_LATENCY)
     {
         let (frames, dir) = profiler.capture.take().unwrap();
         match profiler.save(&dir) {

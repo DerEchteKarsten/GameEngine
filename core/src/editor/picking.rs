@@ -89,7 +89,10 @@ pub(crate) fn hierarchy_ui(
         for root in roots {
             draw_entity_node(&mut cmd, ui, root, &instances, &selected, components);
         }
-        if keys.just_pressed(KeyCode::Delete) && ui.ctx.focused.is_some() {
+        // Not while a text field (the save path) has the keyboard.
+        if keys.just_pressed(KeyCode::Delete)
+            && ui.ctx.focused.as_ref().is_some_and(|f| f.focused_element.is_none())
+        {
             for e in &selected {
                 // Despawning a resource panics the next system that reads it.
                 if instances.get(e).is_ok_and(|i| i.6.is_none()) {

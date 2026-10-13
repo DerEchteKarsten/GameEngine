@@ -104,10 +104,12 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     *main_world = render_world.remove_resource::<MainWorld>().unwrap().0;
     instances.unwrap();
     sky.unwrap();
-    camera.expect("the scene needs exactly one camera");
+    camera.unwrap();
     render_world.run_system_once(wirte_instances).unwrap();
 
-    let mut camera = render_world.remove_resource::<RenderCamera>().unwrap();
+    let mut camera = render_world
+        .remove_resource::<RenderCamera>()
+        .expect("the scene needs a camera");
     let sky = render_world.resource::<RenderSkybox>();
     let instances = render_world.resource::<InstanceManager>();
 
@@ -150,7 +152,8 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     #[cfg(feature = "profiling")]
     if let Some(mut profiler) = main_world.get_resource_mut::<Profiler>() {
         if let Some(scopes) = frame.last_timestamps() {
-            profiler.add_timestamps(submitted.0, submitted.1, scopes);
+            let start = frame.last_timestamps_start().map_or(submitted.1, profiler::instant_ns);
+            profiler.add_timestamps(submitted.0, start, scopes);
         }
         if let Some(counters) = frame.last_counters() {
             profiler.add_counters(submitted.0, counters);

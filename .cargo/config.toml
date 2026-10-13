@@ -1,6 +1,8 @@
 
 [env]
 SLANG_DIR = { value = "lava/slang", relative = true}
+# The workspace root, which `core` bakes its file paths from (`core::WORKSPACE_DIR`).
+WORKSPACE_DIR = { value = "", relative = true}
 
 [build]
 rustflags = ["-C", "link-arg=-Wl,-rpath,/home/karsten/code/GameEngine/lava/slang/lib"]

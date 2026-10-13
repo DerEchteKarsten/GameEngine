@@ -442,7 +442,7 @@ pub fn chrome_trace(frames: &[FrameProfile]) -> String {
         for scope in &frame.gpu {
             events.push(json!({
                 "name": scope.name, "cat": "gpu", "ph": "X", "pid": 1, "tid": 0,
-                "ts": us(frame.gpu_submit_ns + scope.start_ns),
+                "ts": us(frame.gpu_start_ns + scope.start_ns),
                 "dur": us(scope.end_ns - scope.start_ns),
                 "args": { "frame": frame.frame },
             }));
@@ -503,7 +503,7 @@ mod tests {
                 })
                 .collect(),
             passes: Vec::new(),
-            gpu_submit_ns: start_ns,
+            gpu_start_ns: start_ns,
             counters: Default::default(),
             regions: vec![
                 RegionTime {

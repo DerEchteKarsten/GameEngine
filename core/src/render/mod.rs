@@ -1,6 +1,6 @@
 //! Windowed render sub-app (pipelined): schedules, main-world extraction and Vulkan initialization.
 use crate::render::{
-    render::{FrameLimit, RenderPassesPlugin, resize_swapchain},
+    render::{FrameLimit, RenderPassesPlugin},
     world::WorldPlugin,
 };
 use async_std::channel::{Receiver, Sender};

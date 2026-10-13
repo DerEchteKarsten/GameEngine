@@ -129,7 +129,7 @@ impl NodeBuilder {
     }
     fn total_aabb(&self) -> Option<Aabb3d> {
         let mut total: Option<Aabb3d> = None;
-        for aabb in &self.child_aabbs {
+        for aabb in &self.child_aabbs[..self.child_offset] {
             if let Some(total) = &mut total {
                 *total = total.merge(aabb);
             } else {
@@ -153,9 +153,10 @@ impl<'a> NodeView<'a> {
     fn get_child_mask(&self) -> u64 {
         bytemuck::pod_read_unaligned::<u64>(&self.data[self.offset..self.offset + 8])
     }
+    /// Children fill the slots from the first; an empty slot's type byte is 0.
     fn child_count(&self) -> usize {
         let child_mask = self.get_child_mask();
-        (64 - child_mask.trailing_zeros()) as usize / 8
+        (64 - child_mask.leading_zeros() as usize).div_ceil(8)
     }
     fn get_type(&self, i: usize) -> ChildType {
         let child_mask = self.get_child_mask();
@@ -293,35 +294,34 @@ impl SceneBvh {
         }
 
         let mut best: Option<RayCastResult> = None;
-        let mut stack: Vec<(usize, &[u8], f32)> = vec![(self.root, &self.bvh, ray.max)];
+        // Nodes and instances with the distance their box is entered at: the nearest is
+        // popped first, so a hit prunes most of what is left.
+        let root = ChildData::HasNode(HasNode { ptr: self.root });
+        let mut stack: Vec<(ChildData, f32)> = vec![(root, 0.0)];
 
-        while let Some((offset, bvh, t_entry)) = stack.pop() {
+        while let Some((data, t_entry)) = stack.pop() {
             if best.is_some_and(|b| t_entry >= b.t) {
                 continue;
             }
-
-            let view = NodeView::new(bvh, offset);
-
-            // Gather intersecting children, sort closest-last for stack ordering
-            let mut hits: Vec<(f32, ChildData)> = Vec::new();
-            for (data, aabb) in &mut view.child_iter() {
-                let Some(t) = ray.aabb_intersection_at(&aabb) else {
-                    continue;
-                };
-                if best.is_some_and(|b| t >= b.t) {
-                    continue;
-                }
-                hits.push((t, data));
-            }
-            hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-
-            for (t, data) in hits {
-                match data {
-                    ChildData::HasNode(node) => {
-                        stack.push((node.ptr, bvh, t));
+            match data {
+                ChildData::HasNode(node) => {
+                    let view = NodeView::new(&self.bvh, node.ptr);
+                    let mut hits: Vec<(f32, ChildData)> = Vec::new();
+                    for (data, aabb) in &mut view.child_iter() {
+                        let Some(t) = ray.aabb_intersection_at(&aabb) else {
+                            continue;
+                        };
+                        if best.is_some_and(|b| t >= b.t) {
+                            continue;
+                        }
+                        hits.push((t, data));
                     }
+                    // Farthest first, so the nearest ends on top.
+                    hits.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+                    stack.extend(hits.into_iter().map(|(t, data)| (data, t)));
+                }
 
-                    ChildData::HasBlas(blas) => {
+                ChildData::HasBlas(blas) => {
                         let Ok((instance, transform)) = instances.get(blas.entity) else {
                             continue;
                         };
@@ -329,37 +329,29 @@ impl SceneBvh {
                             continue;
                         };
 
-                        let blas_bvh: &[u8] = &mesh.colission_bvh;
-
-                        let Some((local_ray, local_per_world)) =
-                            ray_to_local(ray, &transform.to_matrix())
-                        else {
-                            continue;
-                        };
-
-                        // Traverse the BLAS inline — push its root onto the
-                        // stack with the local ray. We can't mix rays though,
-                        // so we do a nested traversal here rather than sharing
-                        // the outer stack.
-                        let blas_result = raycast_blas(
-                            &local_ray,
-                            blas_bvh,
-                            blas.blas_root_node_index,
-                            blas.entity,
-                            best.map(|b| b.t * local_per_world),
-                        );
-
-                        if let Some(mut result) = blas_result {
-                            result.t /= local_per_world;
-                            if best.is_none_or(|b| result.t < b.t) {
-                                best = Some(result);
-                            }
+                    let Some((local_ray, local_per_world)) =
+                        ray_to_local(ray, &transform.to_matrix())
+                    else {
+                        continue;
+                    };
+                    // The BLAS is traversed with the local ray, on its own stack.
+                    let blas_result = raycast_blas(
+                        &local_ray,
+                        &mesh.colission_bvh,
+                        blas.blas_root_node_index,
+                        blas.entity,
+                        best.map(|b| b.t * local_per_world),
+                    );
+                    if let Some(mut result) = blas_result {
+                        result.t /= local_per_world;
+                        if best.is_none_or(|b| result.t < b.t) {
+                            best = Some(result);
                         }
                     }
-
-                    // TLAS should only contain HasNode and HasBlas at this point
-                    ChildData::HasLeaf(_) => {}
                 }
+
+                // The TLAS holds only nodes and instances.
+                ChildData::HasLeaf(_) => {}
             }
         }
 

@@ -180,6 +180,9 @@ void ProcessNodeBatch(uint batchSize, uint groupIndex)
         // Nodes that don't fit in the queue are dropped, and must not be counted as pending.
         GroupNumAcceptedNodes = min(GroupNumCandidateNodes, max_nodes - min(GroupCandidateNodesOffset, max_nodes));
         InterlockedAdd(b.queue_state.val.node_count, GroupNumAcceptedNodes);
+        if (GroupNumAcceptedNodes < GroupNumCandidateNodes) {
+            InterlockedOr(b.queue_state.val.overflow, OVERFLOW_NODES);
+        }
     }
     AllMemoryBarrierWithGroupSync();
 
@@ -231,6 +234,9 @@ void ProcessNodeBatch(uint batchSize, uint groupIndex)
         const uint candidateEnd = min(candidateWriteOffset + totalMeshletsInGroup, max_candidate_meshlets);
         GroupCandidateMeshletBase = candidateWriteOffset;
         GroupCandidateMeshletCount = (uint)max((int)candidateEnd - (int)candidateWriteOffset, 0);
+        if (GroupCandidateMeshletCount < totalMeshletsInGroup) {
+            InterlockedOr(b.queue_state.val.overflow, OVERFLOW_CANDIDATES);
+        }
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -279,6 +285,7 @@ void append_meshlet(uint draw, MutBuf<InstancedMeshlet> list, uint capacity, Ins
     if (offset >= capacity) {
         // Out of space: undo the reservation so the draw never sees more meshlets than were written.
         InterlockedAdd(b.queue_state.val.draws[draw].meshlet_count, ~0u);
+        InterlockedOr(b.queue_state.val.overflow, OVERFLOW_DRAW(draw));
         return;
     }
     list.val[offset] = meshlet;
@@ -322,7 +329,18 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
         return;
     }
 
+    // Other groups write the node queue, `node_count` and the batch counters while this one
+    // polls them, so they are read with atomics: a plain load could be stale or hoisted out of
+    // the loop.
+    uint64_t *queue_words = (uint64_t *)(uint64_t)b.queue.val;
+
+    // Nodes keep coming until `node_count` is 0: every queued node processed and none left to
+    // make more. Only then may a partial meshlet batch be processed and its counter reset,
+    // since nothing can be appended to it any more.
     bool processNodeQueue = true;
+    // This group's claims passed the end of the node queue: it makes no more nodes, but keeps
+    // polling the full batches of the others until `node_count` is 0.
+    bool queueExhausted = false;
     uint nodeBatchLocalOffset = MAX_BVH_NODES_PER_GROUP;
     uint nodeBatchBaseIndex = 0;
     uint meshletBatchStartIndex = INVALID_U32;
@@ -338,37 +356,32 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
         }
         GroupMemoryBarrierWithGroupSync();
 
-        uint readyNodeMask = 0;
-        if (processNodeQueue)
+        if (processNodeQueue && !queueExhausted && nodeBatchLocalOffset == MAX_BVH_NODES_PER_GROUP)
         {
-            if (nodeBatchLocalOffset == MAX_BVH_NODES_PER_GROUP)
+            // Claim the next node-batch range from the global queue.
+            if (groupIndex == 0)
             {
-                // Claim the next node-batch range from the global queue.
-                if (groupIndex == 0)
-                {
-                    InterlockedAdd(b.queue_state.val.node_batch_read_offset, MAX_BVH_NODES_PER_GROUP, GroupNodeBatchStartIndex);
-                }
-
-                GroupMemoryBarrierWithGroupSync();
-
-                nodeBatchLocalOffset = 0;
-                nodeBatchBaseIndex = GroupNodeBatchStartIndex;
-                if (nodeBatchBaseIndex >= max_nodes)
-                {
-                    processNodeQueue = false;
-                    continue;
-                }
+                InterlockedAdd(b.queue_state.val.node_batch_read_offset, MAX_BVH_NODES_PER_GROUP, GroupNodeBatchStartIndex);
             }
+            GroupMemoryBarrierWithGroupSync();
+            nodeBatchLocalOffset = 0;
+            nodeBatchBaseIndex = GroupNodeBatchStartIndex;
+            queueExhausted = nodeBatchBaseIndex >= max_nodes;
+        }
 
+        if (processNodeQueue && !queueExhausted)
+        {
             const uint nodeQueueIndex = nodeBatchBaseIndex + nodeBatchLocalOffset + groupIndex;
             bool laneHasNode = ((nodeBatchLocalOffset + groupIndex) < MAX_BVH_NODES_PER_GROUP) && nodeQueueIndex < max_nodes;
             if (laneHasNode)
             {
-                let nodeData = b.queue.val[nodeQueueIndex];
-                laneHasNode = nodeData.instance != INVALID_U64 && nodeData.node != INVALID_PTR;
+                uint64_t instance, node;
+                InterlockedOr(queue_words[nodeQueueIndex * 2], 0, instance);
+                InterlockedOr(queue_words[nodeQueueIndex * 2 + 1], 0, node);
+                laneHasNode = instance != INVALID_U64 && node != INVALID_U64;
                 if (laneHasNode)
                 {
-                    GroupNodeData[groupIndex] = nodeData;
+                    GroupNodeData[groupIndex] = InstanceBvhRoot(instance, (BvhNode *)node);
                 }
             }
 
@@ -378,7 +391,7 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
             }
             AllMemoryBarrierWithGroupSync();
 
-            readyNodeMask = GroupNodeMask;
+            const uint readyNodeMask = GroupNodeMask;
 
             // If the first slot is valid, process the contiguous ready prefix.
             if ((readyNodeMask & 1u) == 1)
@@ -406,13 +419,16 @@ void bvh_cull(uint3 DTid: SV_DispatchThreadID, uint groupIndex: SV_GroupIndex)
             meshletBatchStartIndex = GroupMeshletBatchStartIndex;
         }
 
-        if (!processNodeQueue && GroupMeshletBatchStartIndex >= max_candidate_meshlets / DAG_CULL_GROUP_SIZE)
+        if (!processNodeQueue && meshletBatchStartIndex >= max_candidate_meshlets / DAG_CULL_GROUP_SIZE)
             break;
 
         if (groupIndex == 0)
         {
-            GroupNodeCount = b.queue_state.val.node_count;
-            GroupMeshletBatchReadySize = b.meshlet_batch_buffer.val[meshletBatchStartIndex];
+            uint node_count, ready;
+            InterlockedOr(b.queue_state.val.node_count, 0, node_count);
+            InterlockedOr(b.meshlet_batch_buffer.val[meshletBatchStartIndex], 0, ready);
+            GroupNodeCount = node_count;
+            GroupMeshletBatchReadySize = ready;
         }
         GroupMemoryBarrierWithGroupSync();
 

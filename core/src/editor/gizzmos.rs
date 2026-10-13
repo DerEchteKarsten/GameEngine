@@ -16,6 +16,7 @@ use bevy::{
             Commands, Local, Res, ResMut, Single, SystemParam, SystemState, lifetimeless::Read,
         },
     },
+    log::warn_once,
     transform::components::GlobalTransform,
 };
 use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
@@ -30,7 +31,8 @@ use lava::{
     },
 };
 
-const MAX_GIZZMOS: usize = 1_000_000;
+/// Gizmos drawn per frame; of more, the `MAX_GIZZMOS` from `Gizzmos::first` on are drawn.
+pub const MAX_GIZZMOS: usize = 8 * 1024;
 
 pub trait GizzmoShape {
     fn local_transform(&self) -> Mat4;
@@ -146,7 +148,8 @@ impl GizzmoShape for SphereGizzmo {
         let c = oc.dot(oc) - 0.25;
         let discriminant = b * b - c;
 
-        discriminant >= 0.0
+        // Hit, and not entirely behind the camera: its far intersection is ahead.
+        discriminant >= 0.0 && -b + discriminant.sqrt() >= 0.0
     }
 }
 
@@ -212,9 +215,13 @@ pub enum GizzmoType {
     Arrow,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct Gizzmos {
     pub gizzmos: Vec<(Gizzmo, GizzmoType)>,
+    /// Gizmos drawn last frame, which may be more than `MAX_GIZZMOS`.
+    pub total: usize,
+    /// The first of them that is drawn then (the Render Settings slider).
+    pub first: usize,
 }
 
 #[derive(SystemParam)]
@@ -292,11 +299,17 @@ pub(crate) fn extract_gizzmos(
     let system_state = system_state.as_mut().unwrap();
     let mut draw_gizzmos = system_state.get_mut(&mut main_world).unwrap();
     gizzmos.pendings_gizzmos.clear();
+    let total = draw_gizzmos.gizzmos.len();
+    draw_gizzmos.total = total;
+    if total > MAX_GIZZMOS {
+        warn_once!("more than {MAX_GIZZMOS} gizmos: the Render Settings tab picks which are drawn");
+    }
+    let first = draw_gizzmos.first.min(total.saturating_sub(MAX_GIZZMOS));
+    let drawn = &draw_gizzmos.gizzmos[first..(first + MAX_GIZZMOS).min(total)];
 
     let start = 0;
     gizzmos.pendings_gizzmos.extend(
-        draw_gizzmos
-            .gizzmos
+        drawn
             .iter()
             .filter(|(_, ty)| *ty == GizzmoType::Box)
             .map(|(giz, _)| giz),
@@ -305,8 +318,7 @@ pub(crate) fn extract_gizzmos(
     gizzmos.aabb_range = start..after_aabb;
 
     gizzmos.pendings_gizzmos.extend(
-        draw_gizzmos
-            .gizzmos
+        drawn
             .iter()
             .filter(|(_, ty)| *ty == GizzmoType::Sphere)
             .map(|(giz, _)| giz),
@@ -315,8 +327,7 @@ pub(crate) fn extract_gizzmos(
     gizzmos.sphere_range = after_aabb..after_sphere;
 
     gizzmos.pendings_gizzmos.extend(
-        draw_gizzmos
-            .gizzmos
+        drawn
             .iter()
             .filter(|(_, ty)| *ty == GizzmoType::Arrow)
             .map(|(giz, _)| giz),

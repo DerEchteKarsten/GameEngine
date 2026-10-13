@@ -62,9 +62,7 @@ macro_rules! register_editor_views {
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.insert_resource(Gizzmos {
-            gizzmos: Vec::new(),
-        })
+        app.init_resource::<Gizzmos>()
         .add_plugins(RenderDebugUi)
         .insert_resource(self.camera_settings)
         .insert_resource(ViewPort {

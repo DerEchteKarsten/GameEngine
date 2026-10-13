@@ -16,13 +16,14 @@ sh2 sh2Zero()
 // Evaluates spherical harmonics basis for a direction dir.
 // This follows [2] Appendix A2 order when storing in x, y, z and w.
 // (evaluating the associated Legendre polynomials using the polynomial forms)
+// Real SH without the Condon-Shortley phase, in every band (the graphics convention).
 sh2 sh2Evaluate(float3 dir)
 {
 	sh2 result;
 	result.x = 0.28209479177387814347403972578039f;			// L=0 , M= 0
-	result.y =-0.48860251190291992158638462283836f * dir.y;	// L=1 , M=-1
+	result.y = 0.48860251190291992158638462283836f * dir.y;	// L=1 , M=-1
 	result.z = 0.48860251190291992158638462283836f * dir.z;	// L=1 , M= 0
-	result.w =-0.48860251190291992158638462283836f * dir.x;	// L=1 , M= 1
+	result.w = 0.48860251190291992158638462283836f * dir.x;	// L=1 , M= 1
 	return result;
 }
 
@@ -30,9 +31,9 @@ sh3 sh3Evaluate(float3 dir)
 {
 	sh3 result;
 	result[0][0] = 0.28209479177387814347403972578039f;			// L=0 , M= 0
-	result[0][1] =-0.48860251190291992158638462283836f * dir.y;	// L=1 , M=-1
+	result[0][1] = 0.48860251190291992158638462283836f * dir.y;	// L=1 , M=-1
 	result[0][2] = 0.48860251190291992158638462283836f * dir.z;	// L=1 , M= 0
-	result[1][0] =-0.48860251190291992158638462283836f * dir.x;	// L=1 , M= 1
+	result[1][0] = 0.48860251190291992158638462283836f * dir.x;	// L=1 , M= 1
 	result[1][1] = 1.09254843059207907054338570580268f * dir.x * dir.y;						// L=2 , M=-2
 	result[1][2] = 1.09254843059207907054338570580268f * dir.y * dir.z;  					// L=2 , M=-1
 	result[2][0] = 0.31539156525252000603089369029571f * (3.0f * dir.z * dir.z - 1.0f);  	// L=2 , M= 0

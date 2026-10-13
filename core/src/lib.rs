@@ -48,10 +48,13 @@ pub mod ui;
 
 pub use editor::console::register_tracing;
 
+/// The workspace root, from `.cargo/config.toml`: the binaries find their files here whatever
+/// the working directory (the editor font, `windows.ron`, the asset directories).
+pub const WORKSPACE_DIR: &str = env!("WORKSPACE_DIR");
 /// Root of the baked assets: the asset server's source and the asset browser's root.
-pub const ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/assets";
+pub const ASSET_DIR: &str = concat!(env!("WORKSPACE_DIR"), "/game/assets");
 /// The source files (glTF) that the `bake` tool turns into the files in `ASSET_DIR`.
-pub const UNBAKED_ASSET_DIR: &str = "/home/karsten/code/GameEngine/game/unbaked_assets";
+pub const UNBAKED_ASSET_DIR: &str = concat!(env!("WORKSPACE_DIR"), "/game/unbaked_assets");
 pub const INITIAL_WINDOW_SIZE: Vec2 = Vec2::new(2000.0, 2000.0 * 9.0 / 16.0);
 
 /// The asset server setup shared by the game and the headless tools: the baked files in

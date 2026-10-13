@@ -28,7 +28,7 @@ public struct HitInfo {
 
 public static const int kDefaultOpaqueMaterialId = 254;
 
-public struct Material {
+public struct VoxelMaterial {
     public uint2 Data;
 
     public property float3 Color {

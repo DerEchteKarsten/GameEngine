@@ -21,6 +21,7 @@ struct BrdfValue {
     static BrdfValue invalid() {
         BrdfValue res;
         res.value_over_pdf = 0.0;
+        res.value = 0.0;
         res.pdf = 0.0;
         res.transmission_fraction = 0.0;
         return res;
@@ -37,6 +38,7 @@ struct BrdfSample: BrdfValue {
     static BrdfSample invalid() {
         BrdfSample res;
         res.value_over_pdf = 0.0;
+        res.value = 0.0;
         res.pdf = 0.0;
         res.wi = float3(0.0, 0.0, -1.0);
         res.transmission_fraction = 0.0;

@@ -86,11 +86,6 @@ impl<'s, 'w> ViewPortProxy<'s, 'w> {
                 .unwrap_or(UVec2::ONE)
         }
     }
-    pub fn cursor_position(&self) -> Option<Vec2> {
-        let cp = self.window.as_ref()?.cursor_position();
-        cp.and_then(|pos| self.to_viewport_pos(pos))
-    }
-
     pub fn to_viewport_pos(&self, pos: Vec2) -> Option<Vec2> {
         if let Some(vp) = &self.view_port {
             let position = pos - vp.rect.min;

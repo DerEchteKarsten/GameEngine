@@ -1,6 +1,7 @@
 //! Per-frame rendering: swapchain, sync, render resources/settings, the shared scene passes and windowed frame recording.
 use bevy::ecs::change_detection::{DetectChanges, DetectChangesMut};
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect, time::Time};
+use bytemuck::Pod;
 use smallvec::SmallVec;
 use std::{
     collections::HashMap,
@@ -16,7 +17,7 @@ use bevy::{
         query::With,
         resource::Resource,
         schedule::IntoScheduleConfigs,
-        system::{Commands, Local, Res, ResMut, Single, SystemState},
+        system::{Commands, Local, Query, Res, ResMut, Single, SystemState},
         world::{Mut, World},
     },
     log::*,
@@ -47,7 +48,7 @@ use lava::{
     state::Ctx,
     vkobjects::{
         self,
-        queue::{Binary, Frame, FrameSlot, Gfx, PendingAccesses, Queue, Semaphore},
+        queue::{Binary, Frame, FrameSlot, Gfx, PendingAccesses, Queue, Semaphore, Stage},
     },
 };
 
@@ -57,7 +58,10 @@ use crate::{
     INITIAL_WINDOW_SIZE,
     assets::texture::{GpuTexture, texture_index},
     bindless,
-    editor::{gizzmos::GizzmoResources, viewport::ViewPort},
+    editor::{
+        gizzmos::{GizzmoResources, Gizzmos, MAX_GIZZMOS},
+        viewport::ViewPort,
+    },
     id,
     render::{
         ExtractSchedule, FRAMES_IN_FLIGHT, MainWorld, PrimarySurface, Render, RenderApp,
@@ -76,6 +80,21 @@ use lava::bindings::{
 
 /// `MESHLET_STRIDE` in `datatypes.slang`: `groups_y` of every `MeshletDraw`.
 const MESHLET_STRIDE: u32 = 64;
+/// The `OVERFLOW_*` bits of `TraversalVariables.overflow` in `datatypes.slang`: what
+/// `bvh_cull` dropped for lack of space, with the buffer of `RenderResources` that
+/// `RenderResources::fit` then doubles, up to `MAX_CULL_BUFFER` entries.
+const OVERFLOWS: [(u32, &str); 5] = [
+    (1, "bvh_node_stack"),
+    (2, "candidate_meshlets"),
+    (4, "meshlets"),
+    (8, "blended_meshlets"),
+    (16, "outlined_meshlets"),
+];
+/// Entries the cull buffers start with (sponza draws about 10k meshlets) and may grow to.
+const CULL_BUFFER: usize = 64 * 1024;
+const MAX_CULL_BUFFER: usize = 2 * 1024 * 1024;
+/// `MAX_RADIUS` in `draw_outline.slang`.
+pub const MAX_OUTLINE_RADIUS: f32 = 8.0;
 
 /// The frame slots and the queue lease they are submitted through.
 #[derive(Resource)]
@@ -271,11 +290,21 @@ pub(crate) struct RenderCamera {
     pub(crate) transform: Transform,
 }
 
-pub fn extract_camera(mut cmd: Commands, camera: Extract<Single<(&Camera, &GlobalTransform)>>) {
-    cmd.insert_resource(RenderCamera {
-        camera: *camera.0,
-        transform: camera.1.compute_transform(),
-    });
+/// The scene is drawn from the first camera; without one, only the UI is drawn.
+pub fn extract_camera(mut cmd: Commands, cameras: Extract<Query<(&Camera, &GlobalTransform)>>) {
+    let mut cameras = cameras.iter();
+    match cameras.next() {
+        Some((camera, transform)) => {
+            if cameras.next().is_some() {
+                warn_once!("several cameras: the scene is drawn from the first");
+            }
+            cmd.insert_resource(RenderCamera {
+                camera: *camera,
+                transform: transform.compute_transform(),
+            });
+        }
+        None => cmd.remove_resource::<RenderCamera>(),
+    }
 }
 
 /// Bindless index of the sky texture, `NULL_HANDLE` while it isn't loaded.
@@ -347,19 +376,28 @@ pub struct RenderResources {
     /// shows through. The composite pass reads it through the sampler (a typed load of a storage image is several
     /// times slower on Intel) and resets it as storage.
     revealage: Image<R8Unorm, ColorAttachmentSampledStorageTransferDst>,
+    /// Where the outlined meshlets are, cleared and drawn by the outline pass, so the scene
+    /// depth stays as the scene left it.
+    outline_mask: Image<R8Unorm, ColorAttachmentSampled>,
     meshlets: Buffer<InstancedMeshlet>,
     /// Visible meshlets of materials with a negative alpha cutoff, drawn after `meshlets`.
     blended_meshlets: Buffer<InstancedMeshlet>,
     /// Visible meshlets of `OUTLINE` instances, also in one of the lists above.
     outlined_meshlets: Buffer<InstancedMeshlet>,
     bvh_node_stack: Buffer<InstanceBvhRoot>,
+    /// One counter per `MESHLET_BATCH` candidates: `candidate_meshlets.len() / MESHLET_BATCH`.
     meshlet_batches: Buffer<u32>,
     candidate_meshlets: Buffer<InstanceMeshletIndex>,
     variables: Buffer<TraversalVariables, StorageIndirect>,
     /// `bvh_node_stack` and `meshlet_batches` still have to be filled, and `accum` and `revealage`
     /// cleared: after that, the passes that use them leave them that way.
     fresh: bool,
+    /// The `OVERFLOWS` bits of buffers that reached `MAX_CULL_BUFFER`, logged once.
+    reported_overflow: u32,
 }
+
+/// `DAG_CULL_GROUP_SIZE` in `bvh_cull.slang`: candidates per batch counter.
+const MESHLET_BATCH: usize = 64;
 
 #[derive(Resource, Default, Clone, Reflect)]
 #[reflect(Resource)]
@@ -413,6 +451,7 @@ pub(crate) fn settings_ui(
     mut s: ResMut<RenderSettings>,
     cam: Single<(&Camera, &GlobalTransform)>,
     mut view_port: Option<ResMut<ViewPort>>,
+    mut gizmos: Option<ResMut<Gizzmos>>,
     mut last_times: Local<([Duration; 32], u64)>,
 ) {
     // Edits a copy, so the settings only count as changed when a value does.
@@ -463,8 +502,17 @@ pub(crate) fn settings_ui(
         s.outline_color = ui.color_picker(id!(), s.outline_color.extend(1.0)).xyz();
 
         s.outline_radius = ui.property("Outline Thickness", |ui, width| {
-            ui.slider(id!(), 0.0, 6.0, width, s.outline_radius)
+            ui.slider(id!(), 0.0, MAX_OUTLINE_RADIUS, width, s.outline_radius)
         });
+        if let Some(gizmos) = gizmos.as_deref_mut()
+            && gizmos.total > MAX_GIZZMOS
+        {
+            // Which `MAX_GIZZMOS` of them are drawn.
+            let max = (gizmos.total - MAX_GIZZMOS) as f32;
+            gizmos.first = ui.property("First Gizmo", |ui, width| {
+                ui.slider(id!(), 0.0, max, width, gizmos.first as f32)
+            }) as usize;
+        }
         s.pixel_error = ui.property("LOD Bias", |ui, width| {
             ui.slider(id!(), 0.0, 5.0, width, s.pixel_error)
         });
@@ -480,7 +528,7 @@ pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<R
 }
 
 type RenderParams<'w, 's> = (
-    ResMut<'w, RenderCamera>,
+    Option<ResMut<'w, RenderCamera>>,
     Res<'w, InstanceManager>,
     Option<Res<'w, GizzmoResources>>,
     Local<'s, Option<RenderResources>>,
@@ -538,6 +586,12 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
             timings.slots[frame_in_flight].submitted = (profiler::frame(), profiler::now_ns());
         }
+        let swapchain = world.resource::<Swapchain>();
+        let sync = world.resource::<SynchronizationResources>();
+        let wait = [&sync.render_finished[swapchain.image_index as usize]];
+        queue
+            .present(swapchain, swapchain.image_index, &wait)
+            .unwrap();
     });
 }
 
@@ -564,16 +618,21 @@ impl RenderResources {
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap())
                     .bind_storage(bindless::storage_slots(1).unwrap()),
-                meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
-                blended_meshlets: Buffer::new(256 * 1024, false).unwrap(),
-                outlined_meshlets: Buffer::new(256 * 1024, false).unwrap(),
-                bvh_node_stack: Buffer::new(2 * 1024 * 1024, false).unwrap(),
+                outline_mask: Image::new(depth_size)
+                    .unwrap()
+                    .bind_sampled(bindless::sampled_slot().unwrap()),
+                meshlets: Buffer::new(CULL_BUFFER, false).unwrap(),
+                blended_meshlets: Buffer::new(CULL_BUFFER, false).unwrap(),
+                outlined_meshlets: Buffer::new(CULL_BUFFER, false).unwrap(),
+                bvh_node_stack: Buffer::new(CULL_BUFFER, false).unwrap(),
                 variables: Buffer::new(1, false).unwrap(),
-                meshlet_batches: Buffer::new(2 * 1024 * 1024, false).unwrap(),
-                candidate_meshlets: Buffer::new(2 * 1024 * 1024, false).unwrap(),
+                meshlet_batches: Buffer::new(CULL_BUFFER / MESHLET_BATCH, false).unwrap(),
+                candidate_meshlets: Buffer::new(CULL_BUFFER, false).unwrap(),
                 fresh: true,
+                reported_overflow: 0,
             }
         });
+        resources.grow_overflowed(frame);
 
         let depth_extent = resources.depth_attachment.extent();
         if depth_extent.cmplt(target_size).any() {
@@ -607,6 +666,13 @@ impl RenderResources {
                     .bind_storage(bindless::storage_slots(1).unwrap()),
             );
             frame.retire(old);
+            let old = std::mem::replace(
+                &mut resources.outline_mask,
+                Image::new(size)
+                    .unwrap()
+                    .bind_sampled(bindless::sampled_slot().unwrap()),
+            );
+            frame.retire(old);
             resources.fresh = true;
         }
     }
@@ -614,6 +680,58 @@ impl RenderResources {
     pub(super) fn visible_meshlets(&self) -> u32 {
         let draws = &self.variables[0].draws;
         draws[0].meshlet_count + draws[1].meshlet_count
+    }
+
+    /// Doubles every buffer `bvh_cull` ran out of, retiring the old one with the frame, and
+    /// warns once per buffer that is at `MAX_CULL_BUFFER`. Like `visible_meshlets` it reads
+    /// what the last frames left in `variables`, so an overflow may show up a frame late,
+    /// but never falsely; the frame that overflowed drew without what didn't fit.
+    fn grow_overflowed(&mut self, frame: &mut Frame) {
+        let overflow = self.variables[0].overflow;
+        if overflow == 0 {
+            return;
+        }
+        fn grow<T: Pod + Send + Sync>(buffer: &mut Buffer<T>, len: usize, frame: &mut Frame) {
+            let old = std::mem::replace(buffer, Buffer::new(len, false).unwrap());
+            frame.retire(old);
+        }
+        for (bit, name) in OVERFLOWS {
+            if overflow & bit == 0 {
+                continue;
+            }
+            let len = match bit {
+                1 => self.bvh_node_stack.len(),
+                2 => self.candidate_meshlets.len(),
+                4 => self.meshlets.len(),
+                8 => self.blended_meshlets.len(),
+                _ => self.outlined_meshlets.len(),
+            };
+            if len >= MAX_CULL_BUFFER {
+                if self.reported_overflow & bit == 0 {
+                    self.reported_overflow |= bit;
+                    warn!(
+                        "the BVH cull ran out of space in RenderResources.{name} at its maximum of {MAX_CULL_BUFFER} entries"
+                    );
+                }
+                continue;
+            }
+            let len = (len * 2).min(MAX_CULL_BUFFER);
+            info!(
+                "the BVH cull ran out of space in RenderResources.{name}: growing it to {len} entries"
+            );
+            match bit {
+                1 => grow(&mut self.bvh_node_stack, len, frame),
+                2 => {
+                    grow(&mut self.candidate_meshlets, len, frame);
+                    grow(&mut self.meshlet_batches, len / MESHLET_BATCH, frame);
+                }
+                4 => grow(&mut self.meshlets, len, frame),
+                8 => grow(&mut self.blended_meshlets, len, frame),
+                _ => grow(&mut self.outlined_meshlets, len, frame),
+            }
+            // The queue and the batch counters have to be filled again.
+            self.fresh = true;
+        }
     }
 }
 
@@ -632,10 +750,6 @@ pub(super) fn record_scene<
     gizzmos: Option<&GizzmoResources>,
     frame_in_flight: usize,
 ) {
-    // for i in resources.meshlets.range(0..10) {
-    //     log::info!("{:#?}", i);
-    // }
-
     let draws = resources
         .variables
         .byte_range(
@@ -684,6 +798,7 @@ pub(super) fn record_scene<
             candidate_meshlet_write_offset: 0,
             meshlet_batch_read_offset: 0,
             total_meshlets: 0,
+            overflow: 0,
         },
     );
     if instances.instance_count > 0 {
@@ -798,7 +913,7 @@ pub(super) fn record_scene<
 
     if instances.any_outlined {
         cmd.raster(target_size)
-            .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]))
+            .color_attachment(resources.outline_mask.whole_view(), Some([0.0]))
             .launch_indirect(
                 RasterOutline::push_bindings(
                     view,
@@ -817,7 +932,7 @@ pub(super) fn record_scene<
 
         cmd.compute(
             DrawOutline::push_bindings(
-                resources.depth_attachment.whole_view(),
+                resources.outline_mask.whole_view(),
                 target_image,
                 setting.outline_color.extend(setting.outline_radius),
                 target_size,
@@ -852,12 +967,7 @@ fn record_frame(
     ): RenderParams,
 ) {
     let target_size = target.rect.size().as_uvec2().max(UVec2::ONE);
-    RenderResources::fit(
-        &mut resources,
-        target_size,
-        UVec2::from(swapchain.size),
-        &mut frame,
-    );
+    RenderResources::fit(&mut resources, target_size, swapchain.size, &mut frame);
     let Some(resources) = resources.as_mut() else {
         return;
     };
@@ -886,19 +996,30 @@ fn record_frame(
             .extend(swapchain.present_modes.iter().map(|(_, name)| *name));
     }
 
+    // The frame waits for the acquired image only from its first use on, so it culls and
+    // shades before that: the composite pass when the scene is drawn straight into it, else
+    // the UI rendering (or just the present, which chains with any stage).
+    let scene_into_swapchain = target.image.is_none() && !target.paused && camera.is_some();
+    let acquired = sync.image_available[frame_in_flight].info().at(if scene_into_swapchain {
+        Stage::Compute
+    } else {
+        Stage::Raster
+    });
     let states = frame
         .execute(
             queue,
             resource_states.pending.take().unwrap(),
-            &[sync.image_available[frame_in_flight].info()],
+            &[acquired],
             &[sync.render_finished[swapchain.image_index as usize].info()],
             |cmd| {
-                if !target.paused {
+                if !target.paused
+                    && let Some(camera) = camera.as_deref_mut()
+                {
                     record_scene(
                         cmd,
                         target_image,
                         target_size,
-                        &mut camera,
+                        camera,
                         &sky,
                         &instances,
                         resources,
@@ -936,10 +1057,6 @@ fn record_frame(
         .unwrap();
 
     resource_states.pending = Some(states);
-    let wait = [&sync.render_finished[swapchain.image_index as usize]];
-    queue
-        .present(&swapchain, swapchain.image_index, &wait)
-        .unwrap();
 }
 
 #[derive(Resource, Default)]
@@ -970,7 +1087,7 @@ pub fn RenderPassesPlugin(app: &mut App) {
         .add_systems(RenderSystems::AquireSwapchainImage, aquire_swapchain_image)
         .insert_resource(RenderSettings::default())
         .init_resource::<ViewPortTarget>()
-        .add_systems(ExtractSchedule, extract_view_port.after(resize_swapchain))
+        .add_systems(ExtractSchedule, (resize_swapchain, extract_view_port).chain())
         .add_systems(RenderStartup, init_render);
 }
 

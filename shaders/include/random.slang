@@ -23,15 +23,15 @@ float radical_inverse_vdc(uint bits) {
     return float(bits) * 2.3283064365386963e-10; // / 0x100000000
 }
 
+// Point i of n, in [0, 1).
 float2 hammersley(uint i, uint n) {
-    return float2(float(i + 1) / n, radical_inverse_vdc(i + 1));
+    return float2(float(i) / n, radical_inverse_vdc(i));
 }
 
+// Point i of the R2 sequence, in 32-bit fixed point so that it stays exact at any i (the
+// constants are 1 / M_PLASTIC and 1 / M_PLASTIC^2 times 2^32).
 float2 r2_sequence(uint i) {
-    const float a1 = 1.0 / M_PLASTIC;
-    const float a2 = 1.0 / (M_PLASTIC * M_PLASTIC);
-
-    return frac(float2(a1, a2) * i + 0.5);
+    return float2(uint2(0xC13FA9A9u, 0x91E10DA5u) * i + 0x80000000u) * (1.0 / 4294967296.0);
 }
 
 struct RandomSamplerState

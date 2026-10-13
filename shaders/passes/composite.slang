@@ -38,11 +38,6 @@ float3 view_dir(uint2 pixelCoord) {
     return normalize(direction.xyz);
 }
 
-// Z is up and u grows towards +Y (to the right of +X); v = 0 is the top row of the texture.
-float2 equirectangular_uv(float3 dir) {
-    return float2(atan2(dir.y, dir.x) * 0.5 * FRAC_1_PI + 0.5, acos(clamp(dir.z, -1.0, 1.0)) * FRAC_1_PI);
-}
-
 float3 sky_color(uint2 pixel) {
     if (sky == NULL_HANDLE) {
         return NO_SKY_COLOR;
@@ -54,7 +49,7 @@ float3 sky_color(uint2 pixel) {
     let pixel_angle = length(view_dir(pixel + uint2(1, 0)) - dir);
     let lod = log2(max(pixel_angle * float(texture.GetDimensions().y) * FRAC_1_PI, 1.0));
     // Sampler 2 repeats, so the seam where u wraps is filtered across.
-    return texture.SampleLevel(equirectangular_uv(dir), lod, 2).rgb;
+    return texture.SampleLevel(direction_to_equirect_uv(dir), lod, 2).rgb;
 }
 
 float3 aces(float3 x) {

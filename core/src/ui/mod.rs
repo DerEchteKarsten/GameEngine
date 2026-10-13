@@ -58,6 +58,7 @@ use std::{
     collections::HashMap,
     fs,
     num::NonZeroU64,
+    path::{Path, PathBuf},
     range::Range,
     sync::{Mutex, atomic::Ordering},
 };
@@ -447,7 +448,7 @@ impl UiContext {
     }
 
     pub(crate) fn new() -> Result<(Self, UiWindows, DockingNode)> {
-        let bytes = fs::read("/home/karsten/code/GameEngine/editor_font.ttf")?;
+        let bytes = fs::read(Path::new(crate::WORKSPACE_DIR).join("editor_font.ttf"))?;
         let font = Font::from_bytes(bytes, FontSettings::default()).unwrap();
 
         // Saved windows are only created once one of their tabs is requested; until then
@@ -455,7 +456,7 @@ impl UiContext {
         let SaveState {
             docking_nodes,
             windows,
-        } = ron::from_str(&fs::read_to_string("windows.ron").unwrap_or("".to_owned())).unwrap_or(
+        } = ron::from_str(&fs::read_to_string(windows_file()).unwrap_or("".to_owned())).unwrap_or(
             SaveState {
                 docking_nodes: DockingNode::Leaf { window: u32::MAX },
                 windows: Vec::new(),
@@ -739,10 +740,15 @@ pub fn save_windows(
 
     let config = PrettyConfig::new();
     std::fs::write(
-        "windows.ron",
+        windows_file(),
         ron::ser::to_string_pretty(&save_state, config).unwrap(),
     )
     .unwrap();
+}
+
+/// The saved window layout, in the workspace root.
+fn windows_file() -> PathBuf {
+    Path::new(crate::WORKSPACE_DIR).join("windows.ron")
 }
 
 #[allow(non_snake_case)]

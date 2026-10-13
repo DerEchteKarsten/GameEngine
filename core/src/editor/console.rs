@@ -1,9 +1,10 @@
 //! Editor log console and the tracing subscriber: the console's capture layer (logs and Vulkan validation), with `profiling` also the profiler's span layer, plus the console UI.
 use bevy::{ecs::reflect::ReflectResource, reflect::Reflect};
-use std::cell::UnsafeCell;
+use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Mutex, OnceLock};
 
 use bevy::app::{App, Plugin, Update};
 use bevy::ecs::prelude::*;
@@ -124,19 +125,43 @@ impl LogEntry {
             MessageType::Validation { .. } => self.buffer.len(),
         }
     }
+    /// The level the console filters by: a validation message's severity as a level.
+    fn level(&self) -> u8 {
+        match self.message_type {
+            MessageType::Normal { level, .. } => level,
+            MessageType::Validation { serverity, .. } => {
+                if serverity.contains(DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+                    4
+                } else if serverity.contains(DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+                    3
+                } else if serverity.contains(DebugUtilsMessageSeverityFlagsEXT::INFO) {
+                    2
+                } else {
+                    0
+                }
+            }
+        }
+    }
+    /// Level at least `min_level`, and `filter` somewhere in the text, case-insensitively.
+    fn passes(&self, min_level: u8, filter: &str) -> bool {
+        self.level() >= min_level
+            && (filter.is_empty()
+                || self
+                    .buffer
+                    .as_bytes()
+                    .windows(filter.len())
+                    .any(|window| window.eq_ignore_ascii_case(filter.as_bytes())))
+    }
 }
 
-struct SharedBuffer {
-    buffer: std::cell::UnsafeCell<Box<[LogEntry; MAX_ENTIRES]>>,
-    head: AtomicU64,
-    frame: AtomicU64,
-}
+/// The frame the console counts, stamped on every entry.
+static FRAME: AtomicU64 = AtomicU64::new(0);
 
-unsafe impl Send for SharedBuffer {}
-unsafe impl Sync for SharedBuffer {}
-
+/// Sends every event to the console; the UI thread owns the entries (`ConsoleLog`). The
+/// channel holds `MAX_ENTRIES`; when the console doesn't keep up, events are dropped from the
+/// console only (stderr still gets them).
 struct ConsoleLayer {
-    buffer: Arc<SharedBuffer>,
+    sender: SyncSender<LogEntry>,
 }
 
 impl<S> Layer<S> for ConsoleLayer
@@ -144,7 +169,7 @@ where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-        let frame = self.buffer.frame.load(std::sync::atomic::Ordering::Relaxed);
+        let frame = FRAME.load(Ordering::Relaxed);
 
         let entry = {
             use tracing::field::{Field, Visit};
@@ -158,11 +183,12 @@ where
                 flags: Option<DebugUtilsMessageSeverityFlagsEXT>,
                 typ: Option<DebugUtilsMessageTypeFlagsEXT>,
             }
+            // Fields the console doesn't show are dropped: logging about them from inside
+            // the layer would recurse.
             impl Visit for Visitor {
                 fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
-                    match f.name() {
-                        "message" => self.message = format!("{:?}", v),
-                        _ => println!("Uncaptured Field: {}: {:?}", f.name(), v),
+                    if f.name() == "message" {
+                        self.message = format!("{:?}", v);
                     }
                 }
                 fn record_u64(&mut self, field: &tracing_core::Field, value: u64) {
@@ -176,7 +202,7 @@ where
                             self.typ = Some(DebugUtilsMessageTypeFlagsEXT::from_raw(value as u32))
                         }
                         "log.line" => self.line = Some(value),
-                        _ => println!("Uncaptured Field: {}: {:?}", field.name(), value),
+                        _ => {}
                     }
                 }
                 fn record_str(&mut self, field: &tracing_core::Field, value: &str) {
@@ -185,8 +211,7 @@ where
                         "log.target" => self.target = Some(value.to_owned()),
                         "log.file" => self.file = Some(value.to_owned()),
                         "validation_location" => self.location = Some(value.to_owned()),
-                        "log.module_path" => {}
-                        _ => println!("Uncaptured Field: {}: {:?}", field.name(), value),
+                        _ => {}
                     }
                 }
             }
@@ -206,7 +231,7 @@ where
             {
                 m.message.push_str(&format!("{}:{}", file, line));
             } else {
-                m.message.push_str(&"Unknown Location");
+                m.message.push_str("Unknown Location");
             };
 
             let target = m.message.len();
@@ -235,18 +260,12 @@ where
             }
         };
 
-        let idx = self
-            .buffer
-            .head
-            .fetch_add(1, std::sync::atomic::Ordering::Acquire) as usize
-            % MAX_ENTIRES;
-        unsafe {
-            self.buffer.buffer.get().as_mut().unwrap()[idx] = entry;
-        };
+        let _ = self.sender.try_send(entry);
     }
 }
 
-const MAX_ENTIRES: usize = 10_000;
+/// Entries the console keeps; older ones are dropped.
+const MAX_ENTRIES: usize = 10_000;
 
 #[derive(Resource, Reflect)]
 #[reflect(Resource)]
@@ -254,22 +273,20 @@ pub struct ConsoleUiState {
     pub filter_text: String,
     pub auto_scroll: bool,
     pub min_level: u8,
+    /// Numbers (`ConsoleLog::number`) of the entries that pass the filter, oldest first.
     #[reflect(ignore, clone)]
-    pub filter_buf: Vec<u32>,
-    pub filter_buf_head: usize,
-    pub matches: usize,
-    pub old_head: usize,
+    pub matches: VecDeque<usize>,
+    /// Entries up to this number have been filtered.
+    pub filtered: usize,
     #[reflect(ignore, clone)]
-    pub inspecting: Option<(LogEntry, u32)>,
+    pub inspecting: Option<(LogEntry, usize)>,
 }
 
 impl Default for ConsoleUiState {
     fn default() -> Self {
         Self {
-            matches: 0,
-            filter_buf_head: 0,
-            old_head: 0,
-            filter_buf: vec![0; MAX_ENTIRES],
+            matches: VecDeque::new(),
+            filtered: 0,
             filter_text: String::new(),
             auto_scroll: false,
             min_level: 2,
@@ -278,15 +295,33 @@ impl Default for ConsoleUiState {
     }
 }
 
+/// The console's entries, drained from the layer's channel every frame. Entry `n` (its
+/// number, counting every entry ever received) is `entries[n - first]`.
 #[derive(Resource)]
-struct ConsoleBuffer {
-    buffer: Arc<SharedBuffer>,
+pub struct ConsoleLog {
+    /// Locked only by `console_window`; a `Receiver` isn't `Sync` on its own.
+    receiver: Mutex<Receiver<LogEntry>>,
+    entries: VecDeque<LogEntry>,
+    /// The number of `entries[0]`.
+    first: usize,
+    /// Entries before this number were cleared.
+    cleared: usize,
+}
+
+impl ConsoleLog {
+    fn get(&self, number: usize) -> Option<&LogEntry> {
+        self.entries.get(number.checked_sub(self.first)?)
+    }
+    fn end(&self) -> usize {
+        self.first + self.entries.len()
+    }
 }
 
 pub struct ConsolePlugin;
 
-/// The console's log buffer, filled by the layer [`register_tracing`] installs.
-static LOG: OnceLock<Arc<SharedBuffer>> = OnceLock::new();
+/// The receiving end of the console layer [`register_tracing`] installs, until
+/// [`ConsolePlugin`] takes it.
+static LOG: OnceLock<Mutex<Option<Receiver<LogEntry>>>> = OnceLock::new();
 
 /// Installs the global tracing subscriber: logs go to the console and stderr, spans (with the
 /// `profiling` feature) to the profiler. `RUST_LOG` overrides the level. Call it
@@ -297,11 +332,7 @@ pub fn register_tracing() {
         use tracing_subscriber::prelude::*;
         use tracing_subscriber::{EnvFilter, Registry};
 
-        let buffer = Arc::new(SharedBuffer {
-            buffer: UnsafeCell::new(Box::new(std::array::from_fn(|_| LogEntry::default()))),
-            head: AtomicU64::new(0),
-            frame: AtomicU64::new(0),
-        });
+        let (sender, receiver) = sync_channel(MAX_ENTRIES);
         let env_filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("debug,wgpu=warn,naga=warn"));
         let fmt = tracing_subscriber::fmt::layer()
@@ -310,9 +341,7 @@ pub fn register_tracing() {
             .with_ansi(true);
         let subscriber = Registry::default()
             .with(env_filter)
-            .with(ConsoleLayer {
-                buffer: buffer.clone(),
-            })
+            .with(ConsoleLayer { sender })
             .with(fmt);
         #[cfg(feature = "profiling")]
         let subscriber = subscriber.with(crate::profiler::spans::ProfileLayer);
@@ -320,14 +349,20 @@ pub fn register_tracing() {
             eprintln!("WARNING: global tracing subscriber already set — the console stays empty");
         }
         let _ = tracing_log::LogTracer::init();
-        buffer
+        Mutex::new(Some(receiver))
     });
 }
 
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
         register_tracing();
-        let buffer = LOG.get().expect("registered above").clone();
+        let receiver = LOG
+            .get()
+            .expect("registered above")
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the console plugin is added once");
 
         {
             let old = std::panic::take_hook();
@@ -345,23 +380,33 @@ impl Plugin for ConsolePlugin {
             }));
         }
 
-        app.insert_resource(ConsoleBuffer { buffer })
-            .insert_resource(ConsoleUiState::default())
-            .add_systems(Update, (console_window, console_inspector));
+        app.insert_resource(ConsoleLog {
+            receiver: Mutex::new(receiver),
+            entries: VecDeque::with_capacity(MAX_ENTRIES),
+            first: 0,
+            cleared: 0,
+        })
+        .insert_resource(ConsoleUiState::default())
+        .add_systems(Update, (console_window, console_inspector));
     }
 }
 
 fn console_window(
-    log: Res<ConsoleBuffer>,
+    mut log: ResMut<ConsoleLog>,
     mut ui_state: ResMut<ConsoleUiState>,
     mut ui_builder: UiBuilder,
 ) {
-    log.buffer
-        .frame
-        .fetch_add(1, std::sync::atomic::Ordering::Release);
+    FRAME.fetch_add(1, Ordering::Relaxed);
+    let log = &mut *log;
+    while let Ok(entry) = log.receiver.get_mut().unwrap().try_recv() {
+        if log.entries.len() == MAX_ENTRIES {
+            log.entries.pop_front();
+            log.first += 1;
+        }
+        log.entries.push_back(entry);
+    }
 
     ui_builder.build("Console", |ui| {
-        let head = log.buffer.head.load(std::sync::atomic::Ordering::Relaxed) as usize;
         let (min_level_changed, filter_changed) = ui.row(|ui| {
             ui.label("Level:");
             let prev = ui_state.min_level;
@@ -374,81 +419,52 @@ fn console_window(
             ui_state.auto_scroll = ui.checkbox("Auto-scroll", ui_state.auto_scroll);
 
             if ui.button("Clear log") {
-                log.buffer.head.store(0, Ordering::Relaxed);
-                ui_state.filter_buf_head = 0;
-                ui_state.old_head = head.saturating_sub(MAX_ENTIRES);
-                ui_state.matches = 0;
+                log.cleared = log.end();
             }
             (prev != ui_state.min_level, filter_changed)
         });
         let size = ui.available_size();
 
-        let filter_lc = ui_state.filter_text.to_lowercase();
-        let min_level = ui_state.min_level;
-        let filter = |entry: &LogEntry| {
-            // let entry_level_idx = entry.level
-
-            // let filter = entry.message.to_lowercase().contains(&filter_lc)
-            //     || entry.target.to_lowercase().contains(&filter_lc);
-
-            // let level = entry_level_idx >= min_level;
-
-            // if filter && level {
-            //     Some(entry.format())
-            // } else {
-            //     None
-            // }
-            // Some(entry.format())
-            true
-        };
-
+        let ui_state = &mut *ui_state;
+        let from = log.first.max(log.cleared);
         if filter_changed || min_level_changed {
-            ui_state.filter_buf_head = 0;
-            ui_state.old_head = head.saturating_sub(MAX_ENTIRES);
-            ui_state.matches = 0;
+            ui_state.matches.clear();
+            ui_state.filtered = from;
         }
-
-        let buffer = unsafe { log.buffer.buffer.get().as_ref().unwrap() };
-
-        for k in ui_state.old_head..head {
-            let idx = k % MAX_ENTIRES;
-
-            if filter(&buffer[idx]) {
-                let filter_head = ui_state.filter_buf_head;
-                ui_state.filter_buf[filter_head] = idx as u32;
-                ui_state.filter_buf_head = (ui_state.filter_buf_head + 1) % MAX_ENTIRES;
-                ui_state.matches += 1;
+        // Matches of entries that are gone, and new entries.
+        while ui_state.matches.front().is_some_and(|&n| n < from) {
+            ui_state.matches.pop_front();
+        }
+        for number in ui_state.filtered.max(from)..log.end() {
+            let entry = log.get(number).unwrap();
+            if entry.passes(ui_state.min_level, &ui_state.filter_text) {
+                ui_state.matches.push_back(number);
             }
         }
-        ui_state.old_head = head;
-        let len = ui_state.matches.min(MAX_ENTIRES);
+        ui_state.filtered = log.end();
+
         ui.list(
             id!(),
             size,
-            len,
+            ui_state.matches.len(),
             ui_state.auto_scroll,
             |ui, i| {
-                let offset = if ui_state.matches < MAX_ENTIRES {
-                    0
-                } else {
-                    ui_state.filter_buf_head
-                };
-                let idx = (offset + i) % MAX_ENTIRES;
-                let entry_idx = &ui_state.filter_buf[idx];
-                let entry = buffer[*entry_idx as usize].clone();
+                let number = ui_state.matches[i];
+                let entry = log.get(number).unwrap();
                 let (message, color) = entry.format();
                 let message = fit_text(&message, ui.available_size().x, Ellipsis::End);
                 let inspected = ui_state
                     .inspecting
                     .as_ref()
-                    .is_some_and(|i| i.1 == *entry_idx);
+                    .is_some_and(|i| i.1 == number);
                 if ui.selectable(&message, color, inspected) {
-                    ui_state.inspecting = Some((entry, *entry_idx));
+                    ui_state.inspecting = Some((entry.clone(), number));
                 }
             },
         );
     });
 }
+
 fn console_inspector(mut ui: UiBuilder, ui_state: Res<ConsoleUiState>) {
     ui.build("Inspect Log Entry", |ui| {
         let Some((entry, _)) = &ui_state.inspecting else {
@@ -479,10 +495,14 @@ fn console_inspector(mut ui: UiBuilder, ui_state: Res<ConsoleUiState>) {
         ui.collapsable(true, id!(), "Location", |ui| {
             let width = ui.available_size().x;
             ui.wrapping_text(location, width, UiContext::ACENT);
+            // Ctrl-click opens the location in `$VISUAL`, else `$EDITOR`, else zeditor.
             if ui.prev_clicked() && ui.ctx.ctrl {
-                let mut cmd = std::process::Command::new("zeditor");
-                cmd.arg(location);
-                cmd.spawn().unwrap();
+                let editor = std::env::var("VISUAL")
+                    .or_else(|_| std::env::var("EDITOR"))
+                    .unwrap_or_else(|_| "zeditor".to_string());
+                if let Err(err) = std::process::Command::new(&editor).arg(location).spawn() {
+                    tracing::error!("failed to open {location} in {editor}: {err}");
+                }
             }
         });
     });
