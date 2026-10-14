@@ -127,7 +127,7 @@ pub(crate) fn write_texture_slots(
         })
         .collect();
     bindless::bind(
-        writes.iter().map(|(image, _)| *image),
+        writes.iter().map(|(image, _)| image.clone()),
         writes
             .iter()
             .map(|(_, slot)| BindlessHandle::sampled(*slot)),

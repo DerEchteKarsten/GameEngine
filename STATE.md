@@ -8,7 +8,7 @@ Bugs come from a read-only review on 2026-10-11 (**verified**: confirmed in the 
 
 ## core: renderer
 ----intended----
-- **GPU use-after-free on unload and hot reload (verified).** `GpuMesh.buffer` (`assets/mesh.rs:56-59`) and texture images are freed on drop, without `Frame::retire`, while frames in flight read them; `GpuMaterial::drop` returns its slot at once (`assets/material.rs:211-216`), so a pending frame can read another material. Rebaking with the editor open triggers it.
+- **GPU use-after-free on unload and hot reload (verified).** Texture images are destroyed on drop while frames in flight sample them through their bindless slots, and `GpuMaterial::drop` returns its slot at once (`assets/material.rs:211-216`), so a pending frame can read another material. Rebaking with the editor open triggers it. (Mesh buffers are kept alive by their frames since the keepalive slab, through `Frame::uses`.)
 (This will be reworked when we move onto streaming geometry anyways)
 - `visible_meshlets()` reads `variables` on the CPU while the GPU may write it (`render/render.rs:557-560`).
 (only a debug feature anyways)
@@ -52,12 +52,11 @@ Bugs come from a read-only review on 2026-10-11 (**verified**: confirmed in the 
 
 --- find solutions ----
 - Pipelines are created synchronously on first use, under a write lock, with no `VkPipelineCache` (`command_buffer.rs:233-244`, `:405`, `:602-607`, `:768`). (Proposals in `lava/src/scratchpad.rs`: per-pass locks, a warm-up list, a cache file.)
-- `PendingAccesses` is never pruned of destroyed resources; each command scans pending × accesses (`command_buffer.rs:1964-2020`). (Proposal in `lava/src/scratchpad.rs`: prune through the drop hooks.)
 
 --- future work ---
 - Every instance is re-extracted and rewritten each frame, static or not, reading each material from host-mapped memory (`render/world.rs:120-179`).
 (Persistent instance slots with change detection, sketched in `core/src/scratchpad.rs`; needs more thought first)
-- Per-frame allocations in the editor: the inspector's `reflect_clone` and labels (`editor/selected.rs:745-777`), the hierarchy (`editor/picking.rs:83-166`, not virtualised), `UiWindows::by_layer` (`ui/mod.rs:225-239`); and a `Box` per `Frame::retire`.
+- Per-frame allocations in the editor: the inspector's `reflect_clone` and labels (`editor/selected.rs:745-777`), the hierarchy (`editor/picking.rs:83-166`, not virtualised), `UiWindows::by_layer` (`ui/mod.rs:225-239`).
 (The editor is a debug feature: not worth complicating. Sketches in `core/src/scratchpad.rs`)
  
 --- intended ---
@@ -79,6 +78,3 @@ Proposal, no import flag:
 3. The file stays a scene; a glTF of one mesh node is a scene of one entity (the browser can show it with a mesh icon and drop it like a mesh).
 4. Merging is the author's choice: a node suffix like `-merge` makes the bake weld that subtree into one `.mesh` with the children's transforms baked in; later an editor "merge selected" for already baked assets.
 Steps 1 and 2 change the format (`--force` bake) and fit the streaming geometry rework; 4 is independent.
-
-### One keepalive for every lava object (2026-10-13)
-A slab of (reference count, image layout) words, one per lava object; objects stay inline in their owners, views and slices point at the word and count it, and frame slots count what they use until their fence, replacing `Frame::retire`, the hot-reload `keep` list and the retire-before-slot-reuse rule, with lifetime-free `ImageView`/`BufferSlice` handles. Plan and trade-offs in `lava/src/scratchpad.rs` (section 3).

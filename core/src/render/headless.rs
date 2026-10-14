@@ -110,8 +110,6 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     let mut camera = render_world
         .remove_resource::<RenderCamera>()
         .expect("the scene needs a camera");
-    let sky = render_world.resource::<RenderSkybox>();
-    let instances = render_world.resource::<InstanceManager>();
 
     #[cfg(feature = "profiling")]
     {
@@ -119,7 +117,10 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
         renderer.slot.set_counters(counters);
     }
     let mut frame = renderer.slot.begin().unwrap();
-    RenderResources::fit(&mut renderer.resources, size, size, &mut frame);
+    frame.uses(render_world.resource_mut::<InstanceManager>().meshes.drain(..));
+    let sky = render_world.resource::<RenderSkybox>();
+    let instances = render_world.resource::<InstanceManager>();
+    RenderResources::fit(&mut renderer.resources, size, size);
     let resources = renderer.resources.as_mut().unwrap();
     let (image, readback) = (&renderer.image, &renderer.readback);
     #[cfg(feature = "profiling")]

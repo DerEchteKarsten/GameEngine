@@ -124,19 +124,13 @@ pub struct Swapchain {
     pub swpachain: lava::vkobjects::swapchain::Swapchain,
     pub surface: vkobjects::surface::Surface,
     pub image_index: u32,
-    /// Swapchains `recreate_swapchain` replaced, with the `render_finished` semaphores their
-    /// last presents wait on, until `render` retires them with its frame.
-    retired: Vec<(
-        lava::vkobjects::swapchain::Swapchain,
-        Vec<Semaphore<Binary>>,
-    )>,
     /// The window has no extent to present to: `render` skips its frames.
     pub minimized: bool,
 }
 
 impl Drop for Swapchain {
     fn drop(&mut self) {
-        // The last frames may still use the swapchain: only a retired one can go without.
+        // The last frames may still present it, which their frame slots don't wait for.
         if let Err(err) = lava::wait_idle() {
             error!("failed to wait for the device before dropping the swapchain: {err}");
         }
@@ -174,7 +168,7 @@ impl FrameLimit {
 }
 
 impl Swapchain {
-    pub fn image(&self) -> ImageView<'_, format::Dynamic, ColorAttachmentStorageTransferDst> {
+    pub fn image(&self) -> ImageView<format::Dynamic, ColorAttachmentStorageTransferDst> {
         self.swpachain.image(self.image_index)
     }
 }
@@ -211,10 +205,10 @@ pub fn aquire_swapchain_image(
 }
 
 /// Recreates the swapchain at `size`, binds its images (at the old slots unless their count
-/// changed), gives every image a new `render_finished` semaphore and keeps the old swapchain
-/// with its semaphores for `render` to retire: a present of the old one may still wait on
-/// them. Sets `minimized` instead, and returns false, when the window has no extent to
-/// create one for.
+/// changed) and gives every image a new `render_finished` semaphore. The old swapchain and
+/// semaphores are dropped: the frames in flight that drew to its images or signalled them
+/// keep them alive until they are done. Sets `minimized` instead, and returns false, when the
+/// window has no extent to create one for.
 fn recreate_swapchain(
     swapchain: &mut Swapchain,
     sync: &mut SynchronizationResources,
@@ -225,16 +219,14 @@ fn recreate_swapchain(
     let Swapchain {
         swpachain,
         surface,
-        retired,
         minimized,
         ..
     } = swapchain;
     match swpachain.recreate(surface, size) {
-        Ok(old) => {
+        Ok(_old) => {
             let num_images = swpachain.num_images();
             let semaphores = (0..num_images).map(|_| Semaphore::new().unwrap());
-            let old_semaphores = std::mem::replace(&mut sync.render_finished, semaphores.collect());
-            retired.push((old, old_semaphores));
+            sync.render_finished = semaphores.collect();
         }
         Err(_) if surface.is_minimised() => {
             *minimized = true;
@@ -341,7 +333,6 @@ pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
         image_index: 0,
         swpachain,
         surface,
-        retired: Vec::new(),
         minimized: false,
     };
     let num_images = swapchain.num_images();
@@ -529,7 +520,7 @@ pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<R
 
 type RenderParams<'w, 's> = (
     Option<ResMut<'w, RenderCamera>>,
-    Res<'w, InstanceManager>,
+    ResMut<'w, InstanceManager>,
     Option<Res<'w, GizzmoResources>>,
     Local<'s, Option<RenderResources>>,
     ResMut<'w, ResourceStates>,
@@ -561,19 +552,16 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
             slot.set_timestamps(timings.timestamps);
             slot.set_counters(timings.counters.clone());
         }
-        let mut frame = slot.begin().unwrap();
+        let frame = slot.begin().unwrap();
         #[cfg(feature = "profiling")]
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
             timings.slots[frame_in_flight].read_back(&frame);
         }
         world.run_schedule(RenderSystems::AquireSwapchainImage);
-        let mut swapchain = world.resource_mut::<Swapchain>();
+        let swapchain = world.resource::<Swapchain>();
         if swapchain.minimized {
             // Minimised since the extract: the frame is dropped unrecorded.
             return;
-        }
-        for old in swapchain.retired.drain(..) {
-            frame.retire(old);
         }
         world.run_schedule(RenderSystems::PreRender);
         record_frame(
@@ -596,12 +584,9 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
 }
 
 impl RenderResources {
-    pub(super) fn fit<'a>(
-        resources: &'a mut Option<Self>,
-        target_size: UVec2,
-        min_size: UVec2,
-        frame: &mut Frame,
-    ) {
+    /// Makes the resources, or grows those that are too small. A replaced image or buffer is
+    /// just dropped: the frames in flight that use it keep it alive.
+    pub(super) fn fit<'a>(resources: &'a mut Option<Self>, target_size: UVec2, min_size: UVec2) {
         let resources = resources.get_or_insert_with(|| {
             let depth_size = target_size.max(INITIAL_WINDOW_SIZE.as_uvec2());
             RenderResources {
@@ -632,47 +617,27 @@ impl RenderResources {
                 reported_overflow: 0,
             }
         });
-        resources.grow_overflowed(frame);
+        resources.grow_overflowed();
 
         let depth_extent = resources.depth_attachment.extent();
         if depth_extent.cmplt(target_size).any() {
             let size = depth_extent.max(target_size).max(min_size);
-            let old = std::mem::replace(
-                &mut resources.depth_attachment,
-                Image::new(size)
-                    .unwrap()
-                    .bind_sampled(bindless::sampled_slot().unwrap()),
-            );
-            frame.retire(old);
-            let old = std::mem::replace(
-                &mut resources.gbuffer,
-                Image::new(size)
-                    .unwrap()
-                    .bind_sampled(bindless::sampled_slot().unwrap()),
-            );
-            frame.retire(old);
-            let old = std::mem::replace(
-                &mut resources.accum,
-                Image::new(size)
-                    .unwrap()
-                    .bind_storage(bindless::storage_slots(1).unwrap()),
-            );
-            frame.retire(old);
-            let old = std::mem::replace(
-                &mut resources.revealage,
-                Image::new(size)
-                    .unwrap()
-                    .bind_sampled(bindless::sampled_slot().unwrap())
-                    .bind_storage(bindless::storage_slots(1).unwrap()),
-            );
-            frame.retire(old);
-            let old = std::mem::replace(
-                &mut resources.outline_mask,
-                Image::new(size)
-                    .unwrap()
-                    .bind_sampled(bindless::sampled_slot().unwrap()),
-            );
-            frame.retire(old);
+            resources.depth_attachment = Image::new(size)
+                .unwrap()
+                .bind_sampled(bindless::sampled_slot().unwrap());
+            resources.gbuffer = Image::new(size)
+                .unwrap()
+                .bind_sampled(bindless::sampled_slot().unwrap());
+            resources.accum = Image::new(size)
+                .unwrap()
+                .bind_storage(bindless::storage_slots(1).unwrap());
+            resources.revealage = Image::new(size)
+                .unwrap()
+                .bind_sampled(bindless::sampled_slot().unwrap())
+                .bind_storage(bindless::storage_slots(1).unwrap());
+            resources.outline_mask = Image::new(size)
+                .unwrap()
+                .bind_sampled(bindless::sampled_slot().unwrap());
             resources.fresh = true;
         }
     }
@@ -682,18 +647,17 @@ impl RenderResources {
         draws[0].meshlet_count + draws[1].meshlet_count
     }
 
-    /// Doubles every buffer `bvh_cull` ran out of, retiring the old one with the frame, and
+    /// Doubles every buffer `bvh_cull` ran out of (frames in flight keep the old one), and
     /// warns once per buffer that is at `MAX_CULL_BUFFER`. Like `visible_meshlets` it reads
     /// what the last frames left in `variables`, so an overflow may show up a frame late,
     /// but never falsely; the frame that overflowed drew without what didn't fit.
-    fn grow_overflowed(&mut self, frame: &mut Frame) {
+    fn grow_overflowed(&mut self) {
         let overflow = self.variables[0].overflow;
         if overflow == 0 {
             return;
         }
-        fn grow<T: Pod + Send + Sync>(buffer: &mut Buffer<T>, len: usize, frame: &mut Frame) {
-            let old = std::mem::replace(buffer, Buffer::new(len, false).unwrap());
-            frame.retire(old);
+        fn grow<T: Pod>(buffer: &mut Buffer<T>, len: usize) {
+            *buffer = Buffer::new(len, false).unwrap();
         }
         for (bit, name) in OVERFLOWS {
             if overflow & bit == 0 {
@@ -720,14 +684,14 @@ impl RenderResources {
                 "the BVH cull ran out of space in RenderResources.{name}: growing it to {len} entries"
             );
             match bit {
-                1 => grow(&mut self.bvh_node_stack, len, frame),
+                1 => grow(&mut self.bvh_node_stack, len),
                 2 => {
-                    grow(&mut self.candidate_meshlets, len, frame);
-                    grow(&mut self.meshlet_batches, len / MESHLET_BATCH, frame);
+                    grow(&mut self.candidate_meshlets, len);
+                    grow(&mut self.meshlet_batches, len / MESHLET_BATCH);
                 }
-                4 => grow(&mut self.meshlets, len, frame),
-                8 => grow(&mut self.blended_meshlets, len, frame),
-                _ => grow(&mut self.outlined_meshlets, len, frame),
+                4 => grow(&mut self.meshlets, len),
+                8 => grow(&mut self.blended_meshlets, len),
+                _ => grow(&mut self.outlined_meshlets, len),
             }
             // The queue and the batch counters have to be filled again.
             self.fresh = true;
@@ -740,7 +704,7 @@ pub(super) fn record_scene<
     U: IsColorAttachment + IsStorage,
 >(
     cmd: &mut CommandBuffer,
-    target_image: ImageView<'_, F, U>,
+    target_image: ImageView<F, U>,
     target_size: UVec2,
     camera: &mut RenderCamera,
     sky: &RenderSkybox,
@@ -866,10 +830,10 @@ pub(super) fn record_scene<
                 view,
                 proj,
                 eye,
-                transforms,
+                transforms.clone(),
                 resources.meshlets.range(..),
-                opaque_draw,
-                materials,
+                opaque_draw.clone(),
+                materials.clone(),
             )
             .constant_bindings(mesh_threads),
             opaque_draw.cast(),
@@ -880,10 +844,10 @@ pub(super) fn record_scene<
                 view,
                 proj,
                 eye,
-                transforms,
+                transforms.clone(),
                 resources.blended_meshlets.range(..),
-                blended_draw,
-                materials,
+                blended_draw.clone(),
+                materials.clone(),
             )
             .constant_bindings(mesh_threads),
             blended_draw.cast(),
@@ -901,7 +865,7 @@ pub(super) fn record_scene<
             resources.depth_attachment.whole_view(),
             resources.accum.whole_view(),
             resources.revealage.whole_view(),
-            target_image,
+            target_image.clone(),
             camera.camera.proj_inv(),
             camera.camera.view_inv(),
             target_size,
@@ -921,7 +885,7 @@ pub(super) fn record_scene<
                     eye,
                     transforms,
                     resources.outlined_meshlets.range(..),
-                    outlined_draw,
+                    outlined_draw.clone(),
                     materials,
                 )
                 .constant_bindings(mesh_threads),
@@ -933,7 +897,7 @@ pub(super) fn record_scene<
         cmd.compute(
             DrawOutline::push_bindings(
                 resources.outline_mask.whole_view(),
-                target_image,
+                target_image.clone(),
                 setting.outline_color.extend(setting.outline_radius),
                 target_size,
             ),
@@ -953,7 +917,7 @@ fn record_frame(
     frame_in_flight: usize,
     (
         mut camera,
-        instances,
+        mut instances,
         gizzmos,
         mut resources,
         mut resource_states,
@@ -967,7 +931,8 @@ fn record_frame(
     ): RenderParams,
 ) {
     let target_size = target.rect.size().as_uvec2().max(UVec2::ONE);
-    RenderResources::fit(&mut resources, target_size, swapchain.size, &mut frame);
+    RenderResources::fit(&mut resources, target_size, swapchain.size);
+    frame.uses(instances.meshes.drain(..));
     let Some(resources) = resources.as_mut() else {
         return;
     };
@@ -975,10 +940,7 @@ fn record_frame(
         && extent.cmplt(target_size).any()
     {
         let size = extent.max(target_size).max(UVec2::from(swapchain.size));
-        let new = ViewPortTarget::new_image(size, swapchain.format);
-        if let Some(old) = target.image.replace(new) {
-            frame.retire(old);
-        }
+        target.image = Some(ViewPortTarget::new_image(size, swapchain.format));
     }
 
     let target_image = target

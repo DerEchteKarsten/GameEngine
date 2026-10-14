@@ -61,8 +61,9 @@ pub fn release_storage_slots(first: u32, count: u32) {
     STORAGE.free.lock().unwrap().extend(first..first + count);
 }
 
-/// Hooks the allocators into lava, call right after `lava::init`. Retired images (`Frame::retire`)
-/// drop only after their frame, so no slot is handed out while a pending frame reads it.
+/// Hooks the allocators into lava, call right after `lava::init`. Lava calls the hook when an
+/// image is destroyed, which is after every frame that used it (`keepalive`), so no slot is
+/// handed out while a pending frame reads it.
 pub fn init() {
     lava::image::on_drop(release).unwrap();
 }
