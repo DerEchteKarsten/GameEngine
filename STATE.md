@@ -11,6 +11,11 @@ Bugs come from a read-only review on 2026-10-11 (**verified**: confirmed in the 
 - Trace reads carry `MEMORY_READ` for Mesa's ANV (26.2.2): with `ACCELERATION_STRUCTURE_READ` alone, a trace after a TLAS rebuilt in the same submission (traced before it) saw stale nodes. Worth reporting to Mesa and dropping once fixed.
 - Ray tracing's triangle facing against lava's clockwise front faces is unverified (the tests cull nothing).
 
+## lava: passes from lava-build
+----intended----
+- `lava::init` takes one `PassMap`, so an application and a library on lava can't both bring passes; `BindingOutput` names its pass by index into that map.
+- The generated-binding tests need real buffers and images (`BufferSlice` and `ImageView` have no public constructor), so they run in `gpu_headless` instead of as unit tests.
+
 ## lava: bugs from the publishing survey (2026-10-14, not triaged yet)
 Found in a read-only review; details, line numbers and directions are in `lava/SURVEY.md` section 2.
 - Generated push-constant structs are `unsafe impl Pod` with padding (`CBvhCullBindings`: fields end at 232, size 240), so `bytes_of` reads uninitialised bytes; the offsets also rely on glam's SIMD alignment.
@@ -32,7 +37,7 @@ Found in a read-only review; details, line numbers and directions are in `lava/S
 - Unchecked device features: everything in `Features::features` is requested without checking support (`ERROR_FEATURE_NOT_PRESENT`), `task_shader` included.
 - `Ctx::get()` blocks forever before `lava::init`; a second `init` leaks a whole instance and device.
 - Bindless `Load`/`Store` in `bindless.slang` lack `NonUniformResourceIndex`.
-- `build.rs` accepts passes with their own descriptor bindings (they collide with set 0), and nested `Buf`/`Img` in push-constant structs are silently untracked.
+- lava-build accepts passes with their own descriptor bindings (they collide with set 0), and nested `Buf`/`Img` in push-constant structs are silently untracked.
 - Mesh passes on a device without mesh shaders reach pipeline creation before the feature panic.
 - Pending accesses and layouts are committed before `queue_submit2`, so a failed submit leaves the tracking describing work that never ran.
 - `copy_image_to_buffer` doesn't check the buffer size; with address commands nothing else does.

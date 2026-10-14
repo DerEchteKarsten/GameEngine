@@ -37,7 +37,7 @@ pub struct HeadlessRenderPlugin {
 
 impl Plugin for HeadlessRenderPlugin {
     fn build(&self, app: &mut App) {
-        lava::init(None, cfg!(debug_assertions), false).unwrap();
+        lava::init(None, cfg!(debug_assertions), false, &crate::bindings::PASS_MAP).unwrap();
         bindless::init();
         app.insert_resource(HeadlessSize(self.size));
     }

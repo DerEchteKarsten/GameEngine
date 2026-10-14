@@ -38,7 +38,7 @@ use crate::render::render::{
 };
 use crate::render::{ExtractSchedule, FRAMES_IN_FLIGHT, RenderStartup, RenderSystems};
 use crate::scene::Instance;
-use lava::bindings::{self, AabbError};
+use crate::bindings::{self, AabbError};
 use lava::bindless::NULL_HANDLE;
 use lava::image::Image;
 

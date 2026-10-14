@@ -21,7 +21,8 @@ use crate::ui::{
     from_pos_size,
     scrollable::Scrollable,
 };
-use lava::{bindings::UIVertex, bindless::BindlessHandle};
+use crate::bindings::UIVertex;
+use lava::bindless::BindlessHandle;
 
 #[derive(Debug)]
 pub struct UiWindow {

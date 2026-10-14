@@ -1,6 +1,5 @@
 /target
 /lava/slang
-/lava/src/bindings.rs
 /shaders/bin/*
 /game/assets
 /game/unbaked_assets

@@ -20,7 +20,7 @@ use bevy::{
     transform::components::GlobalTransform,
 };
 use glam::{Mat4, Quat, UVec2, Vec2, Vec3, Vec4};
-use lava::bindings::{DrawGizzmos as DrawGizzmosPass, Gizzmo};
+use crate::bindings::{DrawGizzmos as DrawGizzmosPass, Gizzmo};
 use lava::{
     buffer::Buffer,
     command_buffer::{Blend, CommandBuffer, RasterState},

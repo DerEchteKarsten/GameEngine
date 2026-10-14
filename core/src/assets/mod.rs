@@ -6,12 +6,10 @@ use bevy::{
     prelude::*,
 };
 use bytemuck::{Zeroable, bytes_of, bytes_of_mut};
-use lava::{
-    bindings::{BvhNode, Meshlet, Vertex},
-    buffer::Buffer,
-};
+use lava::buffer::Buffer;
 
 use crate::{
+    bindings::{BvhNode, Meshlet, Vertex},
     assets::{
         material::{GpuMaterial, MaterialLoader},
         mesh::{GpuMesh, MeshHeader, aabb_ptr_offset, aabb_ptr_set_offset, bvh_node_child_counts},

@@ -4,7 +4,8 @@ use std::{borrow::Cow, hash::Hash};
 use bevy::{input::keyboard::KeyCode, math::Rect};
 use glam::{Vec2, Vec4};
 use itertools::Itertools;
-use lava::{bindings::UIVertex, bindless::BindlessHandle};
+use crate::bindings::UIVertex;
+use lava::bindless::BindlessHandle;
 
 use crate::ui::{
     UiContext,

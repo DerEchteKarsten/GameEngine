@@ -19,7 +19,7 @@ use bevy::{
     transform::components::Transform,
 };
 use glam::{Vec3, Vec4};
-use lava::bindings::Material;
+use crate::bindings::Material;
 use serde::{Deserialize, Serialize};
 
 use crate::{

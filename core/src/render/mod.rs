@@ -275,6 +275,7 @@ fn init(
         validation,
         // true,
         false,
+        &crate::bindings::PASS_MAP,
     )
     .unwrap();
     crate::bindless::init();

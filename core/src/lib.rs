@@ -26,6 +26,7 @@ use bevy::{
 };
 use glam::Vec2;
 
+pub mod bindings;
 pub mod physics;
 
 use crate::{

@@ -11,7 +11,8 @@ use bevy::{
     reflect::TypePath,
 };
 use glam::{Vec3, Vec4};
-use lava::{bindings::Material, bindless::NULL_HANDLE, buffer::Buffer, epoch};
+use crate::bindings::Material;
+use lava::{bindless::NULL_HANDLE, buffer::Buffer, epoch};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::texture::{GpuTexture, texture_index};

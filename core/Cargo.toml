@@ -44,6 +44,7 @@ hot-reload = ["lava/hot-reload"]
 dynamic_linking = ["bevy/dynamic_linking"]
 
 [build-dependencies]
+lava-build = { path = "../lava-build" }
 walkdir = {workspace = true}
 serde = {workspace = true}
 serde_json = {workspace = true}

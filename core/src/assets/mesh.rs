@@ -28,7 +28,7 @@ use crate::{
         ChildData, ChildType, HasLeaf, LeafData, build_bvh, build_intial_nodes, vec3_to_morton,
     },
 };
-use lava::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
+use crate::bindings::{AabbError, AabbPtr, BvhNode, CullData, Meshlet, Vertex};
 const SIMPLIFICATION_FAILURE_PERCENTAGE: f32 = 0.60;
 const TARGET_MESHLETS_PER_GROUP: usize = 8;
 /// Simplification weight of a UV unit, measured against one world unit of position error.

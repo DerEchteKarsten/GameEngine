@@ -97,7 +97,7 @@ use crate::{
         window::{Tab, UiOverlay, UiWindow},
     },
 };
-use lava::bindings::UIVertex;
+use crate::bindings::UIVertex;
 
 pub const fn hash_location(file: &str, line: u32, col: u32) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;

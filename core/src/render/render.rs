@@ -73,7 +73,7 @@ use crate::{
     scene::{self, camera::Camera},
     ui::{UiResources, builder::UiBuilder},
 };
-use lava::bindings::{
+use crate::bindings::{
     BvhCull, Composite, DrawOutline, InstanceBvhRoot, InstanceCull, InstanceMeshletIndex,
     InstancedMeshlet, MeshletDraw, Raster, RasterBlended, RasterOutline, RasterUi,
     TraversalVariables,
