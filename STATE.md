@@ -2,9 +2,41 @@
 
 Bugs come from a read-only review on 2026-10-11 (**verified**: confirmed in the code; **plausible**: follows from the code but wasn't reproduced; line numbers are from that date). Anything under `--- fix ---` gets fixed right away; `--- intended ---` entries stay here so they aren't forgotten; `--- find solutions ---` entries get proposals without code changes; `--- future work ---` entries are agreed directions waiting for their time. `## Ideas` holds design proposals we don't want to lose.
 
-## lava: ray tracing (none of it is used yet, and nothing tests it)
+## lava: ray tracing (tested by `gpu_ray_tracing`, not used by core yet)
 ----intended----
-- The bindless layout has no acceleration structure binding and no shader reaches one, so a ray tracing pass can't trace anything yet; `stage_name` panics on intersection and callable stages (`build.rs`).
+- Binding table records hold only shader group handles: no shader record data, since shaders read everything through push constants and addresses.
+- A TLAS names its BLASes by address, which lava doesn't track: a BLAS dropped while a TLAS still names it is destroyed once the frames in flight are done, so rebuild the TLAS before tracing it again.
+- No indirect builds (`vkCmdBuildAccelerationStructuresIndirectKHR`): instance and primitive counts come from the host, so a GPU-culled TLAS builds every instance slot (cull with the mask or a zero transform).
+- Any acceleration structure write waits for every pending trace and TLAS build (the read of `EVERY_ACCELERATION_STRUCTURE`), also of unrelated structures.
+- Trace reads carry `MEMORY_READ` for Mesa's ANV (26.2.2): with `ACCELERATION_STRUCTURE_READ` alone, a trace after a TLAS rebuilt in the same submission (traced before it) saw stale nodes. Worth reporting to Mesa and dropping once fixed.
+- Ray tracing's triangle facing against lava's clockwise front faces is unverified (the tests cull nothing).
+
+## lava: bugs from the publishing survey (2026-10-14, not triaged yet)
+Found in a read-only review; details, line numbers and directions are in `lava/SURVEY.md` section 2.
+- Generated push-constant structs are `unsafe impl Pod` with padding (`CBvhCullBindings`: fields end at 232, size 240), so `bytes_of` reads uninitialised bytes; the offsets also rely on glam's SIMD alignment.
+- `PendingWrite::visible_to` checks the stage and access unions separately, so a write made visible to (FRAGMENT, SAMPLED) and (COMPUTE, STORAGE) counts as visible to (COMPUTE, SAMPLED) and gets no barrier.
+- `device_debug_utils` looks for `VK_EXT_debug_utils` among device extensions; it is an instance extension, so debug names and labels never turn on.
+- A compacted acceleration structure keeps the source's `max_primitives` and build scratch, so `cmd.build` on it writes past its smaller buffer.
+- `CompactedSizes` reused for a second query reads the old sizes as ready until the recorded reset executes (plausible).
+- `wait_idle` doesn't lock the queues and completes epochs submitted after the wait returned, so a frame submitted meanwhile can have its objects destroyed (plausible; core calls it from `Swapchain::drop`).
+- A `FrameSlot` that isn't begun again keeps its epoch open, which stops every later destruction process-wide; without any frame loop nothing is freed.
+- Dropping an `Epoch` inside `Frame::execute` can deadlock: a destructor's `forget_image` locks the `pending` mutex the recording holds (plausible).
+- A panic while recording poisons the queue's `pending` mutex: later submits and destructions panic, and a drop while unwinding aborts.
+- With timestamps on, an unbalanced `begin_scope`/`end_scope` makes `FrameSlot::begin` fail on every later frame (the root end timestamp is never written).
+- `Queue<Transfer>`: descriptor sets are bound at graphics/compute bind points on a transfer-only family, and there are no queue family ownership transfers for `EXCLUSIVE` resources.
+- An image that is an attachment and also read by a draw of the same rendering gets two transitions in one barrier and ends in `ATTACHMENT_OPTIMAL` while its descriptor says `GENERAL`.
+- Combined depth-stencil formats get views with both aspects, which can't be sampled; host copies pass both aspects too.
+- Pending reads are only dropped when a later access covers their whole range, never when their submission completed, so moving ring ranges grow the lists forever.
+- `Buffer`, `ImageView`, `Swapchain` and `Surface` have mutable pub fields through which safe code can cause out-of-bounds host reads or wrong barriers.
+- Buffers are mapped whenever the device has ReBAR, so core's `variables` buffer (`Buffer::new(1, false)`, read on the host) panics on a discrete GPU without it.
+- Unchecked device features: everything in `Features::features` is requested without checking support (`ERROR_FEATURE_NOT_PRESENT`), `task_shader` included.
+- `Ctx::get()` blocks forever before `lava::init`; a second `init` leaks a whole instance and device.
+- Bindless `Load`/`Store` in `bindless.slang` lack `NonUniformResourceIndex`.
+- `build.rs` accepts passes with their own descriptor bindings (they collide with set 0), and nested `Buf`/`Img` in push-constant structs are silently untracked.
+- Mesh passes on a device without mesh shaders reach pipeline creation before the feature panic.
+- Pending accesses and layouts are committed before `queue_submit2`, so a failed submit leaves the tracking describing work that never ran.
+- `copy_image_to_buffer` doesn't check the buffer size; with address commands nothing else does.
+- `R64*` formats have 32-bit texel types, stencil `[u8]` instead of `uint`.
 
 ## core: renderer
 ----intended----
