@@ -41,7 +41,6 @@ use crate::scene::Instance;
 use lava::bindings::{self, AabbError};
 use lava::bindless::NULL_HANDLE;
 use lava::image::Image;
-use lava::keepalive::KeepAlive;
 
 #[derive(Resource)]
 pub struct InstanceManager {
@@ -55,9 +54,6 @@ pub struct InstanceManager {
     pub instance_count: usize,
     pub any_outlined: bool,
     pending_instances: Vec<TempInstance>,
-    /// The mesh buffer of every extracted instance, which the GPU reaches only through the
-    /// addresses written here: the frame that draws them keeps them alive (`Frame::uses`).
-    pub meshes: Vec<KeepAlive>,
 }
 
 #[derive(Clone, Copy)]
@@ -116,7 +112,6 @@ pub(super) fn init_world(mut cmd: Commands) {
         any_outlined: false,
         flags: Buffer::new(FLAG_WORDS * FRAMES_IN_FLIGHT, true).unwrap(),
         pending_instances: Vec::with_capacity(MAX_INSTANCES),
-        meshes: Vec::with_capacity(MAX_INSTANCES),
     });
     cmd.init_resource::<FrameCount>();
 }
@@ -128,8 +123,6 @@ pub(super) fn extract_meshlet_instances(
     materials: Extract<Res<Assets<GpuMaterial>>>,
 ) {
     instance_manager.any_outlined = false;
-    // Left over when the last extract wasn't drawn.
-    instance_manager.meshes.clear();
     for (instance, transform, selected) in &instances {
         if let Some(mesh) = meshes.get(&instance.mesh)
             && let Some(material) = materials.get(&instance.material)
@@ -147,7 +140,6 @@ pub(super) fn extract_meshlet_instances(
                 flags.insert(InstanceFlags::OPAQUE);
             }
             instance_manager.any_outlined |= flags.contains(InstanceFlags::OUTLINE);
-            instance_manager.meshes.push(mesh.buffer.keep_alive());
             instance_manager.pending_instances.push(TempInstance {
                 bvh_root: mesh.buffer.address,
                 header: mesh.header,

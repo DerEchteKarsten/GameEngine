@@ -9,7 +9,8 @@ use glam::UVec2;
 use lava::{
     buffer::Buffer,
     image::{Image, format::R8G8B8A8Unorm, usage::ColorAttachmentStorageTransferSrc},
-    vkobjects::queue::{FrameSlot, Gfx, PendingAccesses, Queue},
+    epoch,
+    vkobjects::queue::{FrameSlot, Gfx, Queue},
 };
 
 use crate::bindless;
@@ -57,8 +58,6 @@ struct HeadlessRenderer {
     resources: Option<RenderResources>,
     slot: FrameSlot,
     queue: Queue<Gfx>,
-    /// What the frames left for the next one to synchronise with.
-    pending: PendingAccesses,
 }
 
 /// The last frame [`render_frame`] drew, tightly packed RGBA8. Reading the host-visible
@@ -78,7 +77,7 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
         .unwrap_or_else(|| {
             let mut render_world = World::new();
             render_world.run_system_once(init_world).unwrap();
-            let slot = bindless::storage_slots(1).unwrap();
+            let slot = bindless::storage_slot().unwrap();
             let queue = Queue::<Gfx>::new();
             HeadlessRenderer {
                 render_world,
@@ -87,7 +86,6 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
                 resources: None,
                 slot: FrameSlot::new(&queue).unwrap(),
                 queue,
-                pending: PendingAccesses::default(),
             }
         });
     #[cfg(feature = "profiling")]
@@ -96,6 +94,8 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
         None => (false, None),
     };
 
+    // Before the extract reads the addresses and bindless slots the frame will use.
+    let epoch = epoch::reserve();
     let render_world = &mut renderer.render_world;
     render_world.insert_resource(MainWorld(std::mem::take(main_world)));
     let instances = render_world.run_system_once(extract_meshlet_instances);
@@ -116,8 +116,7 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
         renderer.slot.set_timestamps(timestamps);
         renderer.slot.set_counters(counters);
     }
-    let mut frame = renderer.slot.begin().unwrap();
-    frame.uses(render_world.resource_mut::<InstanceManager>().meshes.drain(..));
+    let frame = renderer.slot.begin(epoch).unwrap();
     let sky = render_world.resource::<RenderSkybox>();
     let instances = render_world.resource::<InstanceManager>();
     RenderResources::fit(&mut renderer.resources, size, size);
@@ -125,31 +124,26 @@ pub fn render_frame(main_world: &mut World, settings: &RenderSettings) -> Headle
     let (image, readback) = (&renderer.image, &renderer.readback);
     #[cfg(feature = "profiling")]
     let submitted = (profiler::frame(), profiler::now_ns());
-    renderer.pending = frame
-        .execute(
-            &renderer.queue,
-            std::mem::take(&mut renderer.pending),
-            &[],
-            &[],
-            |cmd| {
-                record_scene(
-                    cmd,
-                    image.whole_view(),
-                    size,
-                    &mut camera,
-                    sky,
-                    instances,
-                    resources,
-                    settings,
-                    None,
-                    0,
-                );
-                cmd.copy_image_to_buffer(image.whole(), readback.range(..));
-            },
-        )
+    frame
+        .execute(&renderer.queue, &[], &[], |cmd| {
+            record_scene(
+                cmd,
+                image.whole_view(),
+                size,
+                &mut camera,
+                sky,
+                instances,
+                resources,
+                settings,
+                None,
+                0,
+            );
+            cmd.copy_image_to_buffer(image.whole(), readback.range(..));
+        })
         .unwrap();
-    // Beginning a frame waits for the one the slot submitted before.
-    let frame = renderer.slot.begin().unwrap();
+    // Beginning a frame waits for the one the slot submitted before. Its epoch, which no frame
+    // uses, completes when the next frame begins.
+    let frame = renderer.slot.begin(epoch::reserve()).unwrap();
     #[cfg(feature = "profiling")]
     if let Some(mut profiler) = main_world.get_resource_mut::<Profiler>() {
         if let Some(scopes) = frame.last_timestamps() {

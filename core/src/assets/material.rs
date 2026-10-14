@@ -1,5 +1,8 @@
 //! Material assets: the `.mat`/`.mat.ron` file, its loader, and the one host-mapped GPU buffer every loaded material has a slot in.
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use anyhow::{Context, Result, bail};
 use bevy::{
@@ -8,7 +11,7 @@ use bevy::{
     reflect::TypePath,
 };
 use glam::{Vec3, Vec4};
-use lava::{bindings::Material, bindless::NULL_HANDLE, buffer::Buffer};
+use lava::{bindings::Material, bindless::NULL_HANDLE, buffer::Buffer, epoch};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::texture::{GpuTexture, texture_index};
@@ -92,12 +95,17 @@ impl MaterialFile {
 pub struct MaterialState {
     /// Created on the first allocation: the loader is built before lava is initialised.
     buffer: OnceLock<Buffer<Material>>,
-    /// Freed slots, and how many slots were handed out so far.
-    slots: Mutex<(Vec<u32>, u32)>,
+    /// Freed slots, oldest first, each with the latest epoch at its release, and how many
+    /// slots were handed out so far.
+    slots: Mutex<(VecDeque<(u32, u64)>, u32)>,
 }
 
-fn take_slot((free, count): &mut (Vec<u32>, u32)) -> Result<u32> {
-    if let Some(slot) = free.pop() {
+/// A slot no frame can still read: a freed one whose epoch `completed` reached, else a new one.
+fn take_slot((free, count): &mut (VecDeque<(u32, u64)>, u32), completed: u64) -> Result<u32> {
+    if let Some(&(slot, epoch)) = free.front()
+        && epoch <= completed
+    {
+        free.pop_front();
         return Ok(slot);
     }
     if *count == MAX_MATERIALS {
@@ -114,7 +122,7 @@ impl MaterialState {
         material: Material,
         textures: [Option<Handle<GpuTexture>>; 5],
     ) -> Result<GpuMaterial> {
-        let slot = take_slot(&mut self.slots.lock().unwrap())?;
+        let slot = take_slot(&mut self.slots.lock().unwrap(), epoch::completed())?;
         let buffer = self
             .buffer
             .get_or_init(|| Buffer::new(MAX_MATERIALS as usize, true).unwrap());
@@ -211,11 +219,13 @@ impl GpuMaterial {
     }
 }
 
+/// Frames in flight may still read the slot: it is handed out again once they are done.
 impl Drop for GpuMaterial {
     fn drop(&mut self) {
         let base = self.state.buffer.get().map_or(0, |buffer| buffer.address);
         let slot = ((self.gpu - base) / size_of::<Material>() as u64) as u32;
-        self.state.slots.lock().unwrap().0.push(slot);
+        let freed = (slot, epoch::latest());
+        self.state.slots.lock().unwrap().0.push_back(freed);
     }
 }
 
@@ -268,18 +278,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slots_come_from_the_free_list_first() {
-        let mut slots = (Vec::new(), 0);
-        assert_eq!(take_slot(&mut slots).unwrap(), 0);
-        assert_eq!(take_slot(&mut slots).unwrap(), 1);
-        slots.0.push(0);
-        assert_eq!(take_slot(&mut slots).unwrap(), 0);
-        assert_eq!(take_slot(&mut slots).unwrap(), 2);
+    fn freed_slots_come_back_once_their_epoch_completed() {
+        let mut slots = (VecDeque::new(), 0);
+        assert_eq!(take_slot(&mut slots, 0).unwrap(), 0);
+        assert_eq!(take_slot(&mut slots, 0).unwrap(), 1);
+        slots.0.push_back((0, 5));
+        // Epoch 5 may still read slot 0.
+        assert_eq!(take_slot(&mut slots, 4).unwrap(), 2);
+        assert_eq!(take_slot(&mut slots, 5).unwrap(), 0);
+        assert_eq!(take_slot(&mut slots, 5).unwrap(), 3);
 
-        let mut full = (Vec::new(), MAX_MATERIALS);
-        assert!(take_slot(&mut full).is_err());
-        full.0.push(7);
-        assert_eq!(take_slot(&mut full).unwrap(), 7);
+        let mut full = (VecDeque::new(), MAX_MATERIALS);
+        assert!(take_slot(&mut full, 0).is_err());
+        full.0.push_back((7, 1));
+        assert!(take_slot(&mut full, 0).is_err(), "slot 7 isn't free yet");
+        assert_eq!(take_slot(&mut full, 1).unwrap(), 7);
     }
 
     #[test]

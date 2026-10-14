@@ -1,4 +1,4 @@
-//! Bindless slots of core's images: an allocator per descriptor set that gets its slots back through lava's image drop hook. Textures take every sampled slot from `TEXTURE_SLOTS_BASE` up.
+//! Bindless slots of core's images and swapchain: an allocator per descriptor set that gets its slots back through lava's bindless drop hook. Textures take every sampled slot from `TEXTURE_SLOTS_BASE` up.
 use std::sync::{
     Mutex,
     atomic::{AtomicU32, Ordering},
@@ -24,16 +24,14 @@ impl Slots {
         }
     }
 
-    /// `count` consecutive indices below `end`; only single ones come from the free list.
-    fn alloc(&self, count: u32, end: u32) -> Result<u32> {
-        if count == 1
-            && let Some(index) = self.free.lock().unwrap().pop()
-        {
+    /// An index below `end`.
+    fn alloc(&self, end: u32) -> Result<u32> {
+        if let Some(index) = self.free.lock().unwrap().pop() {
             return Ok(index);
         }
         self.next
             .try_update(Ordering::AcqRel, Ordering::Acquire, |next| {
-                (next + count <= end).then_some(next + count)
+                (next < end).then_some(next + 1)
             })
             .map_err(|_| anyhow!("all {end} bindless slots are in use"))
     }
@@ -46,26 +44,21 @@ impl Slots {
 static SAMPLED: Slots = Slots::new();
 static STORAGE: Slots = Slots::new();
 
-/// A free sampled slot. A slot comes back when the `Image` bound there is dropped.
+/// A free sampled slot. A slot comes back when the image bound there is destroyed.
 pub fn sampled_slot() -> Result<u32> {
-    SAMPLED.alloc(1, TEXTURE_SLOTS_BASE)
+    SAMPLED.alloc(TEXTURE_SLOTS_BASE)
 }
 
-/// `count` consecutive free storage slots (more than one for the swapchain).
-pub fn storage_slots(count: u32) -> Result<u32> {
-    STORAGE.alloc(count, max_storage_images())
-}
-
-/// Returns slots from `storage_slots` that no dropped `Image` gives back (the swapchain's).
-pub fn release_storage_slots(first: u32, count: u32) {
-    STORAGE.free.lock().unwrap().extend(first..first + count);
+/// A free storage slot. A slot comes back when the image or swapchain bound there is destroyed.
+pub fn storage_slot() -> Result<u32> {
+    STORAGE.alloc(max_storage_images())
 }
 
 /// Hooks the allocators into lava, call right after `lava::init`. Lava calls the hook when an
-/// image is destroyed, which is after every frame that used it (`keepalive`), so no slot is
-/// handed out while a pending frame reads it.
+/// image or swapchain is destroyed, which is after every frame that may use it
+/// (`lava::epoch`), so no slot is handed out while a pending frame reads it.
 pub fn init() {
-    lava::image::on_drop(release).unwrap();
+    lava::bindless::on_drop(release).unwrap();
 }
 
 fn release(handle: BindlessHandle) {
@@ -85,14 +78,13 @@ mod tests {
     #[test]
     fn freed_slots_are_handed_out_first() {
         let slots = Slots::new();
-        assert_eq!(slots.alloc(1, 4).unwrap(), 0);
-        assert_eq!(slots.alloc(1, 4).unwrap(), 1);
+        assert_eq!(slots.alloc(3).unwrap(), 0);
+        assert_eq!(slots.alloc(3).unwrap(), 1);
         slots.release(0);
-        assert_eq!(slots.alloc(1, 4).unwrap(), 0);
-        // Blocks only come from never-used slots.
+        assert_eq!(slots.alloc(3).unwrap(), 0);
+        assert_eq!(slots.alloc(3).unwrap(), 2);
+        assert!(slots.alloc(3).is_err());
         slots.release(1);
-        assert_eq!(slots.alloc(2, 4).unwrap(), 2);
-        assert!(slots.alloc(1, 4).is_ok());
-        assert!(slots.alloc(1, 4).is_err());
+        assert_eq!(slots.alloc(3).unwrap(), 1);
     }
 }

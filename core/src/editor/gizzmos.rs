@@ -359,7 +359,7 @@ impl GizzmoResources {
     pub(crate) fn draw<F: Format + ColorAspect, U: IsColorAttachment + IsStorage>(
         &self,
         cmd: &mut CommandBuffer,
-        target: ImageView<F, U>,
+        target: ImageView<'_, F, U>,
         target_size: UVec2,
         camera: &RenderCamera,
         frame_in_flight: usize,

@@ -1,6 +1,6 @@
 //! Windowed render sub-app (pipelined): schedules, main-world extraction and Vulkan initialization.
 use crate::render::{
-    render::{FrameLimit, RenderPassesPlugin},
+    render::{FrameEpoch, FrameLimit, RenderPassesPlugin},
     world::WorldPlugin,
 };
 use async_std::channel::{Receiver, Sender};
@@ -95,6 +95,8 @@ impl DerefMut for MainWorld {
 fn extract(main_world: &mut World, render_world: &mut World) {
     let scratch_world = main_world.remove_resource::<ScratchMainWorld>().unwrap();
     let inserted_world = core::mem::replace(main_world, scratch_world.0);
+    // Before anything is extracted: the frame's GPU work may reach whatever the extract reads.
+    render_world.insert_resource(FrameEpoch(Some(lava::epoch::reserve())));
     render_world.insert_resource(MainWorld(inserted_world));
     render_world.run_schedule(ExtractSchedule);
 

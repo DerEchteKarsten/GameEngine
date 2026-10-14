@@ -46,9 +46,10 @@ use lava::{
         },
     },
     state::Ctx,
+    epoch::Epoch,
     vkobjects::{
         self,
-        queue::{Binary, Frame, FrameSlot, Gfx, PendingAccesses, Queue, Semaphore, Stage},
+        queue::{Binary, Frame, FrameSlot, Gfx, Queue, Semaphore, Stage},
     },
 };
 
@@ -102,6 +103,12 @@ pub struct FrameSlots {
     pub queue: Queue<Gfx>,
     pub slots: [FrameSlot; FRAMES_IN_FLIGHT],
 }
+
+/// The epoch of the frame being extracted, reserved before the extract reads anything the
+/// frame's GPU work reaches (instance addresses, material slots, bindless textures), which
+/// `render` hands to the frame slot. A frame that is skipped completes it at the next extract.
+#[derive(Resource)]
+pub struct FrameEpoch(pub Option<Epoch>);
 
 #[derive(Resource, Default)]
 pub struct SynchronizationResources {
@@ -168,7 +175,7 @@ impl FrameLimit {
 }
 
 impl Swapchain {
-    pub fn image(&self) -> ImageView<format::Dynamic, ColorAttachmentStorageTransferDst> {
+    pub fn image(&self) -> ImageView<'_, format::Dynamic, ColorAttachmentStorageTransferDst> {
         self.swpachain.image(self.image_index)
     }
 }
@@ -204,18 +211,16 @@ pub fn aquire_swapchain_image(
     };
 }
 
-/// Recreates the swapchain at `size`, binds its images (at the old slots unless their count
-/// changed) and gives every image a new `render_finished` semaphore. The old swapchain and
-/// semaphores are dropped: the frames in flight that drew to its images or signalled them
-/// keep them alive until they are done. Sets `minimized` instead, and returns false, when the
+/// Recreates the swapchain at `size`, binds its images at new slots and gives every image a
+/// new `render_finished` semaphore. The old swapchain and semaphores are dropped: they are
+/// destroyed, and the old slots freed, once the frames and presents that may use them are done
+/// (`lava::epoch`). Sets `minimized` instead, and returns false, when the
 /// window has no extent to create one for.
 fn recreate_swapchain(
     swapchain: &mut Swapchain,
     sync: &mut SynchronizationResources,
     size: UVec2,
 ) -> bool {
-    let old_images = swapchain.num_images() as u32;
-    let old_first = swapchain.swpachain.image(0).handle.descriptor_index_set1;
     let Swapchain {
         swpachain,
         surface,
@@ -235,15 +240,8 @@ fn recreate_swapchain(
         Err(err) => panic!("failed to recreate the swapchain: {err}"),
     }
     *minimized = false;
-    // The new images are unbound, and their count can change with the present mode.
-    let num_images = swpachain.num_images();
-    let first = if num_images as u32 == old_images {
-        old_first
-    } else {
-        bindless::release_storage_slots(old_first, old_images);
-        bindless::storage_slots(num_images as u32).unwrap()
-    };
-    swpachain.bind_storage(first);
+    let slots = (0..swpachain.num_images()).map(|_| bindless::storage_slot().unwrap());
+    swpachain.bind_storage(slots);
     true
 }
 
@@ -327,8 +325,8 @@ pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
         Some(INITIAL_WINDOW_SIZE.as_uvec2()),
     )
     .unwrap();
-    let first = bindless::storage_slots(swpachain.num_images() as u32).unwrap();
-    swpachain.bind_storage(first);
+    let slots = (0..swpachain.num_images()).map(|_| bindless::storage_slot().unwrap());
+    swpachain.bind_storage(slots);
     let swapchain = Swapchain {
         image_index: 0,
         swpachain,
@@ -340,18 +338,10 @@ pub fn init_render(mut cmd: Commands, mut surface: ResMut<PrimarySurface>) {
     let queue = Queue::new();
     let slots = std::array::from_fn(|_| FrameSlot::new(&queue).unwrap());
     cmd.insert_resource(FrameSlots { queue, slots });
-    cmd.insert_resource(ResourceStates {
-        pending: Some(PendingAccesses::default()),
-    });
     cmd.insert_resource(SynchronizationResources {
         image_available: Default::default(),
         render_finished: (0..num_images).map(|_| Semaphore::new().unwrap()).collect(),
     });
-}
-
-#[derive(Resource)]
-pub struct ResourceStates {
-    pub(super) pending: Option<PendingAccesses>,
 }
 
 pub struct RenderResources {
@@ -520,10 +510,9 @@ pub fn extract_ui(mut cmd: Commands, mut world: ResMut<MainWorld>, values: Res<R
 
 type RenderParams<'w, 's> = (
     Option<ResMut<'w, RenderCamera>>,
-    ResMut<'w, InstanceManager>,
+    Res<'w, InstanceManager>,
     Option<Res<'w, GizzmoResources>>,
     Local<'s, Option<RenderResources>>,
-    ResMut<'w, ResourceStates>,
     Res<'w, SynchronizationResources>,
     Res<'w, Swapchain>,
     Option<ResMut<'w, RenderValues>>,
@@ -552,7 +541,10 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
             slot.set_timestamps(timings.timestamps);
             slot.set_counters(timings.counters.clone());
         }
-        let frame = slot.begin().unwrap();
+        let epoch = world.resource_mut::<FrameEpoch>().0.take();
+        let frame = slot
+            .begin(epoch.expect("the extract reserves an epoch"))
+            .unwrap();
         #[cfg(feature = "profiling")]
         if let Some(mut timings) = world.get_resource_mut::<GpuTimings>() {
             timings.slots[frame_in_flight].read_back(&frame);
@@ -585,7 +577,7 @@ pub(super) fn render(world: &mut World, params: &mut SystemState<RenderParams<'s
 
 impl RenderResources {
     /// Makes the resources, or grows those that are too small. A replaced image or buffer is
-    /// just dropped: the frames in flight that use it keep it alive.
+    /// just dropped: it is destroyed once the frames in flight are done (`lava::epoch`).
     pub(super) fn fit<'a>(resources: &'a mut Option<Self>, target_size: UVec2, min_size: UVec2) {
         let resources = resources.get_or_insert_with(|| {
             let depth_size = target_size.max(INITIAL_WINDOW_SIZE.as_uvec2());
@@ -598,11 +590,11 @@ impl RenderResources {
                     .bind_sampled(bindless::sampled_slot().unwrap()),
                 accum: Image::new(depth_size)
                     .unwrap()
-                    .bind_storage(bindless::storage_slots(1).unwrap()),
+                    .bind_storage(bindless::storage_slot().unwrap()),
                 revealage: Image::new(depth_size)
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap())
-                    .bind_storage(bindless::storage_slots(1).unwrap()),
+                    .bind_storage(bindless::storage_slot().unwrap()),
                 outline_mask: Image::new(depth_size)
                     .unwrap()
                     .bind_sampled(bindless::sampled_slot().unwrap()),
@@ -630,11 +622,11 @@ impl RenderResources {
                 .bind_sampled(bindless::sampled_slot().unwrap());
             resources.accum = Image::new(size)
                 .unwrap()
-                .bind_storage(bindless::storage_slots(1).unwrap());
+                .bind_storage(bindless::storage_slot().unwrap());
             resources.revealage = Image::new(size)
                 .unwrap()
                 .bind_sampled(bindless::sampled_slot().unwrap())
-                .bind_storage(bindless::storage_slots(1).unwrap());
+                .bind_storage(bindless::storage_slot().unwrap());
             resources.outline_mask = Image::new(size)
                 .unwrap()
                 .bind_sampled(bindless::sampled_slot().unwrap());
@@ -647,7 +639,8 @@ impl RenderResources {
         draws[0].meshlet_count + draws[1].meshlet_count
     }
 
-    /// Doubles every buffer `bvh_cull` ran out of (frames in flight keep the old one), and
+    /// Doubles every buffer `bvh_cull` ran out of (the old one lives until the frames in flight
+    /// are done), and
     /// warns once per buffer that is at `MAX_CULL_BUFFER`. Like `visible_meshlets` it reads
     /// what the last frames left in `variables`, so an overflow may show up a frame late,
     /// but never falsely; the frame that overflowed drew without what didn't fit.
@@ -704,7 +697,7 @@ pub(super) fn record_scene<
     U: IsColorAttachment + IsStorage,
 >(
     cmd: &mut CommandBuffer,
-    target_image: ImageView<F, U>,
+    target_image: ImageView<'_, F, U>,
     target_size: UVec2,
     camera: &mut RenderCamera,
     sky: &RenderSkybox,
@@ -830,10 +823,10 @@ pub(super) fn record_scene<
                 view,
                 proj,
                 eye,
-                transforms.clone(),
+                transforms,
                 resources.meshlets.range(..),
-                opaque_draw.clone(),
-                materials.clone(),
+                opaque_draw,
+                materials,
             )
             .constant_bindings(mesh_threads),
             opaque_draw.cast(),
@@ -844,10 +837,10 @@ pub(super) fn record_scene<
                 view,
                 proj,
                 eye,
-                transforms.clone(),
+                transforms,
                 resources.blended_meshlets.range(..),
-                blended_draw.clone(),
-                materials.clone(),
+                blended_draw,
+                materials,
             )
             .constant_bindings(mesh_threads),
             blended_draw.cast(),
@@ -865,7 +858,7 @@ pub(super) fn record_scene<
             resources.depth_attachment.whole_view(),
             resources.accum.whole_view(),
             resources.revealage.whole_view(),
-            target_image.clone(),
+            target_image,
             camera.camera.proj_inv(),
             camera.camera.view_inv(),
             target_size,
@@ -885,7 +878,7 @@ pub(super) fn record_scene<
                     eye,
                     transforms,
                     resources.outlined_meshlets.range(..),
-                    outlined_draw.clone(),
+                    outlined_draw,
                     materials,
                 )
                 .constant_bindings(mesh_threads),
@@ -897,7 +890,7 @@ pub(super) fn record_scene<
         cmd.compute(
             DrawOutline::push_bindings(
                 resources.outline_mask.whole_view(),
-                target_image.clone(),
+                target_image,
                 setting.outline_color.extend(setting.outline_radius),
                 target_size,
             ),
@@ -912,15 +905,14 @@ pub(super) fn record_scene<
 }
 
 fn record_frame(
-    mut frame: Frame,
+    frame: Frame,
     queue: &Queue<Gfx>,
     frame_in_flight: usize,
     (
         mut camera,
-        mut instances,
+        instances,
         gizzmos,
         mut resources,
-        mut resource_states,
         sync,
         swapchain,
         mut values,
@@ -932,7 +924,6 @@ fn record_frame(
 ) {
     let target_size = target.rect.size().as_uvec2().max(UVec2::ONE);
     RenderResources::fit(&mut resources, target_size, swapchain.size);
-    frame.uses(instances.meshes.drain(..));
     let Some(resources) = resources.as_mut() else {
         return;
     };
@@ -967,10 +958,9 @@ fn record_frame(
     } else {
         Stage::Raster
     });
-    let states = frame
+    frame
         .execute(
             queue,
-            resource_states.pending.take().unwrap(),
             &[acquired],
             &[sync.render_finished[swapchain.image_index as usize].info()],
             |cmd| {
@@ -1017,8 +1007,6 @@ fn record_frame(
             },
         )
         .unwrap();
-
-    resource_states.pending = Some(states);
 }
 
 #[derive(Resource, Default)]
@@ -1039,7 +1027,7 @@ impl ViewPortTarget {
         let usage = ColorAttachmentStorageTransferDst;
         Image::with_params(format, usage, size, 1)
             .unwrap()
-            .bind_storage(bindless::storage_slots(1).unwrap())
+            .bind_storage(bindless::storage_slot().unwrap())
     }
 }
 

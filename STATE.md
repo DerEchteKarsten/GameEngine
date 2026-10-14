@@ -8,7 +8,7 @@ Bugs come from a read-only review on 2026-10-11 (**verified**: confirmed in the 
 
 ## core: renderer
 ----intended----
-- **GPU use-after-free on unload and hot reload (verified).** Texture images are destroyed on drop while frames in flight sample them through their bindless slots, and `GpuMaterial::drop` returns its slot at once (`assets/material.rs:211-216`), so a pending frame can read another material. Rebaking with the editor open triggers it. (Mesh buffers are kept alive by their frames since the keepalive slab, through `Frame::uses`.)
+- **Texture slots are rewritten while frames in flight sample them (plausible).** A texture's bindless slot is its bevy asset index, which bevy hands to the next texture as soon as one is removed, and a reload replaces it in place, so `write_texture_slots` (`assets/texture.rs`) rewrites descriptors that pending frames may read (`UPDATE_UNUSED_WHILE_PENDING` only allows unused ones). The images themselves, material slots and mesh buffers wait for their epochs (`lava::epoch`) since the keepalive slab was replaced.
 (This will be reworked when we move onto streaming geometry anyways)
 - `visible_meshlets()` reads `variables` on the CPU while the GPU may write it (`render/render.rs:557-560`).
 (only a debug feature anyways)
