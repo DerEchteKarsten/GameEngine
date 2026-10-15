@@ -386,19 +386,19 @@ impl GizzmoResources {
         cmd.raster(target_size)
             .color_attachment(target, None)
             .draw(
-                draw(GizzmoType::Box, &self.aabb_range),
+                &draw(GizzmoType::Box, &self.aabb_range),
                 36,
                 self.aabb_range.len() as u32,
                 state(),
             )
             .draw(
-                draw(GizzmoType::Sphere, &self.sphere_range),
+                &draw(GizzmoType::Sphere, &self.sphere_range),
                 576,
                 self.sphere_range.len() as u32,
                 state(),
             )
             .draw(
-                draw(GizzmoType::Arrow, &self.arrow_range),
+                &draw(GizzmoType::Arrow, &self.arrow_range),
                 216,
                 self.arrow_range.len() as u32,
                 state(),

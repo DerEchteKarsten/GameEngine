@@ -32,7 +32,7 @@ use lava::{
         Buffer,
         usage::{Index, Indirect, StorageIndirect},
     },
-    command_buffer::{Blend, CommandBuffer, RasterState},
+    command_buffer::{BindingOutput, Blend, CommandBuffer, RasterState},
     image::{
         Image,
         format::{
@@ -763,7 +763,7 @@ pub(super) fn record_scene<
         let cull_view = setting.freez_view.unwrap_or(camera.camera.view);
         let clip_from_world = (cull_proj * cull_view).transpose();
         cmd.compute(
-            InstanceCull::push_bindings(
+            &InstanceCull::push_bindings(
                 instances.instance_count as u64,
                 instances
                     .bvh_root_nodes
@@ -779,7 +779,7 @@ pub(super) fn record_scene<
             [instances.instance_count.div_ceil(64) as u32, 1, 1],
         );
         cmd.compute(
-            BvhCull::push_bindings(
+            &BvhCull::push_bindings(
                 resources.bvh_node_stack.range(..),
                 resources.variables.range(..),
                 resources.meshlets.range(..),
@@ -819,7 +819,7 @@ pub(super) fn record_scene<
         .color_attachment(resources.revealage.whole_view(), None)
         .depth_attachment(resources.depth_attachment.whole_view(), Some([0.0]))
         .launch_indirect(
-            Raster::push_bindings(
+            &Raster::push_bindings(
                 view,
                 proj,
                 eye,
@@ -833,7 +833,7 @@ pub(super) fn record_scene<
             RasterState::default().blends([Blend::Replace, Blend::Skip, Blend::Skip]),
         )
         .launch_indirect(
-            RasterBlended::push_bindings(
+            &RasterBlended::push_bindings(
                 view,
                 proj,
                 eye,
@@ -853,7 +853,7 @@ pub(super) fn record_scene<
     cmd.begin_scope("post");
     // cmd.flush_all();
     cmd.compute(
-        Composite::push_bindings(
+        &Composite::push_bindings(
             resources.gbuffer.whole_view(),
             resources.depth_attachment.whole_view(),
             resources.accum.whole_view(),
@@ -872,7 +872,7 @@ pub(super) fn record_scene<
         cmd.raster(target_size)
             .color_attachment(resources.outline_mask.whole_view(), Some([0.0]))
             .launch_indirect(
-                RasterOutline::push_bindings(
+                &RasterOutline::push_bindings(
                     view,
                     proj,
                     eye,
@@ -888,7 +888,7 @@ pub(super) fn record_scene<
             .record("Outline");
 
         cmd.compute(
-            DrawOutline::push_bindings(
+            &DrawOutline::push_bindings(
                 resources.outline_mask.whole_view(),
                 target_image,
                 setting.outline_color.extend(setting.outline_radius),
@@ -985,10 +985,15 @@ fn record_frame(
                     let ui =
                         RasterUi::push_bindings(ui_resources.verticies[frame_in_flight].range(..))
                             .constant_bindings(ui_resources.font_atlas.whole_view());
-                    // The viewport tab reads the scene through a handle in its vertices.
-                    let ui = match &target.image {
-                        Some(image) => ui.storage_read(image.whole_view()),
-                        None => ui,
+                    // The viewport tab reads the scene through a handle in its vertices. The
+                    // registration makes a larger binding, so each arm borrows its own.
+                    let with_viewport;
+                    let ui: &BindingOutput<_> = match &target.image {
+                        Some(image) => {
+                            with_viewport = ui.storage_read(image.whole_view());
+                            &with_viewport
+                        }
+                        None => &ui,
                     };
                     cmd.raster(swapchain.size.into())
                         .color_attachment(swapchain.image(), None)

@@ -6,10 +6,10 @@
             split: Vertical,
             extend: 0.5,
             left: Leaf(
-                window: 0,
+                window: 2,
             ),
             right: Leaf(
-                window: 4,
+                window: 3,
             ),
         ),
         right: Node(
@@ -19,34 +19,22 @@
                 split: Vertical,
                 extend: 0.76018405,
                 left: Leaf(
-                    window: 2,
+                    window: 1,
                 ),
                 right: Leaf(
-                    window: 1,
+                    window: 0,
                 ),
             ),
             right: Leaf(
-                window: 3,
+                window: 4,
             ),
         ),
     ),
     windows: [
         (
             rect: (
-                min: (0.0, 0.0),
-                max: (256.53223, 878.5),
-            ),
-            tabs: [
-                (
-                    label: "Hierarchy",
-                ),
-            ],
-            active_tab: 0,
-        ),
-        (
-            rect: (
-                min: (256.5322, 1335.6434),
-                max: (1291.6598, 1757.0),
+                min: (524.725, 1368.3313),
+                max: (2642.0313, 1800.0),
             ),
             tabs: [
                 (
@@ -63,8 +51,8 @@
         ),
         (
             rect: (
-                min: (256.5322, 0.0),
-                max: (1291.6598, 1335.6433),
+                min: (524.725, 0.0),
+                max: (2642.0313, 1368.3313),
             ),
             tabs: [
                 (
@@ -78,24 +66,36 @@
         ),
         (
             rect: (
-                min: (1291.6598, 0.0),
-                max: (1408.0, 1757.0),
+                min: (0.0, 0.0),
+                max: (524.72485, 900.0),
             ),
             tabs: [
                 (
-                    label: "Selected",
+                    label: "Hierarchy",
                 ),
             ],
             active_tab: 0,
         ),
         (
             rect: (
-                min: (0.0, 878.5),
-                max: (256.53223, 1757.0),
+                min: (0.0, 900.0),
+                max: (524.72485, 1800.0),
             ),
             tabs: [
                 (
                     label: "Render Settings",
+                ),
+            ],
+            active_tab: 0,
+        ),
+        (
+            rect: (
+                min: (2642.0313, 0.0),
+                max: (2880.0, 1800.0),
+            ),
+            tabs: [
+                (
+                    label: "Selected",
                 ),
             ],
             active_tab: 0,
