@@ -278,6 +278,8 @@ fn init(
         &crate::bindings::PASS_MAP,
     )
     .unwrap();
+    #[cfg(feature = "hot-reload")]
+    lava_build_slang::watch!();
     crate::bindless::init();
     cmd.insert_resource(PrimarySurface(Some(
         lava::vkobjects::surface::Surface::new(&display, &handle.get_window_handle()).unwrap(),

@@ -23,14 +23,14 @@ use regex::Regex;
 const CRATES: [&str; 7] = [
     "lava",
     "lava-macros",
-    "lava-build",
+    "lava-build-slang",
     "lava-tests",
     "core",
     "game",
     "tools",
 ];
 /// lava's half of the shader contract, which every pass may include.
-const LAVA_SLANG_DIR: &str = "lava-build/slang";
+const LAVA_SLANG_DIR: &str = "lava-build-slang/slang";
 const FN_NAMES_MAX_LINES: usize = 300;
 const PRINT_BUDGET: usize = 16_000; // bytes of stdout, ~4k tokens
 
@@ -145,7 +145,7 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
-/// The newest bindings lava-build generated for `krate` (`include_passes!`) in a debug build:
+/// The newest bindings lava-build-slang generated for `krate` (`include_passes!`) in a debug build:
 /// `build/<krate>-<hash>/out/lava`, or `build/<krate>/<hash>/out/lava` in cargo's newer layout.
 fn generated_bindings(root: &Path, krate: &str) -> Option<PathBuf> {
     let dirs = |dir: &Path| -> Vec<(String, PathBuf)> {
@@ -172,7 +172,7 @@ fn generated_bindings(root: &Path, krate: &str) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
-/// `lava-build/slang/*.slang`.
+/// `lava-build-slang/slang/*.slang`.
 fn lava_slang_files(root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = fs::read_dir(root.join(LAVA_SLANG_DIR))
         .into_iter()
@@ -294,10 +294,14 @@ fn crate_deps(root: &Path) -> String {
         .map(|c| {
             let toml = read(&root.join(c).join("Cargo.toml"));
             let toml = toml.split("[dev-dependencies]").next().unwrap();
-            let deps: Vec<&str> = PATH_DEP_RE
-                .captures_iter(toml)
-                .map(|m| m.get(1).unwrap().as_str())
-                .collect();
+            // A crate can be both a dependency and a build dependency.
+            let mut deps: Vec<&str> = Vec::new();
+            for m in PATH_DEP_RE.captures_iter(toml) {
+                let dep = m.get(1).unwrap().as_str();
+                if !deps.contains(&dep) {
+                    deps.push(dep);
+                }
+            }
             let deps = if deps.is_empty() {
                 "(none)".to_string()
             } else {
@@ -400,7 +404,7 @@ fn build_codemap(root: &Path, with_fns: bool, types_max_lines: Option<usize>) ->
     }
     let (rows, incs) = shader_table(root);
     out.push(
-        "## shaders/passes (each → generated `<PascalName>` pass in `core::bindings`, compiled by lava-build from core/build.rs)".into(),
+        "## shaders/passes (each → generated `<PascalName>` pass in `core::bindings`, compiled by lava-build-slang from core/build.rs)".into(),
     );
     out.extend(rows);
     out.push(format!("includes (shaders/include): {incs}"));
@@ -541,7 +545,7 @@ fn build_api(root: &Path, krate: &str) -> String {
             continue;
         }
         let mut body = api_for_file(&f);
-        // The passes lava-build generated, which the file `include!`s.
+        // The passes lava-build-slang generated, which the file `include!`s.
         if read(&f).contains("include_passes!()")
             && let Some(generated) = generated_bindings(root, krate)
         {
@@ -631,6 +635,9 @@ fn main() {
             codemap = build_codemap(&root, with_fns, max);
         }
         fs::write(&codemap_file, codemap).unwrap();
+        // Rebuilt whole, so a renamed or removed crate leaves no stale file.
+        fs::remove_dir_all(ctx.join("api")).unwrap();
+        fs::create_dir_all(ctx.join("api")).unwrap();
         for c in CRATES {
             fs::write(ctx.join("api").join(api_file_name(c)), build_api(&root, c)).unwrap();
         }

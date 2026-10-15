@@ -11,7 +11,7 @@ Bugs come from a read-only review on 2026-10-11 (**verified**: confirmed in the 
 - Trace reads carry `MEMORY_READ` for Mesa's ANV (26.2.2): with `ACCELERATION_STRUCTURE_READ` alone, a trace after a TLAS rebuilt in the same submission (traced before it) saw stale nodes. Worth reporting to Mesa and dropping once fixed.
 - Ray tracing's triangle facing against lava's clockwise front faces is unverified (the tests cull nothing).
 
-## lava: passes from lava-build
+## lava: passes from lava-build-slang (lava's Slang frontend)
 ----intended----
 - `lava::init` takes one `PassMap`, so an application and a library on lava can't both bring passes; `BindingOutput` names its pass by index into that map.
 - The generated-binding tests need real buffers and images (`BufferSlice` and `ImageView` have no public constructor), so they run in `gpu_headless` instead of as unit tests.
@@ -37,7 +37,7 @@ Found in a read-only review; details, line numbers and directions are in `lava/S
 - Unchecked device features: everything in `Features::features` is requested without checking support (`ERROR_FEATURE_NOT_PRESENT`), `task_shader` included.
 - `Ctx::get()` blocks forever before `lava::init`; a second `init` leaks a whole instance and device.
 - Bindless `Load`/`Store` in `bindless.slang` lack `NonUniformResourceIndex`.
-- lava-build accepts passes with their own descriptor bindings (they collide with set 0), and nested `Buf`/`Img` in push-constant structs are silently untracked.
+- lava-build-slang accepts passes with their own descriptor bindings (they collide with set 0), and nested `Buf`/`Img` in push-constant structs are silently untracked.
 - Mesh passes on a device without mesh shaders reach pipeline creation before the feature panic.
 - Pending accesses and layouts are committed before `queue_submit2`, so a failed submit leaves the tracking describing work that never ran.
 - `copy_image_to_buffer` doesn't check the buffer size; with address commands nothing else does.
@@ -99,12 +99,15 @@ Found in a read-only review; details, line numbers and directions are in `lava/S
 --- intended ---
 - `update_bvh` rebuilds the CPU TLAS every `PreUpdate` with fresh `Vec`s, and raycasts allocate a `Vec` per node (`physics/bvh.rs:306`, `:390`, `:563-608`). The builder groups Morton-sorted items without SAH.
 (as said before, only temporary for debug purposes)
-- Hot reload recompiles every pass serially on any include change (`command_buffer.rs:535-546`).
+- Hot reload recompiles every pass serially on any include change (`lava-build-slang/src/hot_reload.rs`).
 (hot reload is a debug feature anyways)
 - Mesh data sits in host-visible memory (fine on this iGPU, bad on a discrete GPU), with vertices duplicated per meshlet and LOD at 32 B unquantised.
 (optimizing for dGPUs is still todo)
 
 ## Ideas
+
+### lava-build-glsl beside lava-build-slang (2026-10-15)
+lava's side is already language-neutral: `PassMap`/`PassEntry` (only what lava reads), `BindingOutput::new`/`with_constants`, `pipeline::reload_pass` and the shader contract in lava's `lib.rs` docs. Inside lava-build-slang the seam is between reflection and emission: Slang-specific are `compile.rs` (sessions, linking, `layout_hash`, `clock_regions`) and the walk over `TypeLayout`s in `codegen.rs` (it recognises `Img`/`Buf`/`Accel`/`SCONST` by Slang generics and attributes); language-neutral are the Rust emission (structs with layout asserts, `push_bindings`/`constant_bindings`, the `PassEntry` and `PASS_MAP` literals, the hot reload's `Build`, `write_if_changed`), `ray_tracing_groups`, `uses_ray_query`, the pass kind from the stages, the `Shaders` builder and the hot-reload watcher. When a GLSL frontend is written, extract the neutral part into a shared `lava-build` crate whose input is a reflected pass model (entries; push-constant fields as plain/buffer/image/accel with offsets; specialization constants; regions; a layout hash), with a hot reload that takes a `compile(pass_index) -> Result<Vec<u8>, String>`. lava-build-glsl then compiles with shaderc/glslang, reflects the SPIR-V (or GLSL annotations) into that model, and ships its own `bindless.glsl`/`profile.glsl` honouring the contract; its clock region hashes can use any hash, since the codegen bakes them.
 
 ### One mesh per glTF mesh, materials per meshlet (2026-10-13)
 Survey: Unity and Godot treat a model file as a scene (prefab / `PackedScene`) whose meshes are sub-resources you reference or extract; neither merges at import. Unreal's Content Browser import makes one StaticMesh per mesh node ("Combine Static Meshes" forces one), "Import Into Level" and Datasmith keep the node tree as actors, and a StaticMesh is the glTF *mesh object* with its primitives as material sections: Nanite builds one cluster DAG per StaticMesh across sections and resolves the material per cluster and triangle through a table. Godot adds per-node name suffixes (`-col`, `-noimp`, ...) set in the DCC.

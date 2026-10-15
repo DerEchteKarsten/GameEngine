@@ -1848,7 +1848,7 @@ dependencies = [
  "intel_tex_2",
  "itertools 0.14.0",
  "lava",
- "lava-build",
+ "lava-build-slang",
  "meshopt",
  "metis",
  "notify",
@@ -3137,9 +3137,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "gpu-allocator",
- "lava-build",
  "lava-macros",
- "notify",
  "raw-window-handle",
  "smallvec",
  "tracing",
@@ -3147,10 +3145,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "lava-build"
+name = "lava-build-slang"
 version = "0.1.0"
 dependencies = [
+ "lava",
+ "notify",
  "shader-slang",
+ "tracing",
 ]
 
 [[package]]
@@ -3168,9 +3169,10 @@ dependencies = [
  "bytemuck",
  "glam",
  "lava",
- "lava-build",
+ "lava-build-slang",
  "png",
  "raw-window-handle",
+ "smallvec",
  "tracing",
  "tracing-subscriber",
  "winit",

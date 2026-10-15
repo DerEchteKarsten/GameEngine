@@ -10,6 +10,7 @@ anyhow = {workspace = true}
 bytemuck = { workspace = true }
 
 lava = { version = "0.1.0", path = "../lava", default-features = false }
+lava-build-slang = { path = "../lava-build-slang", features = ["hot-reload"], optional = true }
 
 bytemuck_derive = {workspace = true}
 gltf = {workspace = true}
@@ -40,11 +41,11 @@ default = ["profiling", "hot-reload"]
 # The profiler (CPU spans, GPU timings, shader clocks, its editor tab).
 profiling = ["lava/profiling"]
 # Shader hot reload.
-hot-reload = ["lava/hot-reload"]
+hot-reload = ["dep:lava-build-slang"]
 dynamic_linking = ["bevy/dynamic_linking"]
 
 [build-dependencies]
-lava-build = { path = "../lava-build" }
+lava-build-slang = { path = "../lava-build-slang" }
 walkdir = {workspace = true}
 serde = {workspace = true}
 serde_json = {workspace = true}
